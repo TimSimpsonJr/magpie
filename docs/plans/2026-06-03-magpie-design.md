@@ -30,23 +30,26 @@ Both ride a **shared spine** (ingest, verify, redaction-check, evidence/provenan
 
 Magpie is one member of a small family of investigative Claude Code plugins under the **Fieldwork** brand. Fieldwork itself is a **pure marketplace pointer** — a repo containing only a `marketplace.json` that catalogs each member by its own upstream repo. No member is ever vendored into another; each is a single source of truth.
 
+The members map to the investigative lifecycle: **Research** (gather from the web) → **Magpie** (analyze documents/data/entities) → **Librarian** (file *internal* structured findings for follow-up) → **prose-craft** (turn findings into *outward-facing* writing). Librarian and prose-craft are deliberately distinct stages — internal knowledge vs. external publishable prose — and must never cross-trigger.
+
 ```
 Fieldwork  ── umbrella marketplace (pure pointer repo; references members by github source)
-├─ Magpie     ── investigations analysis toolkit   (this design)        repo: TimSimpsonJr/magpie
-├─ Research   ── deep web-research pipeline         (today's research-workflow; name kept stable)
-├─ Librarian  ── shared structured-notes skill      (own repo; see §5.7)
-└─ Publisher  ── vault → blog/social                (today's obsidian-publisher)
+├─ Magpie      ── investigations analysis toolkit   (this design)        repo: TimSimpsonJr/magpie
+├─ Research    ── deep web-research pipeline         (research-workflow; name kept stable)
+├─ Librarian   ── shared structured-notes skill      (own repo; §5.7)  — INTERNAL findings notes
+└─ prose-craft ── outward-facing prose + review gate  (TimSimpsonJr/prose-craft) — EXTERNAL publishable writing
 ```
 
 - **Plugin names stay short** (`magpie`, `research`, `librarian`, `publisher`) for clean skill namespaces (`magpie:ingest`, `librarian:write`). "Fieldwork: X" is the display/brand framing only.
 - The existing `fieldwork-plugins` repo is **repurposed** into the Fieldwork pointer-marketplace: clear the vendored plugin copies, leave only `marketplace.json` referencing each member's own repo. (This supersedes the previously-queued de-vendor task.)
 - `research-workflow`'s repo and plugin name are **kept stable** (the user runs it standalone on multiple machines); it is branded "Fieldwork: Research" at the marketplace/display layer only — no install churn.
-- If `obsidian-publisher` is not already its own standalone repo, extract it so Fieldwork can point at it.
+- `obsidian-publisher` is **dropped** (superseded by prose-craft): when clearing `fieldwork-plugins`, delete its vendored copy; the standalone copy can be retired at will. **prose-craft** (`TimSimpsonJr/prose-craft`, an existing own-marketplace repo) is referenced as the outward-writing member. It is general-purpose (used across all of Tim's outward writing), so it is *referenced/used*, not Fieldwork-exclusive. (A `prose-craft-pro` variant exists; default to `prose-craft`.)
 
 **Inter-member relationships:**
 - `magpie` → `librarian`: hard dependency (`plugin.json` `dependencies`) — auto-installed with Magpie.
 - `research-workflow` → `librarian`: hard dependency — so installing Research standalone auto-pulls Librarian (acceptance-tested; see §9).
 - `magpie` → `research`: soft coupling — Magpie uses Research's `/research` for adjacent web corroboration *if present*, degrades gracefully if not.
+- `magpie` → `prose-craft`: soft coupling — outward-facing write-ups (turning findings into articles / social / advocacy) route through prose-craft and its review gate (aligns with the global prose-craft mandate and the Simpsonville handoff's "route articles through brainstorming → prose-craft"). Degrades gracefully if absent.
 
 ---
 
@@ -64,7 +67,7 @@ Fieldwork  ── umbrella marketplace (pure pointer repo; references members by
 | 8 | Net-new MCP | `yente-mcp` (OpenAleph MCP only if the optional profile is enabled) |
 | 9 | Output | Portable Markdown + CSV default; Obsidian auto-adapter via the shared Librarian skill |
 | 10 | Librarian | Shared structured-notes skill, own repo, auto-pulled via `dependencies`; distinct from prose-craft |
-| 11 | Brand | Fieldwork pure-pointer marketplace → Magpie / Research / Librarian / Publisher |
+| 11 | Brand | Fieldwork pure-pointer marketplace → Magpie / Research / Librarian / prose-craft (obsidian-publisher dropped, superseded by prose-craft) |
 | 12 | research-workflow | Name kept stable; branded at display layer; migrates to Librarian as a fast-follow |
 | 13 | `foia-request` | Deferred; replaced by the novel `request-the-gap` output on analysis skills |
 | 14 | Obsidian | Optional output adapter (auto-detect vault), not a core dependency |
@@ -149,7 +152,7 @@ Engine choices below reflect the Tier-1 prior-art scan (§10). Each skill's buil
 
 ### 5.7 Output layer — the shared **Librarian** skill
 
-Librarian is its own repo/plugin (Fieldwork member), auto-pulled by both Magpie and Research via `dependencies`. It authors **structured, interlinked, browsable knowledge notes organized for follow-up and retrieval** — explicitly *not* prose (prose-craft is a separate ceremony; the two must never trigger on each other).
+Librarian is its own repo/plugin (Fieldwork member), auto-pulled by both Magpie and Research via `dependencies`. It authors **structured, interlinked, browsable knowledge notes organized for follow-up and retrieval** — explicitly *not* prose (prose-craft is a separate ceremony; the two must never trigger on each other). Librarian (internal findings) hands off to **prose-craft** (external publishable writing) as the next lifecycle stage — distinct skills, clear seam.
 
 - **Extracted from research-workflow** Stages 6/7/8 (classify → write → wikilink-scan), which are clean agent-instruction units. Extraction work = decoupling, not rewriting:
   1. make vault-index queries optional (portable-first; vault-aware when present),
