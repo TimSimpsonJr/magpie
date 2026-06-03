@@ -37,10 +37,10 @@ Fieldwork  ── umbrella marketplace (pure pointer repo; references members by
 ├─ Magpie      ── investigations analysis toolkit   (this design)        repo: TimSimpsonJr/magpie
 ├─ Research    ── deep web-research pipeline         (research-workflow; name kept stable)
 ├─ Librarian   ── shared structured-notes skill      (own repo; §5.7)  — INTERNAL findings notes
-└─ prose-craft ── outward-facing prose + review gate  (TimSimpsonJr/prose-craft) — EXTERNAL publishable writing
+└─ Prose Craft ── outward-facing prose + review gate  (plugin id `prose-craft` · TimSimpsonJr/prose-craft) — EXTERNAL publishable writing
 ```
 
-- **Plugin names stay short** (`magpie`, `research`, `librarian`, `publisher`) for clean skill namespaces (`magpie:ingest`, `librarian:write`). "Fieldwork: X" is the display/brand framing only.
+- **Plugin names stay short** (`magpie`, `research`, `librarian`, `prose-craft`) for clean skill namespaces (`magpie:ingest`, `librarian:write`). Display names are capitalized — **Magpie / Research / Librarian / Prose Craft** — while plugin/repo ids stay lowercase; "Fieldwork: X" is the display/brand framing.
 - The existing `fieldwork-plugins` repo is **repurposed** into the Fieldwork pointer-marketplace: clear the vendored plugin copies, leave only `marketplace.json` referencing each member's own repo. (This supersedes the previously-queued de-vendor task.)
 - `research-workflow`'s repo and plugin name are **kept stable** (the user runs it standalone on multiple machines); it is branded "Fieldwork: Research" at the marketplace/display layer only — no install churn.
 - `obsidian-publisher` is **dropped** (superseded by prose-craft): when clearing `fieldwork-plugins`, delete its vendored copy; the standalone copy can be retired at will. **prose-craft** (`TimSimpsonJr/prose-craft`, an existing own-marketplace repo) is referenced as the outward-writing member. It is general-purpose (used across all of Tim's outward writing), so it is *referenced/used*, not Fieldwork-exclusive. (A `prose-craft-pro` variant exists; default to `prose-craft`.)
@@ -197,7 +197,7 @@ Magpie treats LLM output as **unverified source material** (the ProPublica postu
 
 - **Citation contract.** Every extracted claim carries `{claim_text, verbatim_quote, doc_id, page, block_index, text_hash, verifier_result, verifier_confidence, extractor_model, prompt_version, schema_version, timestamp}`. Anchor uses the **fallback chain** (char-offset → text-hash → block-index → page) to survive OCR instability.
 - **Independent verifier.** A structurally-separate sub-agent re-reads the cited span (presence + entailment checks); `indeterminate` is the conservative default. Single-model self-verification is disallowed (correlated errors; LLM-judge recall ~16%).
-- **Human gate.** Mid-pipeline, not final. The verification card shows the **source span before the AI claim** (counters automation bias; documented 51% rubber-stamp rate). Supports two-reviewer sign-off (logged).
+- **Human gate.** Mid-pipeline, not final. The verification card shows the **source span before the AI claim** (counters automation bias; documented 51% rubber-stamp rate). **Solo single-reviewer sign-off is the default and the only required gate** (this is mostly solo work); two-reviewer sign-off is *optional/supported* (logged) for teams that want it — never required.
 - **PII discipline.** `pii-sweep` finds exposure; `redact-output` + the Obsidian adapter enforce vault→initials / exhibits-local-only.
 - **Rigor guardrails** (encoded from the Simpsonville handoff): walk back claims the data doesn't support; verify keyword matches (the `ICE`/"polICE" trap); `***` ≠ blank (presence vs. value); refuse out-of-scope claims (e.g., racial disparity from audit logs); window-asked ≠ retention-proven.
 - **Honest limits (documented, not hidden):** zero-shot relation-extraction F1 ~25–40 → human gate mandatory, never autonomous; glyph-position / proportional-font pixelation / cross-version-diff / semantic-reconstruction redaction failures have no FOSS auto-detector → flag for humans; worst-case scans & handwriting → no CPU-viable solution → flag for review; MCP ecosystem is security-immature (30+ CVEs in 2026) → servers touching FOIA data stay read-only, pinned, treated as untrusted.
