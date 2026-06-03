@@ -1,0 +1,14 @@
+{
+  "name": "magpie",
+  "version": "0.0.1",
+  "description": "FOSS-first investigative analysis toolkit: structured FOIA/data analysis (stats, PII sweep, repeatable recipes) plus document ingest, redaction-check, and verifiable findings. Fieldwork: Magpie.",
+  "author": {
+    "name": "Tim Simpson",
+    "email": "tim@timsimpsonjr.com"
+  },
+  "homepage": "https://github.com/TimSimpsonJr/magpie",
+  "repository": "https://github.com/TimSimpsonJr/magpie",
+  "license": "MIT",
+  "keywords": ["foia", "osint", "investigation", "data-journalism", "redaction", "datasette"],
+  "dependencies": ["librarian"]
+}

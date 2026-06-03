@@ -1,0 +1,5 @@
+# Magpie uses pyproject.toml only for pytest configuration. The plugin itself
+# is not a pip-installable package — its scripts are invoked directly by skills.
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
