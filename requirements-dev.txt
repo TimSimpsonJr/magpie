@@ -1,0 +1,11 @@
+# Magpie dev + runtime dependencies — Layer 0–1 (laptop-local, no heavy Docker).
+# Pinned to the versions validated during Phase 0 setup on Python 3.12.10.
+# Later phases append: spacy + en_core_web_lg (Phase 5), docling/rapidocr/ocrmypdf
+# (Phase 6), x-ray (Phase 7), mcp-sqlite (Phase 3). Keep this file the source of
+# truth for the dev venv.
+
+pytest==9.0.3
+pandas==3.0.3
+duckdb==1.5.3
+pyarrow==24.0.0
+numpy==2.4.6

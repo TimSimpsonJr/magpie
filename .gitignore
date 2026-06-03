@@ -1,0 +1,34 @@
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# --- Data caches (derived; rebuildable, often large) ---
+*.parquet
+
+# --- Research-workflow scratch ---
+.research-workflow/
+
+# ============================================================
+# NEVER commit the Simpsonville corpus (PII)
+# ------------------------------------------------------------
+# The real Flock/Simpsonville FOIA corpus contains personal data
+# (names, DOBs, A-numbers, plate context). It lives OUTSIDE this
+# repo (the operator's Downloads) and is referenced for golden
+# tests only via an env var (see Task 11.2). Never copy real data
+# into the tree. These rules are defensive belt-and-suspenders:
+corpus/private/
+*-Audit-logs/
+*-Audit.csv
+*-Network-Audit.csv
+**/*[Ss]impsonville*[Aa]udit*
+pii_*_exhibit.csv
+pretext_exhibit.csv
+immigration_exhibit.csv
+# ============================================================
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
