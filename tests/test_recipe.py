@@ -561,3 +561,70 @@ def test_checks_registry_covers_all_thirteen():
         "operations", "ai_moderation", "cross_agency", "statistical_patterns",
     }
     assert set(CHECKS) == expected
+
+
+# --------------------------------------------------------------------------- #
+# impl-review fixes (Codex, 2026-06-04)
+# --------------------------------------------------------------------------- #
+
+def test_ai_moderation_partial_on_invalid_timestamps():
+    """A present-but-unparseable timestamp_col must NOT manufacture a burst.
+
+    Grouping junk strings as if they were real seconds would fabricate a
+    same-second batch (a false automation finding), and an all-invalid column
+    must not fall through to a fake max_same_second == 0 with status ok. With no
+    VALID second-resolution timestamps, burstiness is undefined -> partial/None.
+    """
+    df = sample_audit()
+    df["ts"] = ["not a timestamp"] * len(df)
+    out = check_ai_moderation(
+        df, {"hour_col": "hour_et", "user_col": "agency", "timestamp_col": "ts"}
+    )
+    assert out["status"] == "partial"
+    assert out["max_same_second"] is None
+    assert "timestamp" in out["reason"].lower()
+    # the overnight-signature half still computed.
+    assert out["n_flagged_overnight"] == 2
+
+
+def test_ai_moderation_burstiness_ignores_invalid_timestamp_rows():
+    """Junk timestamp rows are dropped; the burst is computed over valid rows only."""
+    df = sample_audit()
+    ts = df["ts"].tolist()
+    ts[2] = "junk"  # corrupt one row that was a singleton second anyway
+    df["ts"] = ts
+    out = check_ai_moderation(
+        df, {"hour_col": "hour_et", "user_col": "agency", "timestamp_col": "ts"}
+    )
+    assert out["status"] == "ok"
+    # rows 0,1 (Houston, same valid second) still form the batch of 2.
+    assert out["max_same_second"] == 2
+
+
+def test_cross_agency_partial_when_external_geo_col_absent():
+    """Missing the geo column means external actors are UNCLASSIFIED, not zero.
+
+    Reporting status ok with external_actor_counts == {} would let rollup read
+    'cannot classify external' as 'measured no external actors' and silently
+    suppress the recurrence thesis. It must be partial so rollup excludes it.
+    """
+    df = sample_audit().drop(columns=["geo"])
+    out = check_cross_agency(df, {"user_col": "agency"})  # external_geo_col defaults to 'geo'
+    assert out["status"] == "partial"
+    assert out["external_actor_counts"] == {}
+    assert "external" in out["reason"].lower()
+    # the full actor set is still reported.
+    assert out["actor_counts"]["Houston TX PD"] == 5
+
+
+def test_cross_agency_external_actor_sort_survives_mixed_type_labels():
+    """A user column mixing str + numeric labels must not crash the sorted() list."""
+    df = pd.DataFrame(
+        {"agency": ["Houston", 42, "Houston", 42], "geo": ["OOS"] * 4}
+    )
+    out = check_cross_agency(
+        df, {"user_col": "agency", "external_geo_col": "geo", "external_label": "OOS"}
+    )
+    assert out["status"] == "ok"
+    assert set(out["external_actors"]) == {"Houston", 42}
+    assert out["external_actor_counts"][42] == 2

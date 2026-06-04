@@ -169,3 +169,23 @@ def test_rollup_empty_input_is_safe():
     assert out["aggregate"]["total_records"] == 0
     # an undefined pooled rate over zero sources is None, not a fake 0.0.
     assert out["aggregate"]["out_of_state_pct_total"] is None
+
+
+def test_rollup_counts_numpy_integer_scalars():
+    """A numpy-int count must be summed, not silently dropped to 0 (impl-review).
+
+    If a findings object carries np.int64 counts (a non-native scalar leaks
+    through), the recurrence tally must still add them rather than treating them
+    as non-numeric and zeroing the total.
+    """
+    import numpy as np
+
+    findings = [
+        _finding("s1", 10, cross_agency={
+            "status": "ok", "external_actor_counts": {"X": np.int64(5)}}),
+        _finding("s2", 10, cross_agency={
+            "status": "ok", "external_actor_counts": {"X": np.int64(7)}}),
+    ]
+    out = rollup(findings)
+    recurring = {row["actor"]: row for row in out["recurring_external_actors"]}
+    assert recurring["X"]["total_count"] == 12  # 5 + 7, not 0

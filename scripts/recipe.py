@@ -637,6 +637,16 @@ def check_ai_moderation(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, A
     ``timestamp_col`` is configured AND present; otherwise the burst half is
     undefined, so status is ``partial``, ``max_same_second`` is ``None`` (never a
     fake ``0``), and ``reason`` says a timestamp column is needed.
+
+    A present ``timestamp_col`` is VALIDATED, not trusted: it is coerced with
+    ``pd.to_datetime(..., errors="coerce")`` and the invalid (``NaT``) rows are
+    dropped before :func:`stats.burstiness` runs, so junk strings can't be
+    grouped as if they were real seconds -- a column of unparseable values would
+    otherwise fabricate one giant same-second batch (a false automation finding),
+    and an all-invalid column would fall through to ``max_same_second == 0`` read
+    as a real measurement. When NO valid timestamps remain the burst half is
+    undefined exactly as in the no-column case (``partial`` / ``None``); the
+    overnight-signature half is always computed regardless.
     """
     hour_col = cfg.get("hour_col", "hour_et")
     user_col = cfg.get("user_col")
@@ -666,8 +676,22 @@ def check_ai_moderation(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, A
     }
 
     timestamp_col = cfg.get("timestamp_col")
+    # Coerce + drop invalid rows BEFORE burstiness: a present timestamp_col is
+    # validated, never trusted (junk strings would otherwise group as one giant
+    # fake same-second batch, and an all-invalid column would read as a real
+    # max_same_second == 0). With no usable column or no valid rows left, the
+    # burst half is undefined -> partial / None, exactly like the no-column case.
+    valid_ts: pd.DataFrame | None = None
     if timestamp_col is not None and timestamp_col in df.columns:
-        burst = stats.burstiness(df, timestamp_col, user_col)
+        coerced = pd.to_datetime(df[timestamp_col], errors="coerce", format="mixed")
+        valid_mask = coerced.notna()
+        if valid_mask.any():
+            valid_ts = pd.DataFrame(
+                {timestamp_col: coerced[valid_mask], user_col: df.loc[valid_mask, user_col]}
+            )
+
+    if valid_ts is not None:
+        burst = stats.burstiness(valid_ts, timestamp_col, user_col)
         result["status"] = "ok"
         result["max_same_second"] = _to_int(burst["max_same_second"])
         result["burst_size_distribution"] = {
@@ -681,12 +705,13 @@ def check_ai_moderation(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, A
         result["status"] = "partial"
         result["max_same_second"] = None
         result["reason"] = (
-            "burstiness needs a second-resolution timestamp_col; none configured "
-            "or present, so same-second batching is undefined"
+            "burstiness needs a second-resolution timestamp_col with valid "
+            "values; none configured/present or all timestamps were unparseable, "
+            "so same-second batching is undefined"
         )
         result["summary"] = (
             f"{n_flagged} of {n_actors} actors flagged overnight; "
-            "burstiness undefined (no timestamp column)"
+            "burstiness undefined (no valid timestamp column)"
         )
     return result
 
@@ -705,6 +730,19 @@ def check_cross_agency(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, An
     ``external_actors`` (the sorted list), and ``n_external_actors``. Rollup keys
     recurrence off the EXTERNAL counts only, so an in-state actor cannot
     manufacture a cross-source finding. Skipped when the user column is absent.
+
+    When the user column IS present but ``cfg["external_geo_col"]`` is ABSENT, the
+    external rows can't be classified at all -- that is UNCLASSIFIED, not measured
+    zero -- so status is ``partial`` (the ``reason`` names the missing geo column)
+    with an empty ``external_actor_counts`` / ``external_actors`` and
+    ``n_external_actors == 0``; the FULL ``actor_counts`` / ``n_actors`` are still
+    reported. Returning ``ok`` with an empty external set would let the rollup
+    read "cannot classify external" as "no external actors" and silently suppress
+    the recurrence thesis.
+
+    ``external_actors`` is sorted with ``key=str`` so a user column mixing string
+    and numeric labels sorts deterministically instead of raising; the machine
+    ``actor_counts`` / ``external_actor_counts`` dicts keep their native keys.
     """
     user_col = cfg.get("user_col")
     if user_col is None or user_col not in df.columns:
@@ -717,13 +755,33 @@ def check_cross_agency(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, An
 
     external_geo_col = cfg.get("external_geo_col", "geo")
     external_label = cfg.get("external_label", "OOS")
-    if external_geo_col in df.columns:
-        external_rows = df[df[external_geo_col] == external_label]
-        external_actor_counts = _native_counts(external_rows[user_col])
-    else:
-        external_actor_counts = {}
+    if external_geo_col not in df.columns:
+        # Can't classify external rows at all: UNCLASSIFIED, not measured zero.
+        # status partial so rollup excludes this source rather than reading an
+        # empty external set as "no external actors" and suppressing recurrence.
+        return {
+            "status": "partial",
+            "summary": (
+                f"{n_actors} actors; external set undefined "
+                f"(geo column {external_geo_col!r} absent)"
+            ),
+            "reason": (
+                f"external actors need the geo column {external_geo_col!r}, which "
+                "is absent, so the external subset is unclassified (not zero)"
+            ),
+            "n_actors": n_actors,
+            "actor_counts": actor_counts,
+            "external_actor_counts": {},
+            "external_actors": [],
+            "n_external_actors": 0,
+        }
 
-    external_actors = sorted(external_actor_counts)
+    external_rows = df[df[external_geo_col] == external_label]
+    external_actor_counts = _native_counts(external_rows[user_col])
+
+    # key=str so a user_col mixing str + numeric labels sorts deterministically
+    # rather than raising; the machine count dicts keep their native keys.
+    external_actors = sorted(external_actor_counts, key=str)
     n_external_actors = len(external_actors)
 
     return {

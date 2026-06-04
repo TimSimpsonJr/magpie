@@ -38,6 +38,7 @@ against documented values and reused across data sources.
 
 from __future__ import annotations
 
+import numbers
 from typing import Any, Mapping, Sequence
 
 # A check whose ``status`` is anything other than this ran-cleanly marker
@@ -203,13 +204,17 @@ def _recurring_external_actors(
 def _as_number(value: Any) -> float | int:
     """Coerce a count to a number, treating anything non-numeric as ``0``.
 
-    Booleans are deliberately excluded (``True`` is not a count of 1 here) and a
-    string / ``None`` / unparseable value contributes ``0`` rather than raising,
-    keeping the tally total over a possibly-dirty findings object.
+    Any real number is accepted, including numpy real scalars (``np.int64`` /
+    ``np.float64``), which register with :class:`numbers.Real` -- so a non-native
+    count that leaks into a findings object is summed rather than silently
+    dropped, and without importing numpy here. Booleans are deliberately excluded
+    (``True`` is not a count of 1 here) and a string / ``None`` / unparseable
+    value contributes ``0`` rather than raising, keeping the tally total over a
+    possibly-dirty findings object.
     """
     if isinstance(value, bool):
         return 0
-    if isinstance(value, (int, float)):
+    if isinstance(value, numbers.Real):
         return value
     return 0
 

@@ -78,10 +78,10 @@ substring test; a false keyword hit becomes a false published finding.
 
 ## Fan-out across sources, then roll up
 
-For a SINGLE source, run `run_recipe` and pass the one findings object to
-`rollup` (or report it directly). For MULTIPLE sources, run the SAME per-source
-pass over each source independently, collect the findings objects, then
-synthesize once:
+For a SINGLE source, run `run_recipe` and report its findings directly (or wrap
+it as `rollup([findings])` — `rollup` always takes a LIST of findings objects,
+never a bare dict). For MULTIPLE sources, run the SAME per-source pass over each
+source independently, collect the findings objects, then synthesize once:
 
 ```python
 from scripts.rollup import rollup
