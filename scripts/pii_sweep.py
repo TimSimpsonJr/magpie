@@ -162,7 +162,22 @@ def sweep(
         "strict": _tally(counts, strict_bool),   # publishable headline (high-precision PII)
         "broad": _tally(counts, broad_bool),     # + name-leads + possible_birthdate
     }
-    # local_texts added in Task 5.
+
+    if collect_local_texts:
+        local: dict[str, dict[str, Any]] = {}
+        for i, t in enumerate(texts):
+            if not broad_bool[i]:           # only redaction targets; officials-only excluded
+                continue
+            cats = [n for n in patterns if regex_hits[n][i]]
+            if official[i]:
+                cats.append("person_official")
+            if unknown[i]:
+                cats.append("person_unknown_role")
+            tid = text_id(t)
+            if tid in local:   # two DISTINCT texts collided on the truncated hash
+                raise ValueError(f"text_id collision {tid!r}; widen the text_id truncation")
+            local[tid] = {"text": t, "count": int(counts[i]), "categories": cats}
+        result["local_texts"] = local
     return result
 
 

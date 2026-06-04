@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 from scripts.pii_sweep import distinct_texts, text_id
 from scripts.pii_sweep import DEFAULT_PII_PATTERNS, BROAD_ONLY_PATTERN_NAMES, _regex_hit
@@ -143,3 +145,61 @@ def test_efficiency_ratio():
     s = pd.Series(["dup"] * 6 + ["uniq"])
     r = sweep(s, person_classifier=FakePersonClassifier())
     assert r["efficiency_ratio"] == 7 / 2                      # 7 nonblank rows / 2 distinct
+
+
+def test_local_texts_off_by_default():
+    r = sweep(pd.Series(["ssn 123-45-6789"]), person_classifier=FakePersonClassifier())
+    assert "local_texts" not in r                          # raw PII never returned unless asked
+
+
+def test_local_texts_opt_in_is_keyed_by_text_id_and_excludes_official_only():
+    s = pd.Series(["ssn 123-45-6789", "<<OFFICIAL>> Sgt Doe"])
+    r = sweep(s, person_classifier=FakePersonClassifier(), collect_local_texts=True)
+    assert len(r["local_texts"]) == 1                      # official-only row is NOT a redaction target
+    (tid, entry), = r["local_texts"].items()
+    assert tid == text_id("ssn 123-45-6789")
+    assert "ssn" in entry["categories"] and entry["count"] == 1
+
+
+def test_empty_input_is_safe_and_json_able():
+    r = sweep(pd.Series([], dtype=object), person_classifier=FakePersonClassifier())
+    assert r["efficiency_ratio"] is None                  # no fake 0
+    assert r["exposure"]["strict"] == {"weighted": 0, "distinct": 0}
+    json.dumps(r)                                          # native types only
+
+
+def test_internal_bool_lists_do_not_leak_into_the_result():
+    # _strict_bool / _broad_bool ARE json-serializable, so json.dumps() would not
+    # catch a leak -- assert the keys are absent explicitly.
+    r = sweep(pd.Series(["ssn 123-45-6789"]), person_classifier=FakePersonClassifier())
+    assert "_strict_bool" not in r and "_broad_bool" not in r
+
+
+def test_official_and_unknown_role_can_both_appear_in_one_text():
+    r = sweep(pd.Series(["<<OFFICIAL>> Sgt Doe stopped <<PERSON>>"]),
+              person_classifier=FakePersonClassifier())
+    assert r["categories"]["person_official"]["distinct"] == 1
+    assert r["categories"]["person_unknown_role"]["distinct"] == 1
+    assert r["exposure"]["broad"]["distinct"] == 1         # unknown_role -> broad
+    assert r["exposure"]["strict"]["distinct"] == 0        # no structured ID present
+
+
+def test_non_string_cells_do_not_crash_and_carry_no_pii():
+    s = pd.Series(["ssn 123-45-6789", 42, 3.14, None], dtype=object)
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["n_nonblank_rows"] == 3                        # None dropped; 42/3.14 kept as text
+    assert r["categories"]["ssn"]["distinct"] == 1
+    assert r["exposure"]["strict"]["distinct"] == 1
+
+
+def test_custom_broad_only_names_marks_a_custom_pattern_as_a_lead():
+    # a custom `patterns` map marks its OWN ambiguous pattern broad-only via the
+    # broad_only_names param (also how the Phase 11 compat profile works).
+    import re as _re
+    pats = {"ssn": DEFAULT_PII_PATTERNS["ssn"], "mycode": _re.compile(r"\bMC\d{4}\b")}
+    s = pd.Series(["MC1234", "ssn 123-45-6789"])
+    r = sweep(s, person_classifier=FakePersonClassifier(), patterns=pats,
+              broad_only_names=frozenset({"mycode"}))
+    assert r["exposure"]["strict"]["distinct"] == 1        # ssn row only (mycode is broad-only)
+    assert r["exposure"]["broad"]["distinct"] == 2         # + the mycode lead
+    assert r["categories"]["mycode"]["distinct"] == 1
