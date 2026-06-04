@@ -138,9 +138,17 @@ The following are **design decisions**, authored via brainstorming → `writing-
 and reviewed by the native plan-review gate — NOT settled in this research gate:
 the distinct→NER→weight algorithm and the "~7× efficiency" multiplier invariant;
 the output/tally schema and the `redact-output` hand-off contract; the module shape
-(injectable `PersonDetector` + lazy `SpacyPersonDetector`); the TDD test plan
+(injectable detector + lazy spaCy classifier); the TDD test plan
 (pure fake-detector tests + a model-gated integration test); and the open
 decisions (default pattern set / `birthdate` membership / `alien_num` digit range).
+
+> **RESOLVED in the plan + design doc (authoritative — this gate keeps the prototype
+> CANDIDATES above as the starting record).** The shipped engine: the seam is
+> `PersonClassifier` / `SpacyPersonClassifier` (returns `{official, unknown_role}` per
+> text, not a bare bool); `alien_num` = `A\d{8,9}` (the §3 `A\d{8,12}` candidate was
+> tightened to match `recipe`); `race_sex` is **broad-only** and `driver_lic` requires
+> a digit in the body (code-quality refinements); `birthdate` → `possible_birthdate`,
+> excluded from the strict headline. See `docs/plans/2026-06-04-magpie-phase5-pii-sweep*.md`.
 
 ---
 
