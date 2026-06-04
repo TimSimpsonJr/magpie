@@ -25,22 +25,32 @@ Design notes (verified against the Phase 3 research gate,
 * **TEXT-whitelist.** Columns whose name is ID-like load as strings so leading
   zeros survive (``07054`` stays ``"07054"``, not the int ``7054``). Matching is
   on TOKEN BOUNDARIES, not raw substrings: the name is lowercased and split on
-  separators and camelCase humps, then the short ambiguous patterns (``id``,
-  ``case``, ``plate``, ``ssn``, ``dob``) match only a WHOLE token while the
-  longer unambiguous ones (``zip``, ``zipcode``, ``fips``, ``phone``,
-  ``account``, ``license``) keep contains matching. This stops real numerics
-  like ``valid``, ``incident_count``, ``candidate_total``, ``casein`` from being
-  coerced to text (which would break the ``stats.py`` consumer), while still
-  catching ``zip_code``, ``caseNumber``, ``Account_ID``. Any name the caller
-  passes in ``text_columns`` is always honored. On the CSV path the whitelist is
-  ``dtype=str`` for those columns; on the XLSX path it is post-read coercion
-  (pandas/openpyxl would otherwise int-ify them).
-* **``empty_null``.** When True (default), empty-string cells read as missing
-  (``NaN``) consistently across both paths. This keeps the downstream
-  ``***``-vs-blank-vs-NULL rigor distinction honest (a redaction is present; a
-  blank is absent). When False, the literal ``""`` is restored only in TEXT
-  columns -- numeric columns cannot hold ``""`` (pandas reads an empty numeric
-  cell as ``NaN``), so there is nothing to restore there.
+  separators and camelCase humps, then a pattern matches only when it equals a
+  WHOLE token. This single rule applies UNIFORMLY to every pattern (``id``,
+  ``case``, ``plate``, ``ssn``, ``dob``, ``zip``, ``zipcode``, ``fips``,
+  ``phone``, ``account``, ``license``), so it stops real numerics like ``valid``,
+  ``incident_count``, ``candidate_total``, ``casein`` AND words that merely
+  contain a longer pattern -- ``microphone_level`` (phone), ``zipper_count``
+  (zip), ``accountability_score`` (account) -- from being coerced to text (which
+  would break the ``stats.py`` consumer), while still catching ``zip_code``,
+  ``zipcode``, ``phone_number``, ``account_id``, ``fips``, ``caseNumber``,
+  ``Account_ID``. Any name the caller passes in ``text_columns`` is always
+  honored (the escape hatch for an edge-case ID column the token rule misses),
+  and every coerced column is listed in ``report["text_columns"]`` so a wrong
+  one is visible. On the CSV path the whitelist is ``dtype=str`` for those
+  columns; on the XLSX path it is post-read coercion (pandas/openpyxl would
+  otherwise int-ify them).
+* **``empty_null``.** When True (default), ONLY a literal empty / whitespace
+  cell reads as missing (``NaN``), consistently across both paths. The NA set is
+  deliberately NARROW: a cell that literally contains ``N/A`` / ``NULL`` /
+  ``NaN`` / ``None`` survives as that STRING, because pandas' default-NA
+  spellings are NOT applied (the CSV read pins ``keep_default_na=False``). This
+  keeps the downstream ``***``-vs-blank-vs-NULL rigor distinction honest (a
+  redaction is present; a blank is absent; a literal ``NULL`` token is its own
+  signal, not silently erased). When False, the caller opts out of ``""``->NA
+  entirely: empty cells are kept literally as ``""`` (so a column that would
+  otherwise have been numeric is read as object to hold the ``""``), and the
+  default-NA spellings are likewise preserved as literal strings.
 * **XLSX merged cells.** Merged regions are *unmerged then filled* from the
   top-left value (openpyxl drops every non-top-left cell on merge), so a
   vertically-merged label populates every row of its region. pandas 3.0.3
@@ -74,34 +84,46 @@ import pandas as pd
 # Matching is on TOKEN BOUNDARIES, never raw substrings: the name is lowercased
 # and split on non-alphanumeric separators AND camelCase / letter-digit
 # boundaries (so "Account_ID" -> [account, id], "caseNumber" -> [case, number],
-# "zip_code" -> [zip, code]). Two pattern classes are matched differently:
+# "zip_code" -> [zip, code]). A pattern matches ONLY when it equals a WHOLE
+# token -- this rule is applied UNIFORMLY to every pattern, short or long.
 #
-# * WHOLE-TOKEN patterns are the short, ambiguous ones that are common English
-#   substrings. They match ONLY when they equal a whole token, so "id" no longer
-#   fires on "valid"/"raids"/"humid", "case" no longer fires on "casein", and
-#   "plate" no longer fires on "plateau". Coercing those real numeric columns to
-#   text silently breaks the stats.py consumer (gini/rates cast str -> float).
-# * SUBSTRING patterns are the longer, unambiguous ones. They keep contains
-#   matching so "zip"/"zipcode" still fire on "zip_code"/"zipcode"/"ZipCode",
-#   "phone" on "phone_number", "account" on "Account_ID", etc.
+# Why uniform whole-token (not substring for the "unambiguous" long ones): a
+# substring test mis-fires on perfectly ordinary words that happen to CONTAIN a
+# pattern -- "microphone_level" contains "phone", "zipper_count" contains "zip",
+# "accountability_score" contains "account". Coercing those real (often numeric)
+# columns to text silently breaks the stats.py consumer, which casts the column
+# str -> float (gini/rates). Whole-token matching rejects all three while still
+# catching "zip"/"zip_code"/"zipcode"/"ZipCode", "phone_number", "account_id",
+# "fips", "case"/"case_number"/"caseNumber", "ssn", "plate", "dob".
+#
+# Single-token spellings are listed explicitly so a one-word column name still
+# matches: "zipcode" (no separator to split) is its own entry alongside "zip".
+#
+# Edge cases an operator can steer:
+#  * A column whose name genuinely contains an ID token but is NOT an ID (rare,
+#    e.g. a hypothetical "license_plateau") would be coerced to text. That is the
+#    HARMLESS direction (a string of characters), and `.report["text_columns"]`
+#    lists every coerced column so a wrong one is visible. To force such a column
+#    numeric, the caller leaves it out of `text_columns` (auto-coercion of a true
+#    token is intentional); to force an unmatched edge-case ID column TO text,
+#    pass it in `text_columns`.
 #
 # A false positive only forces a column to text (harmless: a string of digits);
 # a false negative silently drops a leading zero (the failure we guard against).
-# This list is tuned to that asymmetry but no longer over-matches plain English.
-ID_LIKE_WHOLE_TOKEN_PATTERNS: tuple[str, ...] = (
-    "id",
-    "case",
-    "plate",
-    "ssn",
-    "dob",
-)
-ID_LIKE_SUBSTRING_PATTERNS: tuple[str, ...] = (
-    "zip",
-    "zipcode",
-    "fips",
-    "phone",
-    "account",
-    "license",
+ID_LIKE_TOKEN_PATTERNS: frozenset[str] = frozenset(
+    {
+        "id",
+        "case",
+        "plate",
+        "ssn",
+        "dob",
+        "zip",
+        "zipcode",
+        "fips",
+        "phone",
+        "account",
+        "license",
+    }
 )
 
 # Split on runs of non-alphanumerics, camelCase humps (lower/digit -> upper),
@@ -121,7 +143,9 @@ _NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
 # as absent. Sentinel tokens like "***", "N/A", "NULL" are NOT swept here --
 # distinguishing a redaction ("***", a value that exists but is withheld) from a
 # genuine blank is a downstream rigor concern, and over-eager NA coercion would
-# erase that signal.
+# erase that signal. This narrowness is ENFORCED on the CSV read by pinning
+# keep_default_na=False (so pandas does not add its default N/A / NULL / NaN /
+# None spellings on top of this set); see _load_csv.
 _EMPTY_NA_VALUES: tuple[str, ...] = ("", " ")
 
 
@@ -195,19 +219,19 @@ def _tokenize_name(column_name: object) -> list[str]:
 
 
 def _is_id_like(column_name: object) -> bool:
-    """True if a column NAME is ID-like by token-boundary matching.
+    """True if a column NAME is ID-like by WHOLE-TOKEN matching.
 
-    Short ambiguous patterns (``id``, ``case``, ``plate``, ``ssn``, ``dob``)
-    match only a WHOLE token, so they no longer fire on ``valid``, ``raids``,
-    ``casein``, ``plateau`` and the like. Longer unambiguous patterns (``zip``,
-    ``zipcode``, ``fips``, ``phone``, ``account``, ``license``) keep contains
-    matching so ``zip_code``/``ZipCode``/``phone_number`` still match.
+    EVERY pattern (short or long) matches only when it equals a whole token, so
+    none fire on a word that merely CONTAINS the pattern: ``valid``/``raids``/
+    ``casein``/``plateau`` (short patterns) and ``microphone_level``/
+    ``zipper_count``/``accountability_score`` (long patterns) all stay numeric.
+    Genuine ID names still match via their tokens: ``zip``, ``zip_code``,
+    ``zipcode``, ``phone_number``, ``account_id``, ``fips``, ``case_number``,
+    ``caseNumber``, ``ssn``, ``plate``, ``dob``. An operator can force an
+    unmatched edge-case ID column to text via ``text_columns``; every coerced
+    column is listed in ``report["text_columns"]`` so a missed/extra one shows.
     """
-    tokens = _tokenize_name(column_name)
-    if any(tok in ID_LIKE_WHOLE_TOKEN_PATTERNS for tok in tokens):
-        return True
-    norm = _normalize_name(column_name)
-    return any(pat in norm for pat in ID_LIKE_SUBSTRING_PATTERNS)
+    return any(tok in ID_LIKE_TOKEN_PATTERNS for tok in _tokenize_name(column_name))
 
 
 def _resolve_text_columns(
@@ -449,9 +473,14 @@ def _load_csv(
     resolved_text = _resolve_text_columns(header_df.columns, text_columns)
 
     # Pass 2: the real read. dtype=str on the whitelisted columns preserves
-    # leading zeros. empty_null is implemented via na_values=[""] +
-    # keep_default_na so an empty cell becomes NaN even inside a dtype=str
-    # column; with empty_null=False we keep "" literally in str columns.
+    # leading zeros. empty_null is implemented with a NARROW NA set: ONLY a
+    # literal empty / whitespace cell becomes NA. keep_default_na is FALSE so
+    # pandas does NOT additionally apply its default NA spellings -- a cell that
+    # literally contains "N/A", "NULL", "NaN", "None" survives as that STRING,
+    # never silently nulled before derive_has_case / keyword matching sees it.
+    # (Sweeping the default spellings would contradict the module's narrow-NA
+    # contract; see _EMPTY_NA_VALUES.) With empty_null=False we keep "" literally
+    # in str columns (post-fixed below via na_filter=False).
     dtype = {col: str for col in resolved_text}
     read_kwargs: dict[str, Any] = {
         "encoding": used_encoding,
@@ -459,17 +488,15 @@ def _load_csv(
         "dtype": dtype,
     }
     if empty_null:
-        # Treat empty / whitespace cells as NA everywhere (including str cols).
+        # ONLY empty/whitespace cells are NA; default NA spellings are kept as
+        # their literal strings (keep_default_na=False is load-bearing here).
         read_kwargs["na_values"] = list(_EMPTY_NA_VALUES)
-        read_kwargs["keep_default_na"] = True
+        read_kwargs["keep_default_na"] = False
     else:
-        # Opt out of ""->NA: do not add "" to na_values, and stop pandas from
-        # treating its default empty-string NA token inside str columns.
-        read_kwargs["keep_default_na"] = True
+        # Opt out of ""->NA as well: disable all of pandas' default NA tokens and
+        # add nothing to na_values. We restore literal "" in str columns below.
+        read_kwargs["keep_default_na"] = False
         read_kwargs["na_values"] = []
-        # With keep_default_na True, pandas still maps "" -> NaN for object
-        # columns by default; force the str columns to retain "". We post-fix
-        # below rather than fight read_csv's NA machinery.
 
     df = pd.read_csv(path, **read_kwargs)
 

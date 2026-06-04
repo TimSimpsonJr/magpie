@@ -149,6 +149,88 @@ def test_empty_null_default_is_true():
 
 
 # ==========================================================================
+# 3.1.c'  empty_null is NARROW: only literal empty/space cells become NA
+# (regression: CRITICAL 1 -- the empty_null=True read used keep_default_na=True,
+#  so pandas ALSO applied its default NA spellings and a cell literally
+#  containing "N/A" / "NULL" / "NaN" / "None" was silently turned into NaN --
+#  data loss before derive_has_case / keyword matching ever sees it, in direct
+#  contradiction of the module's narrow-NA contract. ONLY a literal empty/space
+#  cell may become NA.)
+# ==========================================================================
+
+def test_empty_null_preserves_literal_na_sentinels(tmp_path):
+    # A column literally containing "N/A", "NULL", "NaN", "None" plus a genuinely
+    # empty cell. With empty_null=True ONLY the empty cell may become NA; the
+    # default-NA spellings must survive as STRINGS (pre-fix keep_default_na=True
+    # nullified N/A / NULL / NaN / None).
+    p = tmp_path / "literal_na.csv"
+    p.write_bytes(
+        b"row,note\n"
+        b"r1,N/A\n"
+        b"r2,NULL\n"
+        b"r3,NaN\n"
+        b"r4,None\n"
+        b"r5,\n"          # genuinely empty cell -> the ONLY NA
+        b"r6,plain\n"
+    )
+    result = load_table(p, empty_null=True)
+    note = result.df["note"]
+    # The four literal sentinels survive verbatim as strings (NOT nulled).
+    assert note.iloc[0] == "N/A"
+    assert note.iloc[1] == "NULL"
+    assert note.iloc[2] == "NaN"
+    assert note.iloc[3] == "None"
+    assert not note.iloc[:4].isna().any(), (
+        f"literal NA spellings were silently nulled: {note.tolist()!r}"
+    )
+    # Only the empty cell is NA.
+    assert pd.isna(note.iloc[4])
+    assert note.iloc[5] == "plain"
+
+
+def test_empty_null_preserves_literal_na_in_text_whitelist_column(tmp_path):
+    # Same contract on a whitelisted TEXT column (dtype=str path). A case_number
+    # literally redacted as the string "NULL" must NOT vanish before the
+    # ***-vs-blank-vs-NULL rigor distinction downstream can weigh it.
+    p = tmp_path / "literal_na_id.csv"
+    p.write_bytes(
+        b"case_number,amount\n"
+        b"NULL,1\n"
+        b"N/A,2\n"
+        b"00891,3\n"
+        b",4\n"           # empty -> NA
+    )
+    result = load_table(p, empty_null=True)
+    assert "case_number" in result.report["text_columns"]
+    cn = result.df["case_number"]
+    assert cn.iloc[0] == "NULL"
+    assert cn.iloc[1] == "N/A"
+    assert cn.iloc[2] == "00891"   # leading zero still preserved
+    assert pd.isna(cn.iloc[3])     # only the empty cell is NA
+
+
+def test_empty_null_false_also_preserves_literal_na_sentinels(tmp_path):
+    # Consistency check (the empty_null=False path): opting out of ""->NA must
+    # ALSO leave the default-NA spellings as literal strings (it must not nullify
+    # N/A / NULL either), and an empty cell stays "" rather than NaN.
+    p = tmp_path / "literal_na_false.csv"
+    p.write_bytes(
+        b"row,note\n"
+        b"r1,N/A\n"
+        b"r2,NULL\n"
+        b"r3,\n"           # empty cell -> stays "" (opted out of ""->NA)
+        b"r4,plain\n"
+    )
+    result = load_table(p, empty_null=False)
+    note = result.df["note"]
+    assert note.iloc[0] == "N/A"
+    assert note.iloc[1] == "NULL"
+    assert note.iloc[2] == ""       # empty kept literally, not NA
+    assert note.iloc[3] == "plain"
+    assert not note.isna().any()
+
+
+# ==========================================================================
 # 3.1.d  XLSX merged cells (vertical label fills its region)
 # ==========================================================================
 
@@ -343,15 +425,23 @@ def test_utf8_auto_detect_is_high_confidence(tmp_path):
 
 # ==========================================================================
 # 3.1.b'  TEXT-whitelist matches on TOKEN BOUNDARIES, not raw substrings
-# (regression: CRITICAL 2 -- naive substring matching coerced real numeric
-#  columns to text because "id"/"case"/"plate"/"ssn" appeared inside "valid",
-#  "incident_count", "plateau", "casein", ... which breaks the stats.py consumer
-#  that casts the column to float. Short ambiguous patterns must match only a
-#  WHOLE token; longer unambiguous ones keep contains matching.)
+# (regression: naive substring matching coerced real numeric columns to text
+#  because "id"/"case"/"plate"/"ssn" appeared inside "valid", "incident_count",
+#  "plateau", "casein", ... which breaks the stats.py consumer that casts the
+#  column to float. IMPORTANT 3 extends this: the LONG patterns
+#  (zip/phone/account/...) used to keep substring matching, so "microphone_level"
+#  / "zipper_count" / "accountability_score" were ALSO mis-coerced. Whole-token
+#  matching is now applied UNIFORMLY to every pattern.)
 # ==========================================================================
 
 # Names that look ID-ish to a substring matcher but are real (often numeric)
 # columns -- these must NOT be coerced to text.
+#
+# The first group trips the SHORT patterns (id/case/plate/ssn/dob inside
+# valid/casein/plateau/...); the second group (IMPORTANT 3) trips the LONG
+# patterns under the old substring branch -- "microphone_level" contains
+# "phone", "zipper_count" contains "zip", "accountability_score" contains
+# "account". Whole-token matching, applied UNIFORMLY, must reject all of them.
 NOT_ID_LIKE_NAMES = [
     "valid",
     "valid_flag",
@@ -367,6 +457,10 @@ NOT_ID_LIKE_NAMES = [
     "plateau",
     "casein",
     "midpoint",
+    # IMPORTANT 3: long-pattern substring false positives.
+    "microphone_level",      # contains "phone"
+    "zipper_count",          # contains "zip"
+    "accountability_score",  # contains "account"
 ]
 
 # Genuine ID-like names that MUST be coerced to text (leading-zero safety).
@@ -379,10 +473,12 @@ ID_LIKE_NAMES = [
     "case_number",
     "caseNumber",
     "Account_ID",
+    "account_id",
     "phone_number",
     "ssn",
     "plate",
     "plate_number",
+    "dob",
 ]
 
 
@@ -421,8 +517,8 @@ def test_false_positive_numeric_column_stays_numeric_end_to_end(tmp_path):
 
 def test_true_positive_id_columns_coerced_end_to_end(tmp_path):
     # The genuine ID columns still load as text and keep leading zeros, via the
-    # token matcher (whole-token "case", camelCase-split "caseNumber"/"Account_ID",
-    # substring "zip"/"phone").
+    # token matcher (whole-token "case"/"zip"/"phone", camelCase-split
+    # "caseNumber"/"Account_ID", separator-split "zip_code"/"phone_number").
     p = tmp_path / "ids.csv"
     p.write_bytes(
         b"zip_code,caseNumber,Account_ID,phone_number,amount\n"
@@ -436,6 +532,41 @@ def test_true_positive_id_columns_coerced_end_to_end(tmp_path):
     assert result.df["zip_code"].iloc[0] == "07054"
     assert result.df["Account_ID"].iloc[0] == "007"
     # The plain numeric "amount" is untouched.
+    assert "amount" not in result.report["text_columns"]
+
+
+def test_long_pattern_substring_false_positives_stay_numeric_end_to_end(tmp_path):
+    # IMPORTANT 3 end-to-end: columns that merely CONTAIN a long whitelist
+    # pattern -- "microphone_level" (phone), "zipper_count" (zip),
+    # "accountability_score" (account) -- must load NUMERIC, not text. The pre-fix
+    # substring branch coerced all three, which would break stats.py's float cast.
+    p = tmp_path / "long_fp.csv"
+    p.write_bytes(
+        b"agency,microphone_level,zipper_count,accountability_score\n"
+        b"PD-1,3,10,88\n"
+        b"PD-2,7,20,91\n"
+    )
+    result = load_table(p)
+    assert result.report["text_columns"] == []
+    for col in ("microphone_level", "zipper_count", "accountability_score"):
+        assert pd.api.types.is_numeric_dtype(result.df[col]), (
+            f"{col!r} was coerced to text but should stay numeric"
+        )
+
+
+def test_single_token_zipcode_and_fips_coerce_end_to_end(tmp_path):
+    # Single-word ID columns with no separator to split ("zipcode", "fips") must
+    # still match by whole token and keep leading zeros.
+    p = tmp_path / "single_tok.csv"
+    p.write_bytes(
+        b"zipcode,fips,amount\n"
+        b"07054,001,42\n"
+    )
+    result = load_table(p)
+    assert "zipcode" in result.report["text_columns"]
+    assert "fips" in result.report["text_columns"]
+    assert result.df["zipcode"].iloc[0] == "07054"
+    assert result.df["fips"].iloc[0] == "001"
     assert "amount" not in result.report["text_columns"]
 
 

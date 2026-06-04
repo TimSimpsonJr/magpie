@@ -320,6 +320,76 @@ def test_temporal_already_tzaware_source():
     assert out["hour_et"].tolist() == [14]
 
 
+def test_temporal_mixed_naive_and_aware_no_crash():
+    """IMPORTANT 4: a column MIXING naive and offset-bearing strings (plus junk)
+    must not raise.
+
+    A bare ``pd.to_datetime(..., format='mixed')`` yields an OBJECT series (or,
+    in pandas 3, raises "Mixed timezones detected") on such input, and the
+    subsequent ``.dt`` then blows up -- contradicting the unparseable -> NaT
+    promise. With source_tz=UTC both the naive "18:00" and the aware "18:00+00:00"
+    denote the same instant, so both land at 14:00 EDT; the junk row is NaT/NA.
+    """
+    df = pd.DataFrame(
+        {
+            "ts_utc": [
+                "2026-07-01 18:00:00",          # naive
+                "2026-07-01T18:00:00+00:00",    # offset-bearing (UTC)
+                "not a date",                   # junk
+            ]
+        }
+    )
+    out = derive_temporal_et(df, TEMPORAL_CONFIG)  # must NOT raise
+    # Both parseable rows -> 14:00 ET (UTC source: naive and +00:00 coincide).
+    assert out["hour_et"].iloc[0] == 14
+    assert out["hour_et"].iloc[1] == 14
+    assert out["date_et"].iloc[0] == pd.Timestamp("2026-07-01").date()
+    assert out["date_et"].iloc[1] == pd.Timestamp("2026-07-01").date()
+    assert out["dow_et"].iloc[0] == 2  # 2026-07-01 is a Wednesday
+    # Junk row -> NA / None throughout, never an exception.
+    assert pd.isna(out["hour_et"].iloc[2])
+    assert out["date_et"].iloc[2] is None or pd.isna(out["date_et"].iloc[2])
+    assert pd.isna(out["dow_et"].iloc[2])
+
+
+def test_temporal_mixed_offsets_no_crash():
+    """Mixed OFFSETS (not just naive+aware) also stay total and per-row correct.
+
+    +00:00 and +05:00 denote different instants; each must convert independently
+    rather than tripping the "mixed timezones" parse error.
+    """
+    df = pd.DataFrame(
+        {
+            "ts_utc": [
+                "2026-07-01T18:00:00+00:00",  # -> 14:00 EDT
+                "2026-07-01T18:00:00+05:00",  # 13:00 UTC -> 09:00 EDT
+            ]
+        }
+    )
+    out = derive_temporal_et(df, TEMPORAL_CONFIG)
+    assert out["hour_et"].tolist() == [14, 9]
+
+
+def test_temporal_mixed_naive_aware_non_utc_source():
+    """A non-UTC source_tz: the naive row is read as source_tz wall-clock, the
+    aware row keeps its absolute instant.
+
+    Naive "18:00" in America/Chicago (CDT, UTC-5) is 23:00 UTC -> 19:00 New_York;
+    the aware "18:00+00:00" is 14:00 New_York. This pins that naive members are
+    localized to source_tz (not silently treated as UTC).
+    """
+    cfg = {
+        "source_col": "ts",
+        "source_tz": "America/Chicago",
+        "target_tz": "America/New_York",
+    }
+    df = pd.DataFrame(
+        {"ts": ["2026-07-01 18:00:00", "2026-07-01T18:00:00+00:00"]}
+    )
+    out = derive_temporal_et(df, cfg)
+    assert out["hour_et"].tolist() == [19, 14]
+
+
 # --------------------------------------------------------------------------- #
 # derive_columns -- end-to-end, config-driven, no mutation
 # --------------------------------------------------------------------------- #

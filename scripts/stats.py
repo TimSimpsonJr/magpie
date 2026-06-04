@@ -20,12 +20,35 @@ import numpy as np
 import pandas as pd
 
 
+def _drop_nulls_to_float_array(values) -> np.ndarray:
+    """Magnitudes as a float ``ndarray`` with ALL pandas nulls dropped.
+
+    Filters every pandas missing sentinel -- ``None``, ``float('nan')``,
+    ``np.nan``, ``pd.NA``, ``NaT`` -- via :func:`pandas.isna`, which recognizes
+    all of them, BEFORE the float cast. This is load-bearing for the real
+    derive -> stats pipeline: ``derive_nets`` emits a nullable ``Int64`` whose
+    missing cells are ``pd.NA``, and a raw ``np.asarray(..., dtype=float)`` would
+    either raise on ``pd.NA`` (it cannot be floated) or let ``np.nan`` through
+    and poison the result with ``nan``. Dropping the nulls first keeps the
+    statistic well-defined over the present values only.
+
+    Accepts any iterable (a list, a tuple, a numpy array, an ``Int64`` extension
+    array, or a :class:`pandas.Series`). ``pd.isna`` is applied per scalar, so a
+    plain Python ``None`` and a numpy ``nan`` are handled uniformly. Returns a
+    1-D ``float64`` array (possibly empty).
+    """
+    return np.asarray([v for v in values if not pd.isna(v)], dtype=float)
+
+
 def gini(values):
     """Gini coefficient of non-negative magnitudes (e.g., searches per agency).
 
     Returns a float in ``[0, 1]``: ``0.0`` is perfect equality (everyone the
     same), approaching ``1.0`` is total concentration (one actor holds it all).
-    ``None`` entries are dropped. An empty or all-zero input returns ``0.0``.
+    Pandas null sentinels (``None``, ``NaN``, ``pd.NA``, ``NaT``) are dropped --
+    so a nullable ``Int64`` column straight from ``derive_nets`` is safe and a
+    stray ``np.nan`` cannot poison the result into ``nan``. An empty or all-zero
+    input returns ``0.0``.
 
     Negative magnitudes are rejected with :class:`ValueError`. The Gini formula
     here assumes non-negative magnitudes; a negative value silently yields an
@@ -37,7 +60,7 @@ def gini(values):
         >>> gini([5, 5, 5, 5])
         0.0
     """
-    x = np.sort(np.asarray([v for v in values if v is not None], dtype=float))
+    x = np.sort(_drop_nulls_to_float_array(values))
     if x.size and x[0] < 0:
         raise ValueError(
             f"gini expects non-negative magnitudes; got negative value {x[0]:g}"
@@ -56,10 +79,10 @@ def top_k_share(counts, k_frac=0.01):
     so at least one actor is always counted. Returns ``sum(top k) / total``.
 
     In the pilot, the top 1% of agencies accounted for ~27% of all network
-    searches. ``None`` entries are dropped; empty / all-zero input returns
-    ``0.0``.
+    searches. Pandas null sentinels (``None``, ``NaN``, ``pd.NA``, ``NaT``) are
+    dropped; empty / all-zero input returns ``0.0``.
     """
-    x = np.sort(np.asarray([v for v in counts if v is not None], dtype=float))[::-1]
+    x = np.sort(_drop_nulls_to_float_array(counts))[::-1]
     n = x.size
     total = x.sum()
     if n == 0 or total == 0:
@@ -74,10 +97,10 @@ def bottom_half_share(counts):
     Actors are ranked by magnitude (ascending); the bottom ``N // 2`` are
     summed and divided by the total. In the pilot, the bottom half of agencies
     accounted for only ~2.5% of all searches (the long tail barely registers
-    against a few heavy users). ``None`` entries are dropped; empty / all-zero
-    input returns ``0.0``.
+    against a few heavy users). Pandas null sentinels (``None``, ``NaN``,
+    ``pd.NA``, ``NaT``) are dropped; empty / all-zero input returns ``0.0``.
     """
-    x = np.sort(np.asarray([v for v in counts if v is not None], dtype=float))
+    x = np.sort(_drop_nulls_to_float_array(counts))
     n = x.size
     total = x.sum()
     if n == 0 or total == 0:

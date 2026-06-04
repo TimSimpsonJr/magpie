@@ -141,6 +141,85 @@ def test_shares_empty_and_zero_are_zero():
 
 
 # --------------------------------------------------------------------------
+# 2.2'  gini / shares drop ALL pandas null sentinels (nan / pd.NA / NaT)
+# (regression: CRITICAL 2 -- the three functions filtered only ``v is not None``,
+#  so ``np.nan`` passed through and poisoned the result to ``nan`` while
+#  ``pd.NA`` broke the float cast outright. derive_nets emits a nullable Int64
+#  with pd.NA, so the real derive -> stats pipeline was NOT safe. ALL pandas
+#  null sentinels must be dropped, yielding the same answer as the null-free
+#  input -- never ``nan``, never a raise.)
+# --------------------------------------------------------------------------
+
+def test_gini_drops_np_nan_like_none():
+    # np.nan must be DROPPED (not propagated to a nan result, the pre-fix bug).
+    base = gini([5, 5, 5, 5])
+    assert gini([5, 5, np.nan, 5, 5, np.nan]) == base == 0.0
+    # A skewed distribution: nulls interleaved give the same Gini as without.
+    skewed = [0] * 50 + [100] * 5
+    assert gini(skewed + [np.nan, np.nan]) == pytest_approx(gini(skewed))
+
+
+def test_gini_drops_pd_na_from_int64_array():
+    # The EXACT shape derive_nets produces: a nullable Int64 extension array with
+    # pd.NA. Pre-fix this raised TypeError on the float cast. It must instead drop
+    # the NA and match the equivalent NA-free integers.
+    arr = pd.array([5, 5, 5, 5, pd.NA], dtype="Int64")
+    assert gini(arr) == gini([5, 5, 5, 5]) == 0.0
+    arr2 = pd.array([1, 2, 3, 4, pd.NA, pd.NA], dtype="Int64")
+    assert gini(arr2) == pytest_approx(gini([1, 2, 3, 4]))
+
+
+def test_gini_drops_nulls_from_series():
+    # A pandas Series carrying np.nan (the common float-column spelling of
+    # missing) must behave like its dropna()'d self.
+    ser = pd.Series([3.0, 1.0, np.nan, 2.0, 4.0, np.nan])
+    assert gini(ser) == pytest_approx(gini([3, 1, 2, 4]))
+
+
+def test_gini_negative_check_runs_after_null_drop():
+    # Null-filtering happens BEFORE the negative guard, exactly as for None.
+    import pytest
+
+    with pytest.raises(ValueError, match="non-negative"):
+        gini(pd.array([pd.NA, -1, 2], dtype="Int64"))
+    with pytest.raises(ValueError, match="non-negative"):
+        gini([np.nan, -5, 0, 5, 10])
+
+
+def test_top_k_share_drops_all_null_sentinels():
+    base = top_k_share([100, 1, 1, 1], k_frac=0.25)
+    # np.nan and a pd.NA-bearing Int64 array both match the null-free answer.
+    assert top_k_share([100, 1, np.nan, 1, 1], k_frac=0.25) == pytest_approx(base)
+    arr = pd.array([100, 1, 1, 1, pd.NA], dtype="Int64")
+    assert top_k_share(arr, k_frac=0.25) == pytest_approx(base)
+    # A Series with nan, too.
+    assert top_k_share(pd.Series([100, 1, 1, 1, np.nan]), k_frac=0.25) == pytest_approx(base)
+
+
+def test_bottom_half_share_drops_all_null_sentinels():
+    base = bottom_half_share([1, 1, 1, 1, 100, 100])
+    assert bottom_half_share([1, 1, np.nan, 1, 1, 100, 100]) == pytest_approx(base)
+    arr = pd.array([1, 1, 1, 1, 100, 100, pd.NA], dtype="Int64")
+    assert bottom_half_share(arr) == pytest_approx(base)
+    assert bottom_half_share(
+        pd.Series([1, 1, 1, 1, 100, 100, np.nan])
+    ) == pytest_approx(base)
+
+
+def test_stats_pipeline_safe_on_derive_nets_output():
+    # End-to-end shape: feed the literal Int64-with-pd.NA series a derive step
+    # produces straight into all three concentration stats -- none may raise or
+    # return nan; each matches the present-values-only computation.
+    nets = pd.array([4, 0, 9, pd.NA, 2, pd.NA, 7], dtype="Int64")
+    present = [4, 0, 9, 2, 7]
+    g = gini(nets)
+    assert not math.isnan(g)
+    assert g == pytest_approx(gini(present))
+    assert top_k_share(nets, k_frac=0.5) == pytest_approx(top_k_share(present, k_frac=0.5))
+    assert bottom_half_share(nets) == pytest_approx(bottom_half_share(present))
+
+
+# --------------------------------------------------------------------------
 # 2.3 median_by_category
 # --------------------------------------------------------------------------
 

@@ -336,7 +336,11 @@ def derive_temporal_et(df: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFr
     via stdlib :mod:`zoneinfo`, so DST is handled correctly (ET is UTC-4 in
     summer, UTC-5 in winter; a single July-vs-January pair lands at the right
     wall-clock hour). A source value that already carries a UTC offset is
-    converted directly rather than double-localized.
+    converted directly rather than double-localized. A column that MIXES naive
+    and offset-bearing strings (or mixes offsets) does NOT raise: each aware row
+    keeps its absolute instant and each naive row is read as ``source_tz``
+    wall-clock, so the transform stays total (the ``.dt`` path is guaranteed a
+    uniform tz-aware series, never an object/mixed one).
 
     From the target-zone wall clock it derives:
 
@@ -353,21 +357,16 @@ def derive_temporal_et(df: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFr
     source_tz = config.get("source_tz", "UTC")
     target_tz = config["target_tz"]
 
-    # format="mixed" parses each element on its own (robust for heterogeneous
-    # real-world timestamps) and silences pandas' infer-format UserWarning.
-    parsed = pd.to_datetime(df[config["source_col"]], errors="coerce", format="mixed")
-
-    # Localize naive instants to the source zone; if the column already carries
-    # tz info (an offset was present in the strings), convert straight across.
-    if parsed.dt.tz is None:
-        # ambiguous/nonexistent local times (DST edges in the SOURCE zone) ->
-        # NaT rather than raising, keeping the transform total.
-        localized = parsed.dt.tz_localize(
-            source_tz, ambiguous="NaT", nonexistent="NaT"
-        )
-    else:
-        localized = parsed
-    converted = localized.dt.tz_convert(target_tz)
+    # Parse to a UNIFORM tz-aware (UTC) series so the .dt accessor below can
+    # never raise -- even on a column that MIXES naive and offset-bearing strings
+    # (or mixed offsets). A bare ``pd.to_datetime(..., format="mixed")`` returns
+    # an OBJECT series (or, in pandas 3, raises "Mixed timezones detected") on
+    # such input, and the subsequent ``.dt`` then blows up, contradicting the
+    # unparseable-row -> NaT promise. ``_parse_to_utc`` instead yields a single
+    # ``datetime64[*, UTC]`` series with unparseable rows as NaT.
+    converted = _parse_to_utc(df[config["source_col"]], source_tz).dt.tz_convert(
+        target_tz
+    )
 
     # date: a NaT must yield None (not pandas' NaT-as-object) for clean equality.
     date_et = converted.dt.date.where(converted.notna(), other=None)
@@ -378,6 +377,55 @@ def derive_temporal_et(df: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFr
         {"date_et": date_et, "hour_et": hour_et, "dow_et": dow_et},
         index=df.index,
     )
+
+
+def _ts_is_aware(value: Any) -> bool:
+    """True iff ``value`` parses to a tz-AWARE timestamp (carries an offset).
+
+    Unparseable / null values are treated as not-aware (they become NaT and are
+    handled by the naive branch, which also yields NaT). Used to split a mixed
+    column into its aware and naive members so each is localized correctly.
+    """
+    try:
+        ts = pd.Timestamp(value)
+    except (ValueError, TypeError, OverflowError):
+        return False
+    return ts.tz is not None
+
+
+def _parse_to_utc(source: pd.Series, source_tz: str) -> pd.Series:
+    """Parse a heterogeneous timestamp column to a uniform ``datetime64[*, UTC]``.
+
+    Total and never raises, even on input that mixes naive strings with
+    offset-bearing strings (or mixes offsets):
+
+    * AWARE rows (an offset was present) keep their absolute instant -- parsed
+      with ``utc=True`` so every offset is normalized to the same UTC instant.
+    * NAIVE rows (no offset) are interpreted as wall-clock time in ``source_tz``,
+      then converted to UTC. (A plain ``utc=True`` parse would WRONGLY treat a
+      naive string as UTC; when ``source_tz`` is not UTC that shifts the hour, so
+      the naive members are localized separately.)
+    * Unparseable rows (junk, ``""``, ``None``) -> ``NaT``.
+
+    DST edges in the SOURCE zone (ambiguous/nonexistent naive wall-clock times)
+    map to ``NaT`` rather than raising, keeping the transform total.
+    """
+    s = source.astype("object")
+
+    # Aware rows: utc=True normalizes any offset to a common UTC instant. Naive
+    # rows are (wrongly) treated as UTC here, so we overwrite them below.
+    aware_utc = pd.to_datetime(s, errors="coerce", utc=True, format="mixed")
+
+    aware_mask = s.map(_ts_is_aware)
+
+    # Naive rows only: recover the wall clock, localize to source_tz, -> UTC.
+    naive_wall = pd.to_datetime(s.where(~aware_mask), errors="coerce", format="mixed")
+    naive_utc = naive_wall.dt.tz_localize(
+        source_tz, ambiguous="NaT", nonexistent="NaT"
+    ).dt.tz_convert("UTC")
+
+    # Index-safe combine: aware rows from aware_utc, naive rows from naive_utc.
+    return aware_utc.where(aware_mask, other=naive_utc)
 
 
 # --------------------------------------------------------------------------- #
