@@ -146,7 +146,23 @@ def sweep(
         "efficiency_ratio": (n_nonblank / n_distinct) if n_distinct else None,
         "categories": categories,
     }
-    # exposure + local_texts added in Tasks 4 & 5.
+
+    broad_only = (BROAD_ONLY_PATTERN_NAMES if broad_only_names is None
+                  else frozenset(broad_only_names))
+    strict_names = [n for n in patterns if n not in broad_only]
+    broad_only_present = [n for n in patterns if n in broad_only]
+    strict_bool, broad_bool = [], []
+    for i in range(n_distinct):
+        strict_i = any(regex_hits[n][i] for n in strict_names)
+        broad_i = strict_i or unknown[i] or any(regex_hits[n][i] for n in broad_only_present)
+        strict_bool.append(strict_i)
+        broad_bool.append(broad_i)
+
+    result["exposure"] = {
+        "strict": _tally(counts, strict_bool),   # publishable headline (high-precision PII)
+        "broad": _tally(counts, broad_bool),     # + name-leads + possible_birthdate
+    }
+    # local_texts added in Task 5.
     return result
 
 

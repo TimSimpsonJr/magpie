@@ -11,6 +11,17 @@ class FakePersonClassifier:
                             unknown_role="<<PERSON>>" in t) for t in texts]
 
 
+class RecordingFakeClassifier:
+    """Records the texts it was called with, so a test can PROVE NER ran over
+    DISTINCT texts (n_distinct calls), not every row."""
+    def __init__(self):
+        self.seen = None
+    def __call__(self, texts):
+        self.seen = list(texts)
+        return [PersonFlags(official="<<OFFICIAL>>" in t,
+                            unknown_role="<<PERSON>>" in t) for t in texts]
+
+
 def test_distinct_texts_strips_outer_whitespace_and_drops_blanks():
     s = pd.Series(["John ", "John", "  ", "", None, "Mary", "Mary"])
     texts, counts = distinct_texts(s)
@@ -71,3 +82,64 @@ def test_sweep_classifies_official_vs_unknown_role():
     r = sweep(s, person_classifier=FakePersonClassifier())
     assert r["categories"]["person_official"]["distinct"] == 1
     assert r["categories"]["person_unknown_role"]["distinct"] == 1
+
+
+def test_exposure_strict_excludes_birthdate_and_officials():
+    s = pd.Series([
+        "ssn 123-45-6789",          # strict + broad
+        "04/12/1989",               # BARE date -> possible_birthdate, broad ONLY
+        "<<PERSON>> a name",        # unknown_role -> broad only
+        "<<OFFICIAL>> Sgt Doe",     # official -> neither exposure metric
+    ])
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["exposure"]["strict"]["distinct"] == 1            # only the ssn row
+    assert r["exposure"]["broad"]["distinct"] == 3             # ssn + bare date + name
+    assert r["categories"]["possible_birthdate"]["distinct"] == 1
+    assert r["categories"]["person_official"]["distinct"] == 1  # reported, NOT exposure
+
+
+def test_dob_keyword_is_strict_but_bare_date_is_not():
+    # explicit "DOB" label = high-precision PII (strict); a bare date = a lead.
+    r = sweep(pd.Series(["see DOB on file", "stopped 04/12/1989"]),
+              person_classifier=FakePersonClassifier())
+    assert r["categories"]["dob_kw"]["distinct"] == 1
+    assert r["exposure"]["strict"]["distinct"] == 1            # the DOB-label row only
+    assert r["exposure"]["broad"]["distinct"] == 2            # + the bare-date row
+
+
+def test_mixed_official_plus_ssn_hits_strict_headline():
+    s = pd.Series(["<<OFFICIAL>> Sgt Doe ssn 123-45-6789"])
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["exposure"]["strict"]["distinct"] == 1            # SSN is exposure regardless
+    assert r["categories"]["person_official"]["distinct"] == 1
+
+
+def test_classifier_runs_over_distinct_texts_not_every_row():
+    rec = RecordingFakeClassifier()
+    sweep(pd.Series(["ssn 123-45-6789"] * 50 + ["clean"] * 3), person_classifier=rec)
+    assert rec.seen is not None and len(rec.seen) == 2         # n_distinct, NOT 53
+
+
+def test_exposure_is_a_per_text_union_not_a_sum_of_categories():
+    # one text matches TWO strict patterns: the row counts ONCE in exposure but
+    # in BOTH categories -> sum(category weighted) != exposure weighted.
+    s = pd.Series(["ssn 123-45-6789 ph 864-555-1212"] * 10)
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["categories"]["ssn"]["weighted"] == 10 and r["categories"]["phone"]["weighted"] == 10
+    assert r["exposure"]["strict"]["weighted"] == 10           # union (10), NOT the sum (20)
+    assert r["exposure"]["strict"]["distinct"] == 1
+
+
+def test_weighting_matches_naive_per_row_scan():
+    s = pd.Series(["A123456789"] * 7 + ["clean"] * 2 + ["x@y.org"] * 4)
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["exposure"]["broad"]["weighted"] == 11            # 7 A# rows + 4 email rows
+    assert r["exposure"]["strict"]["weighted"] == 11
+    for cat in r["categories"].values():
+        assert cat["weighted"] >= cat["distinct"]
+
+
+def test_efficiency_ratio():
+    s = pd.Series(["dup"] * 6 + ["uniq"])
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["efficiency_ratio"] == 7 / 2                      # 7 nonblank rows / 2 distinct
