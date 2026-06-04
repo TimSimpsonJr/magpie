@@ -129,8 +129,13 @@ def sweep(
     n_nonblank = int(sum(counts))
 
     if person_classifier is None:
+        # Don't evaluate the truthiness of official_names: a caller may pass a
+        # pandas Series / numpy ndarray of distinct values (per SKILL.md), and
+        # `x or ()` on either raises "truth value ... is ambiguous". __init__
+        # iterates official_names and builds its own _lexicon, so just normalize
+        # None to an empty tuple and hand the container through as-is.
         person_classifier = SpacyPersonClassifier(
-            official_names=frozenset(official_names or ())
+            official_names=() if official_names is None else official_names
         )
     flags = list(person_classifier(texts))
     if len(flags) != n_distinct:

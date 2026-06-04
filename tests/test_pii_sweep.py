@@ -1,5 +1,6 @@
 import json
 
+import numpy as np
 import pandas as pd
 import pytest
 from scripts.pii_sweep import distinct_texts, text_id
@@ -192,6 +193,16 @@ def test_local_texts_opt_in_is_keyed_by_text_id_and_excludes_official_only():
     assert "ssn" in entry["categories"] and entry["count"] == 1
 
 
+def test_text_id_collision_in_local_texts_raises_loudly(monkeypatch):
+    # the local_texts builder must FAIL LOUD if two distinct PII-bearing texts
+    # collide on the truncated text_id (a silent overwrite would drop a redaction
+    # target). Force the collision by stubbing text_id to a constant.
+    monkeypatch.setattr("scripts.pii_sweep.text_id", lambda t: "COLLIDE")
+    s = pd.Series(["ssn 123-45-6789", "call 864-555-1212"])   # two distinct PII-bearing texts
+    with pytest.raises(ValueError, match="collision"):
+        sweep(s, person_classifier=FakePersonClassifier(), collect_local_texts=True)
+
+
 def test_empty_input_is_safe_and_json_able():
     r = sweep(pd.Series([], dtype=object), person_classifier=FakePersonClassifier())
     assert r["efficiency_ratio"] is None                  # no fake 0
@@ -294,3 +305,23 @@ def test_sweep_wires_official_names_through_to_default_classifier(spacy_classifi
     r = sweep(pd.Series(["Dana Wheeler ran the plate"]), official_names={"dana wheeler"})
     assert r["categories"]["person_official"]["distinct"] == 1
     assert r["categories"]["person_unknown_role"]["distinct"] == 0
+
+
+@pytest.mark.spacy
+def test_sweep_lazy_default_accepts_pandas_numpy_official_names(spacy_classifier):
+    # SKILL.md tells callers to pass the structured searcher/user column's DISTINCT
+    # values as official_names (e.g. series.unique()). The lazy default path must
+    # NOT evaluate the truthiness of that container: a raw pd.Series (any length)
+    # and a multi-element numpy ndarray both raise "truth value ... is ambiguous"
+    # under the old `frozenset(official_names or ())`. Both must wire the lexicon
+    # through cleanly so the untitled official is attributed, not counted as PII.
+    text = pd.Series(["Dana Wheeler ran the plate"])
+    # (a) a raw pd.Series of distinct names -- ALWAYS raises on the old code.
+    r_series = sweep(text, official_names=pd.Series(["dana wheeler"]))
+    assert r_series["categories"]["person_official"]["distinct"] == 1
+    # (b) a numpy ndarray of distinct names (Series(...).unique() shape) with >1
+    #     element -- raises on the old code; a true distinct-value input.
+    names = pd.Series(["dana wheeler", "amy adams"], dtype=object).unique()
+    assert isinstance(names, np.ndarray)        # guard: this IS the ndarray path
+    r_ndarray = sweep(text, official_names=names)
+    assert r_ndarray["categories"]["person_official"]["distinct"] == 1
