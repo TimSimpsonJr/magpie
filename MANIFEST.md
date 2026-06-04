@@ -10,7 +10,7 @@ infra are later layers and are NOT yet present.
 
 ## Stack
 
-- **Language:** Python 3.12 (pinned 3.12.10). Claude Code plugin (`.claude-plugin/`); hard-depends on the `librarian` plugin.
+- **Language:** Python 3.12 (pinned 3.12.10 via `mise.toml`). Claude Code plugin (`.claude-plugin/`); hard-depends on the `librarian` plugin.
 - **Layer 0–1 deps (laptop-local, no Docker):** pandas 3.0.3, numpy 2.4.6, duckdb 1.5.3, pyarrow 24.0.0; pytest 9.0.3. Phase 3.1 adds openpyxl 3.1.5 (XLSX read/unmerge) + charset-normalizer 3.4.3 (encoding pre-flight). Phase 3.4 adds sqlite-utils 3.39 (build the served SQLite DB) + PyYAML 6.0.2 (test-only: validate the canned-query metadata); mcp-sqlite 0.3.2 runs via `uvx` (not pip-pinned) as a bundled read-only MCP server. Later phases append spaCy, Docling/OCR, Free Law x-ray.
 - **Shape:** `scripts/` invoked directly by skills; `pyproject.toml` configures pytest only (not a pip package).
 
@@ -53,9 +53,12 @@ docs/plans/
   2026-06-03-magpie-design.md     Full design doc — source of truth (two tracks A/B, Fieldwork suite & inter-member couplings, locked decisions, §5 components, §6.1 Flock data flow, §7 verification/safety, §9 testing).
   2026-06-03-magpie-layer-0-1.md  Layer 0–1 implementation plan: phased + TDD, research-gate-first for library code (Docling/x-ray/spaCy/mcp-sqlite). Phase 2 = the stats module above.
 pyproject.toml                pytest config only (pythonpath ["."], testpaths ["tests"]).
+mise.toml                     Dev env (mise): pins Python 3.12.10 + binds .venv (the deps live there); `test` + `bootstrap` tasks. Activation can't auto-load in the -NoProfile Claude Code PowerShell tool -- use `mise run`/`mise exec` (never bare `python`: it resolves to the global interpreter, possibly-mismatched deps).
 requirements-dev.txt          Layer 0–1 dev+runtime pins (pytest, pandas, duckdb, pyarrow, numpy; +openpyxl/charset-normalizer for 3.1; +sqlite-utils 3.39 for the 3.4 served-DB build; +PyYAML for the 3.4 wiring tests).
-.gitignore                    Python/venv/parquet ignores + a hard block that NEVER commits the Simpsonville/Flock PII corpus.
-README.md / LICENSE           Overview + MIT license.
+.gitignore                    Python/venv/parquet + .magpie/ + .codex-review/ ignores + a hard block that NEVER commits the Simpsonville/Flock PII corpus.
+tools/
+  codex-review.ps1            Dev helper: runs a Codex cross-model review with UTF-8 pinned end-to-end (PS 5.1 cp1252 pipe workaround). Prompt on stdin, read-only sandbox, -C <repo>; review -> .codex-review/ (gitignored). Used at phase boundaries while the build is on `main`.
+README.md / LICENSE           Overview (+ Development section: mise usage + the -NoProfile activation caveat) + MIT license.
 ```
 
 ## Key Relationships
@@ -69,5 +72,5 @@ README.md / LICENSE           Overview + MIT license.
 - **Private corpus is gitignored, by design.** The real Flock/Simpsonville FOIA data (names, DOBs, plate context) lives OUTSIDE the repo; `.gitignore` carries an explicit belt-and-suspenders block (`corpus/private/`, `*-Audit.csv`, `**/*[Ss]impsonville*[Aa]udit*`, exhibit files) so PII can never be committed. `corpus/public/` is reserved for the future redistributable sample.
 - **Hard dependency on Librarian.** `plugin.json` `dependencies: ["librarian"]` (and a manifest test asserting it) wires Magpie's findings output to the shared Librarian notes layer; this is auto-installed with Magpie. Soft couplings to Research / Prose Craft are design-level only, not yet wired.
 - **Plan → code traceability.** `docs/plans/2026-06-03-magpie-layer-0-1.md` is the executable plan and names `scripts/stats.py` as its Phase 2 deliverable; the design doc is its cited source of truth. The plan drives what lands next (per-source recipe, PII sweep, ingest), so the tree will grow under `scripts/`, `skills/`, and `agents/` as phases complete.
-- **Python is not on PATH in these sessions.** Per the layer-0-1 plan, the dev venv interpreter is invoked by full path (`...Python312\python.exe`); the manifest/stats tests assume `pythonpath ["."]` from `pyproject.toml`.
+- **Dev environment is mise-managed.** `mise.toml` pins Python 3.12.10 and binds the project `.venv` (which carries the deps). Run tests via `mise run test`, rebuild the venv via `mise run bootstrap`, run ad-hoc Python via `mise exec -- python ...`. The Claude Code PowerShell tool runs `-NoProfile`, so mise's bare-command *activation* can't auto-load there -- use `mise run`/`mise exec`, and never bare `python` (it resolves to the global interpreter, whose dep versions may differ from the venv -- e.g. global pandas 3.0.1 vs the venv's pinned 3.0.3). The always-works fallback is the explicit `.venv\Scripts\python.exe` path. Tests assume `pythonpath ["."]` from `pyproject.toml`.
 - **Layer framing.** Layer 0–1 (this repo's current scope) is pure local Python (stats flagship + future pandas/DuckDB recipe, spaCy, Docling, x-ray via mcp-sqlite). Track B (entity-network) and any docker-compose infra are later layers, not represented in the tree yet.

@@ -38,6 +38,9 @@ immigration_exhibit.csv
 # --- Cross-model-review plugin (local session / hook state) ---
 .claude/*.local.md
 
+# --- Codex review outputs (tools/codex-review.ps1; ephemeral, may quote PII-derived findings) ---
+.codex-review/
+
 # --- Session handoffs (local-only: internal process notes + local paths; public repo) ---
 docs/handoffs/
 

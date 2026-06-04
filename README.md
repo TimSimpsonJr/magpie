@@ -33,6 +33,27 @@ Magpie has two onramps (authored during the setup phase):
 Layer 0–1 runs on a laptop with no heavy infrastructure: pandas + DuckDB, spaCy,
 Docling, and Free Law `x-ray`, queried through a pinned read-only `mcp-sqlite`.
 
+## Development
+
+The dev environment is managed by [mise](https://mise.jdx.dev) (`mise.toml`),
+which pins the Python toolchain (3.12.10) and binds the project virtualenv.
+
+- **Run the tests:** `mise run test` (the full suite).
+- **Rebuild the venv** from `requirements-dev.txt`: delete `.venv`, then `mise run bootstrap`.
+- **Ad-hoc Python in the venv:** `mise exec -- python ...`.
+
+> **Windows / PowerShell note.** mise's shell *activation* (bare `python` /
+> `pytest`) relies on a prompt hook that only fires in an interactive shell.
+> Non-interactive one-shot shells — including the Claude Code PowerShell tool,
+> which runs `-NoProfile` — won't auto-activate, so use `mise run` / `mise exec --`
+> there. **Do not call bare `python`** in such a shell: it resolves to the global
+> interpreter, whose dependency versions may differ from the pinned venv. The
+> always-works fallback is the explicit venv path: `& .venv\Scripts\python.exe -m pytest`.
+
+`tools/codex-review.ps1` runs a Codex cross-model review with UTF-8 pinned
+end-to-end (a workaround for PowerShell 5.1's cp1252 pipe encoding); used at
+phase boundaries while the build is on `main`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The default tool stack is permissively licensed;

@@ -1,0 +1,26 @@
+# Magpie dev environment, managed by mise (https://mise.jdx.dev).
+#
+# Pins the Python toolchain and auto-activates the project virtualenv so that
+# bare `python` / `pip` / `pytest` resolve to .venv (which carries the project
+# deps) from the repo dir, without full-path workarounds. See README
+# "Development setup" for how this is wired into the PowerShell session.
+
+[tools]
+python = "3.12.10"
+
+[env]
+# Auto-create (if missing) + activate the project venv. When mise is active this
+# prepends .venv/Scripts (Windows) or .venv/bin to PATH, so `python`/`pytest`
+# are the venv's interpreter — which is where pandas/duckdb/pytest/etc. live.
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.test]
+description = "Run the full pytest suite (217 tests)"
+run = "python -m pytest"
+
+[tasks.bootstrap]
+description = "Install/refresh .venv deps from requirements-dev.txt (rebuild: delete .venv first, then run this)"
+run = [
+  "python -m pip install --upgrade pip",
+  "python -m pip install -r requirements-dev.txt",
+]
