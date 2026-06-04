@@ -105,7 +105,8 @@ in for "lineage theater."
     — lazily `spacy.load("en_core_web_lg", disable=[...])` on first call; runs
     `nlp.pipe(batch_size=256)`; for each PERSON ent (`len(text.strip())>2`)
     classifies **official** if a title token precedes the span (≤2 tokens) OR the
-    normalized span matches `official_names`, else **unknown_role**. Classification
+    span CONTAINS an `official_names` entry (normalized token-subset), else
+    **unknown_role**. Classification
     uses **token/context windows, never exact span strings** (spaCy spans
     over-extend, e.g. "Maria Gonzalez DOB").
   - Tests inject a **fake** classifier → the pure tally/regex/weight logic needs no
@@ -114,8 +115,9 @@ in for "lineage theater."
   (so `"John "`/`"John"` collapse), drop null/blank, **preserve case** (NER cares),
   `value_counts`.
 - `sweep(series, *, person_classifier=None, patterns=DEFAULT_PII_PATTERNS,
-  official_names=None, collect_local_texts=False) -> PiiSweepResult` — orchestrates
-  §4; if `person_classifier is None`, lazily builds
+  broad_only_names=None, official_names=None, collect_local_texts=False) ->
+  PiiSweepResult` — orchestrates §4 (`broad_only_names` defaults to
+  `BROAD_ONLY_PATTERN_NAMES`); if `person_classifier is None`, lazily builds
   `SpacyPersonClassifier(official_names=official_names or frozenset())`.
 
 ---
@@ -126,8 +128,9 @@ in for "lineage theater."
 1. texts, counts = distinct_texts(series)         # NER runs over DISTINCT only
 2. flags = person_classifier(texts)               # {official, unknown_role}/text
    regex[name][i] = bool(pattern.search(texts[i]))
-3. per text i: strict[i]  = any(structured-id pattern hit)
-               broad[i]   = strict[i] OR unknown_role[i] OR possible_birthdate[i]
+3. broad_only = broad_only_names or BROAD_ONLY_PATTERN_NAMES   # default {possible_birthdate}
+   per text i: strict[i] = any(pattern hit for name NOT in broad_only)
+               broad[i]  = strict[i] OR unknown_role[i] OR any(broad_only pattern hit)
 4. WEIGHTED tally[c] = sum(counts[i] where flag[c][i])    # ≡ a per-row scan
    DISTINCT tally[c] = count(i where flag[c][i])
 5. efficiency_ratio = n_nonblank_rows / n_distinct_texts  # the multiplier; None if 0
