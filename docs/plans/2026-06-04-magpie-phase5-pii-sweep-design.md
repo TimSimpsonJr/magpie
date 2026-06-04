@@ -58,18 +58,19 @@ over-claim is just as wrong: the non-official remainder is **not** provably
 
 ### 2.2 Two exposure metrics — strict headline + broad leads
 - **`exposure.strict`** — rows carrying a **high-precision PII pattern**: every
-  default pattern EXCEPT the ambiguous bare date — `ssn`, `phone`, `email`,
-  `dob_kw`, `alien_num`, `driver_lic`, `race_sex`. Defined as "not in the
+  default pattern EXCEPT the ambiguous ones (bare date, demographic ratio) —
+  `ssn`, `phone`, `email`, `dob_kw`, `alien_num`, `driver_lic`. Defined as "not in the
   broad-only set" — the default is `BROAD_ONLY_PATTERN_NAMES`, and a caller passing
   a custom `patterns` map marks its own ambiguous patterns via
   `sweep(broad_only_names=...)` (this is also how the Phase 11 compat profile folds
   `possible_birthdate` back into the headline). This is the **publishable
   headline**: each is an identifier or sensitive descriptor that should have been
-  sanitized. (`dob_kw`/`race_sex` are sensitive *descriptors*, not
-  literal IDs — hence "high-precision PII", not "structured identifiers".)
-- **`exposure.broad`** — `strict` ∪ `person_unknown_role` ∪ `possible_birthdate`:
-  the broader **review/leads** set (names not identified as officials; bare dates
-  that *might* be DOBs). Not a headline; the analyst escalates leads → verdicts via
+  sanitized. (`dob_kw` is a sensitive *descriptor*, not a literal ID — hence
+  "high-precision PII", not "structured identifiers".)
+- **`exposure.broad`** — `strict` ∪ `person_unknown_role` ∪ `possible_birthdate` ∪
+  `race_sex`: the broader **review/leads** set (names not identified as officials;
+  bare dates that *might* be DOBs; ambiguous demographic ratios like `H/M`). Not a
+  headline; the analyst escalates leads → verdicts via
   the human gate / `redact-output` exhibit.
 
 ### 2.3 Pattern decisions
@@ -80,6 +81,12 @@ over-claim is just as wrong: the non-official remainder is **not** provably
 - **`alien_num` = `A\d{8,9}`** (tightened from the prototype's `A\d{8,12}` to match
   `recipe.check_pii`; USCIS/EOIR put A-numbers at 7–9 digits). The pilot's `8,12`
   is a compatibility-profile override only.
+- **`race_sex` is broad-only** (code-quality refinement): a 2-char demographic ratio
+  (`B/M`) collides with prose (`"H/M ratio"`, `"W/M"`), so it is a lead, not the
+  headline — `possible_birthdate` and `race_sex` are the default broad-only set.
+- **`driver_lic` requires a digit in the body** (`(?=[A-Z0-9]*\d)[A-Z0-9]{6,}`) so a
+  bare `OL`/`DL` + an all-caps surname (`"OL HENDERSON"`) cannot inflate the strict
+  headline.
 - The full pattern set is **config-overridable** (`patterns=` argument); the module
   ships `DEFAULT_PII_PATTERNS`.
 

@@ -32,6 +32,18 @@ date: 2026-06-04
 
 ---
 
+> **Post-plan code-quality refinements (SDD review, commit `189aaaa`).** During
+> implementation the code-quality review tightened two strict-tier patterns for a
+> more defensible headline; the committed code + tests are the source of truth:
+> (1) **`driver_lic`** now requires a digit in the body
+> (`\b(?:OLN|DLN|DL|OL)\s?#?\s?(?=[A-Z0-9]*\d)[A-Z0-9]{6,}\b`), so `"OL HENDERSON"`
+> no longer matches; (2) **`race_sex` is demoted to broad-only** —
+> `BROAD_ONLY_PATTERN_NAMES = {"possible_birthdate", "race_sex"}` (a 2-char
+> demographic ratio is ambiguous with prose). Added tests: the empty-lexicon guard
+> (M2), a sweep-level blank-base test (M3), and a value_counts tie-order note (M4).
+> Design §2.2/§2.3 reflect these. The Task-2 snippets below show the pre-refinement
+> forms; defer to the code where they differ.
+
 ## Task 1: `distinct_texts` + `text_id` (pure foundation)
 
 **Files:**
