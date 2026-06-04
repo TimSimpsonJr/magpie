@@ -4,6 +4,7 @@ import pandas as pd
 from scripts.pii_sweep import distinct_texts, text_id
 from scripts.pii_sweep import DEFAULT_PII_PATTERNS, BROAD_ONLY_PATTERN_NAMES, _regex_hit
 from scripts.pii_sweep import PersonFlags, sweep
+from scripts.recipe import _DEFAULT_PII_PATTERNS as RECIPE_PII  # Phase 4 defaults (regex STRINGS)
 
 
 class FakePersonClassifier:
@@ -203,3 +204,13 @@ def test_custom_broad_only_names_marks_a_custom_pattern_as_a_lead():
     assert r["exposure"]["strict"]["distinct"] == 1        # ssn row only (mycode is broad-only)
     assert r["exposure"]["broad"]["distinct"] == 2         # + the mycode lead
     assert r["categories"]["mycode"]["distinct"] == 1
+
+
+def test_overlap_patterns_stay_consistent_with_recipe_check_pii():
+    """Decoupled modules (no imports either way); this tripwire fires if the
+    SHARED-INTENT patterns silently diverge. recipe stores regex STRINGS,
+    pii_sweep COMPILED -> compare `.pattern` to the string. recipe's `a_number`
+    is pii_sweep's `alien_num` (different key, same concept; both `A\\d{8,9}`)."""
+    overlap = {"ssn": "ssn", "phone": "phone", "email": "email", "alien_num": "a_number"}
+    for sweep_key, recipe_key in overlap.items():
+        assert DEFAULT_PII_PATTERNS[sweep_key].pattern == RECIPE_PII[recipe_key], sweep_key
