@@ -55,10 +55,13 @@ over-claim is just as wrong: the non-official remainder is **not** provably
 - Officials are **excluded** from every exposure metric.
 
 ### 2.2 Two exposure metrics — strict headline + broad leads
-- **`exposure.strict`** — rows carrying an unambiguous **structured identifier**
-  (`ssn`, `phone`, `email`, `dob_kw`, `alien_num`, `driver_lic`, `race_sex`). This
-  is the **publishable headline**: each is an identifier/sensitive descriptor that
-  should have been sanitized.
+- **`exposure.strict`** — rows carrying a **high-precision PII pattern**: every
+  default pattern EXCEPT the ambiguous bare date — `ssn`, `phone`, `email`,
+  `dob_kw`, `alien_num`, `driver_lic`, `race_sex`. Defined as "not in
+  `BROAD_ONLY_PATTERN_NAMES`", so a custom pattern set stays correct. This is the
+  **publishable headline**: each is an identifier or sensitive descriptor that
+  should have been sanitized. (`dob_kw`/`race_sex` are sensitive *descriptors*, not
+  literal IDs — hence "high-precision PII", not "structured identifiers".)
 - **`exposure.broad`** — `strict` ∪ `person_unknown_role` ∪ `possible_birthdate`:
   the broader **review/leads** set (names not identified as officials; bare dates
   that *might* be DOBs). Not a headline; the analyst escalates leads → verdicts via
@@ -156,9 +159,10 @@ category.
 ```
 
 **Redact seam (Phase 7), privacy-safe by construction:**
-- Every distinct text gets a stable **`text_id` = `sha256(text)`** (hex, truncated)
-  — case-preserved, post-strip. The publishable seam and any logged structure
-  reference **`text_id`**, never raw text.
+- Every distinct text gets a stable **`text_id` = `sha256(text.strip())`** (hex,
+  truncated, case-preserved — strips so it matches `distinct_texts`). It is the
+  **local** join key in `local_texts`; published notes carry the **aggregate tally
+  only** — no per-text data and no `text_id`s cross a published path.
 - Raw PII-bearing text is **opt-in only**: `collect_local_texts=False` by default.
   When `True`, the result also carries `local_texts: {text_id: {text, count,
   categories}}` for the skill to write a **local, non-vault** exhibit. Default-off

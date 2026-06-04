@@ -52,9 +52,10 @@ def test_distinct_texts_preserves_case():
     assert set(texts) == {"ICE", "ice"}        # NER is case-sensitive; do NOT lowercase
 
 
-def test_text_id_is_stable_and_truncated_hex():
+def test_text_id_is_stable_truncated_and_strip_consistent():
     a, b = text_id("John Smith"), text_id("John Smith")
     assert a == b and len(a) == 16 and a != text_id("Jane Smith")
+    assert text_id("John ") == text_id("John")   # strips like distinct_texts (join-safe)
 ```
 
 **Step 2: Run to verify they fail**
@@ -111,12 +112,13 @@ def distinct_texts(series: pd.Series) -> tuple[list[str], list[int]]:
 
 
 def text_id(text: str) -> str:
-    """Stable local join key for a distinct text: truncated sha256 hex.
-
-    Lets redact-output join PII-bearing texts WITHOUT raw text crossing a
-    published path. Case-preserved, post-strip (matches distinct_texts).
+    """Stable LOCAL join key for a distinct text: truncated sha256 hex of the
+    STRIPPED text, so it matches distinct_texts (``text_id("John ") ==
+    text_id("John")``). Case-preserved. redact-output joins on this id LOCALLY;
+    it never crosses a published path (published notes carry the aggregate tally
+    only -- design doc Section 7).
     """
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:16]
 ```
 
 **Step 4: Run to verify pass**
@@ -140,7 +142,7 @@ git commit -m "Phase 5.1: pii_sweep distinct_texts + text_id (TDD)" -m "Co-Autho
 **Step 1: Write the failing tests**
 
 ```python
-from scripts.pii_sweep import DEFAULT_PII_PATTERNS, STRICT_PATTERN_NAMES, _regex_hit
+from scripts.pii_sweep import DEFAULT_PII_PATTERNS, BROAD_ONLY_PATTERN_NAMES, _regex_hit
 
 def test_each_pattern_matches_positive_and_rejects_negative():
     pos = {
@@ -160,10 +162,12 @@ def test_alien_num_is_8_or_9_digits_not_more():
     assert not _regex_hit(DEFAULT_PII_PATTERNS["alien_num"], "A1234567")     # 7
     assert not _regex_hit(DEFAULT_PII_PATTERNS["alien_num"], "A1234567890")  # 10
 
-def test_possible_birthdate_is_not_a_strict_pattern():
-    # bare date is also an incident date -> broad-only, never the headline
-    assert "possible_birthdate" not in STRICT_PATTERN_NAMES
-    assert {"ssn", "phone", "email", "alien_num"} <= STRICT_PATTERN_NAMES
+def test_possible_birthdate_is_the_only_broad_only_pattern():
+    # a bare date is also an incident date -> broad-only; every OTHER default
+    # pattern is high-precision PII (counts toward the strict headline).
+    assert BROAD_ONLY_PATTERN_NAMES == {"possible_birthdate"}
+    assert {"ssn", "phone", "email", "alien_num", "dob_kw", "race_sex",
+            "driver_lic"}.isdisjoint(BROAD_ONLY_PATTERN_NAMES)
 ```
 
 **Step 2: Run — FAIL** (names not defined).
@@ -184,12 +188,14 @@ DEFAULT_PII_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
 }
 
-# Structured identifiers that count toward the STRICT (publishable) headline.
-# possible_birthdate is deliberately ABSENT (a bare date is also an incident
-# date) -> it lands only in the broad leads set.
-STRICT_PATTERN_NAMES: frozenset[str] = frozenset(
-    {"phone", "ssn", "email", "dob_kw", "alien_num", "driver_lic", "race_sex"}
-)
+# possible_birthdate is the ONLY broad-only pattern: a bare MM/DD/YYYY also
+# matches an INCIDENT date, so it is a lead, never the publishable headline.
+# Every OTHER pattern is high-precision PII and counts toward the STRICT headline.
+# (Defining the broad-only set -- rather than enumerating "strict" -- keeps the
+# rule correct even when a caller passes a custom `patterns` map, and names the
+# headline honestly: "high-precision PII", NOT "structured identifiers" -- dob_kw
+# and race_sex are sensitive descriptors, not IDs.)
+BROAD_ONLY_PATTERN_NAMES: frozenset[str] = frozenset({"possible_birthdate"})
 
 
 def _regex_hit(pattern: re.Pattern[str], text: str) -> bool:
@@ -306,9 +312,14 @@ def sweep(
 
 > NOTE: `sweep` references `SpacyPersonClassifier` (Task 7) only on the lazy
 > default path; tests inject a classifier, so Tasks 3–6 pass before Task 7 exists.
-> Add a forward stub `class SpacyPersonClassifier: ...` raising
-> `NotImplementedError` at the bottom now, replaced for real in Task 7, so the
-> module imports cleanly.
+> Add a forward stub at the bottom now so the module imports cleanly (it is never
+> instantiated until Task 7 — accept `*args/**kwargs` so the signature can't break):
+>
+> ```python
+> class SpacyPersonClassifier:  # real implementation lands in Task 7
+>     def __init__(self, *args, **kwargs):
+>         raise NotImplementedError("SpacyPersonClassifier is implemented in Task 7")
+> ```
 
 **Step 4: Run — PASS.**
 **Step 5: Commit** `"Phase 5.1: pii_sweep PersonClassifier seam + category tallies (TDD)"`.
@@ -322,17 +333,36 @@ def sweep(
 **Step 1: Write the failing tests**
 
 ```python
+class RecordingFakeClassifier:
+    """Records the texts it was called with, so a test can PROVE NER ran over
+    DISTINCT texts (n_distinct calls), not every row."""
+    def __init__(self):
+        self.seen = None
+    def __call__(self, texts):
+        self.seen = list(texts)
+        return [PersonFlags(official="<<OFFICIAL>>" in t,
+                            unknown_role="<<PERSON>>" in t) for t in texts]
+
 def test_exposure_strict_excludes_birthdate_and_officials():
     s = pd.Series([
         "ssn 123-45-6789",          # strict + broad
-        "dob is 04/12/1989",        # possible_birthdate -> broad only
+        "04/12/1989",               # BARE date -> possible_birthdate, broad ONLY
         "<<PERSON>> a name",        # unknown_role -> broad only
         "<<OFFICIAL>> Sgt Doe",     # official -> neither exposure metric
     ])
     r = sweep(s, person_classifier=FakePersonClassifier())
     assert r["exposure"]["strict"]["distinct"] == 1            # only the ssn row
-    assert r["exposure"]["broad"]["distinct"] == 3             # ssn + date + name
+    assert r["exposure"]["broad"]["distinct"] == 3             # ssn + bare date + name
     assert r["categories"]["possible_birthdate"]["distinct"] == 1
+    assert r["categories"]["person_official"]["distinct"] == 1  # reported, NOT exposure
+
+def test_dob_keyword_is_strict_but_bare_date_is_not():
+    # explicit "DOB" label = high-precision PII (strict); a bare date = a lead.
+    r = sweep(pd.Series(["see DOB on file", "stopped 04/12/1989"]),
+              person_classifier=FakePersonClassifier())
+    assert r["categories"]["dob_kw"]["distinct"] == 1
+    assert r["exposure"]["strict"]["distinct"] == 1            # the DOB-label row only
+    assert r["exposure"]["broad"]["distinct"] == 2            # + the bare-date row
 
 def test_mixed_official_plus_ssn_hits_strict_headline():
     s = pd.Series(["<<OFFICIAL>> Sgt Doe ssn 123-45-6789"])
@@ -340,13 +370,26 @@ def test_mixed_official_plus_ssn_hits_strict_headline():
     assert r["exposure"]["strict"]["distinct"] == 1            # SSN is exposure regardless
     assert r["categories"]["person_official"]["distinct"] == 1
 
-def test_weighting_invariant_matches_naive_per_row_scan():
+def test_classifier_runs_over_distinct_texts_not_every_row():
+    rec = RecordingFakeClassifier()
+    sweep(pd.Series(["ssn 123-45-6789"] * 50 + ["clean"] * 3), person_classifier=rec)
+    assert rec.seen is not None and len(rec.seen) == 2         # n_distinct, NOT 53
+
+def test_exposure_is_a_per_text_union_not_a_sum_of_categories():
+    # one text matches TWO strict patterns: the row counts ONCE in exposure but
+    # in BOTH categories -> sum(category weighted) != exposure weighted.
+    s = pd.Series(["ssn 123-45-6789 ph 864-555-1212"] * 10)
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["categories"]["ssn"]["weighted"] == 10 and r["categories"]["phone"]["weighted"] == 10
+    assert r["exposure"]["strict"]["weighted"] == 10           # union (10), NOT the sum (20)
+    assert r["exposure"]["strict"]["distinct"] == 1
+
+def test_weighting_matches_naive_per_row_scan():
     s = pd.Series(["A123456789"] * 7 + ["clean"] * 2 + ["x@y.org"] * 4)
     r = sweep(s, person_classifier=FakePersonClassifier())
-    # naive per-row: 7 rows have an A#, 4 have an email -> broad weighted == 11
-    assert r["exposure"]["broad"]["weighted"] == 11
+    assert r["exposure"]["broad"]["weighted"] == 11            # 7 A# rows + 4 email rows
     assert r["exposure"]["strict"]["weighted"] == 11
-    for cat in r["categories"].values():                       # weighted >= distinct always
+    for cat in r["categories"].values():
         assert cat["weighted"] >= cat["distinct"]
 
 def test_efficiency_ratio():
@@ -360,34 +403,25 @@ def test_efficiency_ratio():
 **Step 3: Implementation** — insert before `return result` in `sweep`:
 
 ```python
-    strict_names = [n for n in patterns if n in STRICT_PATTERN_NAMES]
-    has_birthdate = "possible_birthdate" in patterns
+    strict_names = [n for n in patterns if n not in BROAD_ONLY_PATTERN_NAMES]
+    broad_only_names = [n for n in patterns if n in BROAD_ONLY_PATTERN_NAMES]
     strict_bool, broad_bool = [], []
     for i in range(n_distinct):
         strict_i = any(regex_hits[n][i] for n in strict_names)
-        broad_i = strict_i or unknown[i] or (has_birthdate and regex_hits["possible_birthdate"][i])
+        broad_i = strict_i or unknown[i] or any(regex_hits[n][i] for n in broad_only_names)
         strict_bool.append(strict_i)
         broad_bool.append(broad_i)
 
     result["exposure"] = {
-        "strict": _tally(counts, strict_bool),   # publishable headline (structured IDs)
+        "strict": _tally(counts, strict_bool),   # publishable headline (high-precision PII)
         "broad": _tally(counts, broad_bool),     # + name-leads + possible_birthdate
     }
-    result["_strict_bool"] = strict_bool   # internal; consumed by Task 5, popped before return
-    result["_broad_bool"] = broad_bool
 ```
 
-…and at the very end of `sweep`, before `return result`, pop the internals:
-
-```python
-    result.pop("_strict_bool", None)
-    result.pop("_broad_bool", None)
-    return result
-```
-
-> (Task 5 reads `_broad_bool` to build `local_texts`; keep the pops as the last
-> lines so the returned dict is clean. If you prefer, compute `broad_bool` inline
-> in Task 5 instead of stashing — either is fine; do NOT leak `_`-keys.)
+> `strict_bool` / `broad_bool` stay LOCAL variables — Task 5's `local_texts` block
+> reads `broad_bool` directly (same function). NEVER stash bool lists in `result`;
+> `sweep` ends with a plain `return result`, so no `_`-prefixed key can leak (a
+> test in Task 5 asserts this explicitly, since `json.dumps` would not catch it).
 
 **Step 4: Run — PASS.**
 **Step 5: Commit** `"Phase 5.1: pii_sweep strict/broad exposure + weighting invariant (TDD)"`.
@@ -420,11 +454,32 @@ def test_empty_input_is_safe_and_json_able():
     assert r["efficiency_ratio"] is None                  # no fake 0
     assert r["exposure"]["strict"] == {"weighted": 0, "distinct": 0}
     json.dumps(r)                                          # native types only
+
+def test_internal_bool_lists_do_not_leak_into_the_result():
+    # _strict_bool / _broad_bool ARE json-serializable, so json.dumps() would not
+    # catch a leak -- assert the keys are absent explicitly.
+    r = sweep(pd.Series(["ssn 123-45-6789"]), person_classifier=FakePersonClassifier())
+    assert "_strict_bool" not in r and "_broad_bool" not in r
+
+def test_official_and_unknown_role_can_both_appear_in_one_text():
+    r = sweep(pd.Series(["<<OFFICIAL>> Sgt Doe stopped <<PERSON>>"]),
+              person_classifier=FakePersonClassifier())
+    assert r["categories"]["person_official"]["distinct"] == 1
+    assert r["categories"]["person_unknown_role"]["distinct"] == 1
+    assert r["exposure"]["broad"]["distinct"] == 1         # unknown_role -> broad
+    assert r["exposure"]["strict"]["distinct"] == 0        # no structured ID present
+
+def test_non_string_cells_do_not_crash_and_carry_no_pii():
+    s = pd.Series(["ssn 123-45-6789", 42, 3.14, None], dtype=object)
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["n_nonblank_rows"] == 3                        # None dropped; 42/3.14 kept as text
+    assert r["categories"]["ssn"]["distinct"] == 1
+    assert r["exposure"]["strict"]["distinct"] == 1
 ```
 
 **Step 2: Run — FAIL.**
 
-**Step 3: Implementation** — insert before the `_strict_bool`/`_broad_bool` pops:
+**Step 3: Implementation** — insert just before `return result` (reads the local `broad_bool`):
 
 ```python
     if collect_local_texts:
@@ -453,17 +508,17 @@ def test_empty_input_is_safe_and_json_able():
 **Step 1: Write the test**
 
 ```python
-from scripts.recipe import _DEFAULT_PII_PATTERNS as RECIPE_PII  # Phase 4's 4 defaults
+from scripts.recipe import _DEFAULT_PII_PATTERNS as RECIPE_PII  # Phase 4 defaults (regex STRINGS)
 from scripts.pii_sweep import DEFAULT_PII_PATTERNS
 
 def test_overlap_patterns_stay_consistent_with_recipe_check_pii():
-    """The modules are decoupled (no imports either way); this guards that the
-    SHARED-INTENT patterns don't silently diverge. Same regex strings for the
-    overlap; pii_sweep tightened alien_num deliberately, so assert that delta."""
-    for name in ("ssn", "phone", "email"):
-        assert DEFAULT_PII_PATTERNS[name].pattern == re.compile(RECIPE_PII[name]).pattern
-    # deliberate divergence: pii_sweep alien_num is the tighter 8,9 (recipe is 8,9 too)
-    assert DEFAULT_PII_PATTERNS["alien_num"].pattern == r"\bA\d{8,9}\b"
+    """Decoupled modules (no imports either way); this tripwire fires if the
+    SHARED-INTENT patterns silently diverge. recipe stores regex STRINGS,
+    pii_sweep COMPILED -> compare `.pattern` to the string. recipe's `a_number`
+    is pii_sweep's `alien_num` (different key, same concept; both `A\\d{8,9}`)."""
+    overlap = {"ssn": "ssn", "phone": "phone", "email": "email", "alien_num": "a_number"}
+    for sweep_key, recipe_key in overlap.items():
+        assert DEFAULT_PII_PATTERNS[sweep_key].pattern == RECIPE_PII[recipe_key], sweep_key
 ```
 
 > Verify `recipe._DEFAULT_PII_PATTERNS` key names + values first (it stores regex
@@ -506,6 +561,17 @@ def test_official_names_lexicon_marks_untitled_official(spacy_classifier):
     clf = spacy_classifier()(official_names={"dana wheeler"})  # built from the searcher field
     (f,) = clf(["Dana Wheeler ran the plate"])
     assert f.official
+
+def test_norm_name_tokens_keeps_internal_punctuation_drops_badge():
+    from scripts.pii_sweep import _norm_name_tokens            # PURE -- no model needed
+    assert _norm_name_tokens("O'Brien") == frozenset({"o'brien"})
+    assert _norm_name_tokens("Anne-Marie Diaz, #4471") == frozenset({"anne-marie", "diaz"})
+
+def test_sweep_wires_official_names_through_to_default_classifier(spacy_classifier):
+    # the LAZY default path: sweep() must build SpacyPersonClassifier(official_names=...)
+    r = sweep(pd.Series(["Dana Wheeler ran the plate"]), official_names={"dana wheeler"})
+    assert r["categories"]["person_official"]["distinct"] == 1
+    assert r["categories"]["person_unknown_role"]["distinct"] == 0
 ```
 
 > Assert PERSON **presence**, never span text (spaCy spans over-extend — verified
@@ -525,6 +591,21 @@ OFFICIAL_TITLES: frozenset[str] = frozenset({
 })
 
 
+def _norm_name_tokens(text: str) -> frozenset[str]:
+    """Normalize a name into comparable tokens for the officials lexicon: lower,
+    split on whitespace, strip SURROUNDING punctuation, keep tokens with >=1
+    letter. Internal apostrophes/hyphens survive ("o'brien", "anne-marie"); a
+    badge suffix like "#4471" drops. Used for BOTH the lexicon and the PERSON
+    span so they compare on the same footing (and span over-extension is safe --
+    extra span tokens never block a subset match)."""
+    out: set[str] = set()
+    for w in text.lower().split():
+        w = w.strip(".,'\"-#/()")
+        if any(ch.isalpha() for ch in w):
+            out.add(w)
+    return frozenset(out)
+
+
 class SpacyPersonClassifier:
     """Production PersonClassifier: spaCy PERSON NER + official/unknown split.
 
@@ -540,10 +621,8 @@ class SpacyPersonClassifier:
                  titles: frozenset[str] = OFFICIAL_TITLES,
                  model: str = "en_core_web_lg") -> None:
         self._lexicon = frozenset(
-            frozenset(w for w in n.lower().split() if w.isalpha())
-            for n in official_names
+            toks for toks in (_norm_name_tokens(n) for n in official_names) if toks
         )
-        self._lexicon = frozenset(s for s in self._lexicon if s)  # drop empties
         self._titles = frozenset(t.lower() for t in titles)
         self._model = model
         self._nlp = None
@@ -563,6 +642,9 @@ class SpacyPersonClassifier:
         for doc in nlp.pipe(list(texts), batch_size=256):
             official = unknown = False
             for ent in doc.ents:
+                # len>2 floor: drop 1-2 char PERSON false positives (initials).
+                # DELIBERATE default (matches the pilot); misses very short
+                # surnames like "Li"/"Ng" -- documented trade (user decision).
                 if ent.label_ != "PERSON" or len(ent.text.strip()) <= 2:
                     continue
                 if self._is_official(doc, ent):
@@ -573,8 +655,9 @@ class SpacyPersonClassifier:
         return out
 
     def _is_official(self, doc, ent) -> bool:
-        # (b) lexicon: some official's name token-set is contained in the span
-        span_tokens = {t.lower_ for t in ent if t.is_alpha}
+        # (b) lexicon: some official's normalized name-token-set is contained in
+        # the span (span over-extension is safe -- extra tokens don't block it).
+        span_tokens = _norm_name_tokens(ent.text)
         if self._lexicon and any(name <= span_tokens for name in self._lexicon):
             return True
         # (a) title/rank token immediately preceding the span (<=2 tokens back)
@@ -627,8 +710,9 @@ def test_skill_frontmatter_and_body():
   **officials lexicon** from the structured searcher/user/org column → `sweep(reason_series,
   official_names=lexicon)` → publish the **`exposure.strict`** headline + per-category tally via
   **Librarian**; route **`local_texts`** (opt-in) to a LOCAL non-vault exhibit for `redact-output`.
-- **The redact-output seam:** published notes carry the tally + `text_id`s only; raw names →
-  `redact-output` (Phase 7) joins on `text_id`, names→initials, exhibit local only (design §7).
+- **The redact-output seam:** published notes carry the AGGREGATE tally only (no per-text data,
+  no `text_id`s on any published path); the opt-in `local_texts` map (LOCAL, non-vault) is keyed
+  by `text_id` for `redact-output` (Phase 7) to join on — names→initials, exhibit local only (design §7).
 - **Rigor:** officials (named for accountability) excluded from exposure; `person_unknown_role`
   is a lead ("names not identified as officials"), not a verdict; `possible_birthdate` is broad-only;
   the ~400 MB model + ~1.5 s load; CPU-only.
