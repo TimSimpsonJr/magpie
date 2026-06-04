@@ -12,21 +12,35 @@ Design notes (verified against the Phase 3 research gate,
 
 * **Encoding pre-flight** uses ``charset-normalizer`` (already a transitive dep
   of ``requests``) to sniff a byte sample when the caller does not pin an
-  encoding. Statistical detection on a short sample can guess a *different*
-  single-byte codepage than the true one (e.g. ``cp1250`` for a latin-1 file),
-  but any of those reads the bytes without raising; the caller can always pin
-  ``encoding=`` for a byte-exact read. The report records both the encoding
-  used and whether it was sniffed.
-* **TEXT-whitelist.** Columns whose name matches an ID-like pattern (``zip``,
-  ``fips``, ``*id*``, ``case``, ``plate``, ``ssn``, ``phone``, ``account``,
-  ...) -- or any name the caller passes in ``text_columns`` -- load as strings
-  so leading zeros survive (``07054`` stays ``"07054"``, not the int ``7054``).
-  On the CSV path this is ``dtype=str`` for those columns; on the XLSX path it
-  is post-read coercion (pandas/openpyxl would otherwise int-ify them).
+  encoding. Single-byte / legacy codepages are INHERENTLY AMBIGUOUS: a short
+  sample can score several of them (``cp775``, ``latin-1``, ``cp1250``, ...)
+  identically because they decode the same bytes into *different* characters
+  without raising -- so there is no reliable silent auto-pick, and the detector
+  reporting high confidence does not mean it picked the right one. Detection is
+  therefore HONEST rather than silently confident: the report flags ambiguity
+  (``encoding_low_confidence``) and lists the rival candidates
+  (``encoding_alternatives``) so a caller/skill can require an explicit
+  ``encoding=``. Pin ``encoding=`` (e.g. ``"latin-1"``) for a byte-exact read;
+  the best-effort decode is still returned, but never presented as certain.
+* **TEXT-whitelist.** Columns whose name is ID-like load as strings so leading
+  zeros survive (``07054`` stays ``"07054"``, not the int ``7054``). Matching is
+  on TOKEN BOUNDARIES, not raw substrings: the name is lowercased and split on
+  separators and camelCase humps, then the short ambiguous patterns (``id``,
+  ``case``, ``plate``, ``ssn``, ``dob``) match only a WHOLE token while the
+  longer unambiguous ones (``zip``, ``zipcode``, ``fips``, ``phone``,
+  ``account``, ``license``) keep contains matching. This stops real numerics
+  like ``valid``, ``incident_count``, ``candidate_total``, ``casein`` from being
+  coerced to text (which would break the ``stats.py`` consumer), while still
+  catching ``zip_code``, ``caseNumber``, ``Account_ID``. Any name the caller
+  passes in ``text_columns`` is always honored. On the CSV path the whitelist is
+  ``dtype=str`` for those columns; on the XLSX path it is post-read coercion
+  (pandas/openpyxl would otherwise int-ify them).
 * **``empty_null``.** When True (default), empty-string cells read as missing
   (``NaN``) consistently across both paths. This keeps the downstream
   ``***``-vs-blank-vs-NULL rigor distinction honest (a redaction is present; a
-  blank is absent).
+  blank is absent). When False, the literal ``""`` is restored only in TEXT
+  columns -- numeric columns cannot hold ``""`` (pandas reads an empty numeric
+  cell as ``NaN``), so there is nothing to restore there.
 * **XLSX merged cells.** Merged regions are *unmerged then filled* from the
   top-left value (openpyxl drops every non-top-left cell on merge), so a
   vertically-merged label populates every row of its region. pandas 3.0.3
@@ -37,6 +51,11 @@ Design notes (verified against the Phase 3 research gate,
 * **Parquet cache.** When ``parquet_cache`` is given, the cleaned frame is
   written to Parquet (via pandas/pyarrow) and the path is noted in the report;
   a follow-up call could read it back.
+
+The load itself uses ``pd.read_csv`` with per-column ``dtype=str`` (correct and
+sufficient: it reads ID columns as text bytes losslessly, no double-rounding).
+DuckDB is intentionally NOT used here -- it is reserved for the Phase 3.3/3.4
+columnar cache / query layer, downstream of this pure loader.
 
 The loader is pure except for file IO. It is decoupled from ``stats.py`` and
 from any corpus-specific loader: its only inputs are a path and options.
@@ -51,22 +70,51 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-# Column-NAME substrings that mark an ID-like field whose leading zeros must be
-# preserved. Matched case-insensitively as substrings, so "ZipCode",
-# "case_number", "Account_ID", "phone_number" all match. Kept deliberately
-# conservative: a false positive only forces a column to text (safe), a false
-# negative risks silently dropping a leading zero (the failure we guard against).
-ID_LIKE_PATTERNS: tuple[str, ...] = (
-    "zip",
-    "zipcode",
-    "fips",
+# Column-NAME matching for ID-like fields whose leading zeros must be preserved.
+# Matching is on TOKEN BOUNDARIES, never raw substrings: the name is lowercased
+# and split on non-alphanumeric separators AND camelCase / letter-digit
+# boundaries (so "Account_ID" -> [account, id], "caseNumber" -> [case, number],
+# "zip_code" -> [zip, code]). Two pattern classes are matched differently:
+#
+# * WHOLE-TOKEN patterns are the short, ambiguous ones that are common English
+#   substrings. They match ONLY when they equal a whole token, so "id" no longer
+#   fires on "valid"/"raids"/"humid", "case" no longer fires on "casein", and
+#   "plate" no longer fires on "plateau". Coercing those real numeric columns to
+#   text silently breaks the stats.py consumer (gini/rates cast str -> float).
+# * SUBSTRING patterns are the longer, unambiguous ones. They keep contains
+#   matching so "zip"/"zipcode" still fire on "zip_code"/"zipcode"/"ZipCode",
+#   "phone" on "phone_number", "account" on "Account_ID", etc.
+#
+# A false positive only forces a column to text (harmless: a string of digits);
+# a false negative silently drops a leading zero (the failure we guard against).
+# This list is tuned to that asymmetry but no longer over-matches plain English.
+ID_LIKE_WHOLE_TOKEN_PATTERNS: tuple[str, ...] = (
     "id",
     "case",
     "plate",
     "ssn",
+    "dob",
+)
+ID_LIKE_SUBSTRING_PATTERNS: tuple[str, ...] = (
+    "zip",
+    "zipcode",
+    "fips",
     "phone",
     "account",
+    "license",
 )
+
+# Split on runs of non-alphanumerics, camelCase humps (lower/digit -> upper),
+# acronym tails (UPPER before Upper+lower, e.g. "SSNField" -> SSN|Field), and
+# letter<->digit boundaries ("zip5" -> zip|5). Implemented by inserting a marker
+# at each boundary, then splitting on the marker plus separators.
+_CAMEL_BOUNDARY_RE = re.compile(
+    r"(?<=[a-z0-9])(?=[A-Z])"          # fooBar  -> foo|Bar
+    r"|(?<=[A-Z])(?=[A-Z][a-z])"        # SSNFile -> SSN|File
+    r"|(?<=[A-Za-z])(?=[0-9])"          # zip5    -> zip|5
+    r"|(?<=[0-9])(?=[A-Za-z])"          # 5zip    -> 5|zip
+)
+_NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
 
 # Empty-string spellings that ``empty_null`` collapses to missing. Kept narrow
 # on purpose: only a literal empty cell (and surrounding whitespace) is treated
@@ -85,19 +133,36 @@ class LoadResult:
         df: the cleaned :class:`pandas.DataFrame`.
         report: a dict describing the load. Keys:
 
-            * ``encoding`` -- the encoding actually used to read the file.
+            * ``encoding`` -- the encoding actually used to read the file
+              (``"binary"`` for XLSX).
+            * ``encoding_used`` -- alias of ``encoding`` (the encoding the read
+              actually used), exposed under an explicit name for callers.
             * ``encoding_detected`` -- ``True`` if it was sniffed,
               ``False`` if the caller pinned it (or it was a native binary
               read, as for XLSX).
             * ``encoding_confidence`` -- detector confidence in ``[0, 1]`` when
-              sniffed, else ``None``.
+              sniffed, else ``None``. NOTE: this does NOT discriminate among
+              single-byte alternatives (cp775 and latin-1 can both score
+              ``1.0`` on the same bytes); always read it together with
+              ``encoding_low_confidence``.
+            * ``encoding_low_confidence`` -- ``True`` when the detected encoding
+              is inherently ambiguous (a single-byte/legacy codepage), the
+              confidence is marginal, or several close alternatives exist. When
+              set, a byte-exact read requires the caller to pin ``encoding=``.
+              ``False`` for a caller-pinned or binary (XLSX) read.
+            * ``encoding_alternatives`` -- other plausible encodings from the
+              detector's ranked results (best first), empty when none / not
+              sniffed. These are the candidates an explicit ``encoding=`` may
+              need to disambiguate among.
             * ``text_columns`` -- sorted list of columns forced to text.
             * ``rows_read`` -- number of data rows in ``df``.
             * ``source`` -- ``"csv"`` or ``"xlsx"``.
             * ``parquet_cache`` -- path the cleaned frame was written to, or
               ``None``.
-            * ``anomalies`` -- list of human-readable anomaly notes (e.g. a
-              row count at the spreadsheet truncation ceiling).
+            * ``anomalies`` -- list of human-readable anomaly notes: structural
+              flags (a row count at the spreadsheet truncation ceiling, an
+              all-null column) AND data-fidelity warnings (an XLSX numeric ID
+              past ``2**53`` whose source Excel already lost precision on).
     """
 
     df: pd.DataFrame
@@ -114,10 +179,35 @@ def _normalize_name(name: object) -> str:
     return str(name).strip().lower()
 
 
+def _tokenize_name(column_name: object) -> list[str]:
+    """Split a column name into lowercased alphanumeric tokens.
+
+    Boundaries are non-alphanumeric separators AND camelCase / acronym /
+    letter-digit humps, so ``"Account_ID"`` -> ``["account", "id"]``,
+    ``"caseNumber"`` -> ``["case", "number"]``, ``"zip_code"`` ->
+    ``["zip", "code"]``. Used by :func:`_is_id_like` to match short ambiguous
+    patterns against WHOLE tokens rather than raw substrings.
+    """
+    text = str(column_name).strip()
+    text = _CAMEL_BOUNDARY_RE.sub(" ", text)
+    text = text.lower()
+    return [tok for tok in _NON_ALNUM_RE.split(text) if tok]
+
+
 def _is_id_like(column_name: object) -> bool:
-    """True if a column NAME matches any ID-like substring pattern."""
+    """True if a column NAME is ID-like by token-boundary matching.
+
+    Short ambiguous patterns (``id``, ``case``, ``plate``, ``ssn``, ``dob``)
+    match only a WHOLE token, so they no longer fire on ``valid``, ``raids``,
+    ``casein``, ``plateau`` and the like. Longer unambiguous patterns (``zip``,
+    ``zipcode``, ``fips``, ``phone``, ``account``, ``license``) keep contains
+    matching so ``zip_code``/``ZipCode``/``phone_number`` still match.
+    """
+    tokens = _tokenize_name(column_name)
+    if any(tok in ID_LIKE_WHOLE_TOKEN_PATTERNS for tok in tokens):
+        return True
     norm = _normalize_name(column_name)
-    return any(pat in norm for pat in ID_LIKE_PATTERNS)
+    return any(pat in norm for pat in ID_LIKE_SUBSTRING_PATTERNS)
 
 
 def _resolve_text_columns(
@@ -139,46 +229,141 @@ def _resolve_text_columns(
     return sorted(chosen, key=lambda c: str(c))
 
 
-def _detect_encoding(path: Path, sample_size: int = 65_536) -> tuple[str, float | None]:
-    """Sniff a file's encoding from a byte sample.
+# Encodings whose detection is NOT inherently ambiguous: a clean UTF read is
+# self-validating (invalid byte sequences raise), and ASCII is a strict subset.
+# Anything OUTSIDE this set is a single-byte / legacy codepage, where statistical
+# detection routinely cannot tell e.g. cp775 from latin-1 from cp1250 -- those
+# decode the SAME bytes into DIFFERENT characters without raising. Detecting one
+# of those is flagged low-confidence so the caller can require an explicit
+# encoding= for a byte-exact read.
+_UNAMBIGUOUS_ENCODING_PREFIXES: tuple[str, ...] = ("utf", "ascii", "us-ascii")
 
-    Reads up to ``sample_size`` bytes and runs ``charset-normalizer``. Returns
-    ``(encoding, confidence)``. Falls back to ``utf-8`` when the sample is empty
-    or the detector returns nothing. ``confidence`` is ``1 - chaos`` from the
-    best match (``None`` on fallback).
+# Below this 1 - chaos margin a detection is treated as low-confidence even for
+# an otherwise-unambiguous family.
+_CONFIDENCE_MARGIN = 0.85
+
+
+def _is_ambiguous_encoding(encoding: str) -> bool:
+    """True for single-byte / legacy codepages (the inherently ambiguous class).
+
+    UTF-* and ASCII are self-validating and treated as unambiguous; everything
+    else (cp775, latin-1/iso-8859-*, cp125x, mac_*, koi8-*, ...) is a single-byte
+    codepage that statistical detection cannot pick reliably.
+    """
+    norm = encoding.strip().lower().replace("_", "-")
+    return not any(norm.startswith(p) for p in _UNAMBIGUOUS_ENCODING_PREFIXES)
+
+
+@dataclass
+class _Detection:
+    encoding: str
+    confidence: float | None
+    low_confidence: bool
+    alternatives: list[str]
+
+
+def _detect_encoding(path: Path, sample_size: int = 65_536) -> _Detection:
+    """Sniff a file's encoding from a byte sample, HONESTLY flagging ambiguity.
+
+    Reads up to ``sample_size`` bytes and runs ``charset-normalizer``. Returns a
+    :class:`_Detection` with the best-effort ``encoding``, a rough
+    ``confidence`` (``1 - chaos`` of the best match, ``None`` on fallback), the
+    other plausible ``alternatives`` from the ranked results, and
+    ``low_confidence`` -- set whenever the pick is a single-byte/legacy codepage
+    (the inherently ambiguous class), the confidence is marginal, or several
+    close alternatives exist. ``confidence`` does NOT discriminate among
+    single-byte alternatives (cp775 and latin-1 can both score ``1.0`` on the
+    same bytes); read it together with ``low_confidence``. Falls back to
+    ``utf-8`` when the sample is empty or the detector returns nothing.
     """
     raw = path.read_bytes()[:sample_size]
     if not raw:
-        return "utf-8", None
+        return _Detection("utf-8", None, False, [])
     # Imported lazily so importing this module does not hard-require the
     # detector unless an auto-detect load actually runs.
     from charset_normalizer import from_bytes
 
-    best = from_bytes(raw).best()
+    results = from_bytes(raw)
+    best = results.best()
     if best is None or not best.encoding:
-        return "utf-8", None
+        return _Detection("utf-8", None, False, [])
+
     # charset-normalizer exposes "chaos" (lower is better); turn it into a
     # rough confidence in [0, 1] for the report.
-    confidence = None
+    confidence: float | None = None
     chaos = getattr(best, "chaos", None)
     if isinstance(chaos, (int, float)):
         confidence = max(0.0, min(1.0, 1.0 - float(chaos)))
-    return best.encoding, confidence
+
+    # Other plausible encodings from the ranked results (best first), de-duped
+    # and excluding the winner. These are the candidates an explicit encoding=
+    # might need to disambiguate among.
+    alternatives: list[str] = []
+    for match in results:
+        enc = getattr(match, "encoding", None)
+        if enc and enc != best.encoding and enc not in alternatives:
+            alternatives.append(enc)
+
+    ambiguous = _is_ambiguous_encoding(best.encoding)
+    marginal = confidence is not None and confidence < _CONFIDENCE_MARGIN
+    has_close_alternatives = len(alternatives) > 0 and ambiguous
+    low_confidence = ambiguous or marginal or has_close_alternatives
+
+    return _Detection(best.encoding, confidence, low_confidence, alternatives)
 
 
-def _coerce_text_columns(df: pd.DataFrame, text_columns: list[str]) -> None:
+# IEEE-754 doubles represent every integer exactly only up to 2**53; beyond it
+# consecutive integers collapse onto the same float. An ID stored as a NUMBER in
+# Excel is already a rounded double by the time openpyxl yields it, so a 17-digit
+# ID arrives WRONG (12345678901234567 -> 12345678901234570) and no amount of
+# stringifying recovers the original. Flag any whitelisted numeric value at or
+# above this magnitude.
+_SAFE_INT_PRECISION = 2**53
+
+
+def _coerce_text_columns(df: pd.DataFrame, text_columns: list[str]) -> list[str]:
     """In-place: cast the given columns to leading-zero-safe strings.
 
     Used on the XLSX path (and as a belt-and-suspenders pass on CSV). A value
     that pandas already read as a float ``7054.0`` is rendered back to the
     integer-looking ``"7054"`` (not ``"7054.0"``); genuine missing cells stay
     missing rather than becoming the literal string ``"nan"``.
+
+    Returns a list of human-readable precision WARNINGS: when a whitelisted
+    column arrives as a number whose magnitude exceeds safe integer precision
+    (``abs >= 2**53``), Excel already stored it as a rounded double, so the
+    stringified value may not be the true ID. The best-available value is still
+    stringified -- but never presented as exact silently.
     """
+    warnings: list[str] = []
     for col in text_columns:
         if col not in df.columns:
             continue
         series = df[col]
         na_mask = series.isna()
+
+        # Precision audit: a numeric cell at/above 2**53 has already lost exact
+        # integer precision upstream (Excel stored it as a double). Detect on the
+        # numeric value regardless of whether the dtype is float or object-int.
+        def _exceeds_precision(v: object) -> bool:
+            if isinstance(v, bool) or v is None:
+                return False
+            if isinstance(v, (int, float)):
+                try:
+                    return abs(float(v)) >= _SAFE_INT_PRECISION
+                except (OverflowError, ValueError):
+                    # An int too large to be a finite float overflowed a double
+                    # long ago; treat as a precision concern.
+                    return True
+            return False
+
+        if series.map(_exceeds_precision).any():
+            warnings.append(
+                f"column {col!r}: numeric ID exceeds 2^53 -- source Excel "
+                f"stored it as a number and may have lost precision; obtain a "
+                f"text-typed export"
+            )
+
         # Numeric whole-number floats -> int-looking strings (drop the ".0").
         if pd.api.types.is_float_dtype(series):
             as_str = series.map(
@@ -192,6 +377,7 @@ def _coerce_text_columns(df: pd.DataFrame, text_columns: list[str]) -> None:
         df[col] = as_str.astype(object)
         # Restore NA sentinels as actual NaN/None for consistency.
         df.loc[na_mask, col] = None
+    return warnings
 
 
 def _apply_empty_null(df: pd.DataFrame) -> None:
@@ -241,9 +427,15 @@ def _load_csv(
     """
     detected = False
     confidence: float | None = None
+    low_confidence = False
+    alternatives: list[str] = []
     used_encoding = encoding
     if used_encoding is None:
-        used_encoding, confidence = _detect_encoding(path)
+        det = _detect_encoding(path)
+        used_encoding = det.encoding
+        confidence = det.confidence
+        low_confidence = det.low_confidence
+        alternatives = det.alternatives
         detected = True
 
     # Pass 1: read just the header (nrows=0) to learn the column names, honoring
@@ -289,9 +481,15 @@ def _load_csv(
     report = {
         "source": "csv",
         "encoding": used_encoding,
+        "encoding_used": used_encoding,
         "encoding_detected": detected,
         "encoding_confidence": confidence,
+        "encoding_low_confidence": low_confidence,
+        "encoding_alternatives": alternatives,
         "text_columns": resolved_text,
+        # CSV reads ID columns as text bytes (dtype=str), so no double-rounding
+        # precision loss is possible on this path; kept for report-shape parity.
+        "_precision_warnings": [],
     }
     return df, report
 
@@ -378,7 +576,7 @@ def _load_xlsx(
     )
 
     resolved_text = _resolve_text_columns(df.columns, text_columns)
-    _coerce_text_columns(df, resolved_text)
+    precision_warnings = _coerce_text_columns(df, resolved_text)
 
     if empty_null:
         _apply_empty_null(df)
@@ -386,9 +584,15 @@ def _load_xlsx(
     report = {
         "source": "xlsx",
         "encoding": "binary",  # XLSX is a zip container; no text encoding sniff
+        "encoding_used": "binary",
         "encoding_detected": False,
         "encoding_confidence": None,
+        # A binary read has no text-encoding ambiguity; flag it as confident.
+        "encoding_low_confidence": False,
+        "encoding_alternatives": [],
         "text_columns": resolved_text,
+        # Surfaced into report["anomalies"] by load_table (see _detect_anomalies).
+        "_precision_warnings": precision_warnings,
     }
     return df, report
 
@@ -411,8 +615,11 @@ def load_table(
             suffix selects the path (CSV vs XLSX); unknown suffixes are treated
             as CSV.
         encoding: when ``None`` (default), the CSV encoding is sniffed from a
-            byte sample and recorded; pass e.g. ``"latin-1"`` for a byte-exact
-            read. Ignored for XLSX (a binary container).
+            byte sample and recorded. Single-byte/legacy codepages are
+            inherently ambiguous, so a sniffed result is flagged in the report
+            (``encoding_low_confidence``, ``encoding_alternatives``) rather than
+            trusted silently; pass e.g. ``"latin-1"`` for a byte-exact read.
+            Ignored for XLSX (a binary container).
         text_columns: extra column names to force to text beyond the ID-like
             auto-whitelist (matched case-insensitively by normalized name).
         empty_null: when ``True`` (default), empty-string cells become missing
@@ -468,7 +675,11 @@ def load_table(
     report["forward_filled_columns"] = sorted(filled, key=str)
 
     report["rows_read"] = len(df)
-    report["anomalies"] = _detect_anomalies(df)
+    # Precision warnings (e.g. an Excel big-int ID past 2**53) are gathered at
+    # read time, before reset_index; surface them alongside the cheap structural
+    # anomaly notes so a published ID is never presented as exact silently.
+    precision_warnings = report.pop("_precision_warnings", [])
+    report["anomalies"] = list(precision_warnings) + _detect_anomalies(df)
     report["parquet_cache"] = None
 
     if parquet_cache is not None:

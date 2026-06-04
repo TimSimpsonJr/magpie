@@ -18,11 +18,11 @@ later layers and are NOT yet present.
 .claude-plugin/plugin.json    Plugin manifest (name "magpie", v0.0.1, MIT). `dependencies: ["librarian"]` — hard dep on the shared notes layer.
 scripts/
   stats.py                    FLAGSHIP deterministic stats module. Generic, decoupled from any corpus loader (inputs are plain sequences / DataFrame + col names). Functions: gini, top_k_share, bottom_half_share, median_by_category, automation_signature, burstiness, presence_rate, category_pct. Pure (numpy + pandas), golden-testable.
-  load_table.py               Phase 3.1 dirty-data loader (CSV/XLSX -> clean DataFrame + load report). load_table(path, *, encoding, text_columns, empty_null, skiprows, sheet_name, forward_fill_columns, parquet_cache) -> LoadResult(.df, .report). Encoding pre-flight (charset-normalizer), ID-like TEXT-whitelist (leading-zero preservation), ""->NULL, openpyxl unmerge-then-fill for merged XLSX cells, skiprows for junk headers, df.ffill() label fill, optional Parquet cache. Pure except file IO; decoupled from stats.py.
+  load_table.py               Phase 3.1 dirty-data loader (CSV/XLSX -> clean DataFrame + load report). load_table(path, *, encoding, text_columns, empty_null, skiprows, sheet_name, forward_fill_columns, parquet_cache) -> LoadResult(.df, .report). Encoding pre-flight (charset-normalizer) that HONESTLY flags single-byte ambiguity (report.encoding_low_confidence + encoding_alternatives; pin encoding= for byte-exactness), TOKEN-BOUNDARY ID-like TEXT-whitelist (whole-token id/case/plate/ssn/dob + substring zip/fips/phone/account/license; leading-zero preservation without coercing real numerics like incident_count/casein), ""->NULL, openpyxl unmerge-then-fill for merged XLSX cells + a >2**53 big-int-ID precision warning, skiprows for junk headers, df.ffill() label fill, optional Parquet cache. Pure except file IO; decoupled from stats.py. (pd.read_csv dtype=str is the load; DuckDB is reserved for the Phase 3.3/3.4 query layer.)
   .gitkeep                    scripts/ placeholder (more modules to come).
 tests/
   test_stats.py               Golden tests pinned to documented Simpsonville pilot values (Gini ~0.805, top-1% ~27%, bottom-50% ~2.5%, etc.). All fixtures SYNTHETIC; no real corpus read.
-  test_load_table.py          TDD for load_table: latin-1 encoding (no mojibake), zero-padded ID preservation, empty_null, XLSX merged-cell fill, skiprows junk headers, df.ffill() label fill, Parquet round-trip. SYNTHETIC fixtures only.
+  test_load_table.py          TDD for load_table: latin-1 encoding (no mojibake) + honest single-byte-ambiguity flagging (low_confidence/alternatives), token-boundary TEXT-whitelist (14 false-positive names NOT coerced, 12 true-positives coerced), zero-padded ID preservation, empty_null, XLSX merged-cell fill, XLSX >2**53 big-int precision warning, skiprows junk headers, df.ffill() label fill, Parquet round-trip. SYNTHETIC fixtures only.
   test_plugin_manifest.py     Smoke test: plugin.json parses, has required keys, and declares the librarian dependency (bare-string or {name} object).
   fixtures/
     agency_counts_sample.json Synthetic heavy-tailed per-agency search counts, tuned so Gini lands ~0.805 (band [0.79,0.82]) and top-1%/bottom-50% shares reproduce the pilot.
@@ -31,6 +31,7 @@ tests/
     junk_header.csv           Synthetic CSV with 2 preamble lines before the real header — exercises skiprows. CRLF written as bytes (Windows text-mode would double \r\n).
     merged_label.xlsx         Synthetic .xlsx with a vertically-merged group label (A2:A4) + a text-formatted zip col — exercises openpyxl unmerge-then-fill and post-read TEXT coercion.
     ffill_labels.csv          Synthetic report-style CSV with blank continuation labels — exercises forward_fill_columns (df.ffill()).
+    bigint_id.xlsx            Synthetic .xlsx whose whitelisted account_id holds a 17-digit value stored as an Excel NUMBER (already a rounded IEEE-754 double) — exercises the >2**53 precision warning in report.anomalies.
 corpus/public/.gitkeep        Placeholder for the redistributable sample corpus (not yet added). The private Simpsonville corpus is NEVER committed (gitignored; see below).
 agents/.gitkeep               Placeholder — agents not yet built.
 skills/.gitkeep               Placeholder — skills not yet built.
