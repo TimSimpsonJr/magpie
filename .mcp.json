@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "magpie-dataset": {
+      "command": "uvx",
+      "args": [
+        "mcp-sqlite==0.3.2",
+        "${CLAUDE_PROJECT_DIR}/.magpie/dataset.db",
+        "--metadata",
+        "${CLAUDE_PLUGIN_ROOT}/skills/dataset-analyze/canned_queries.yml",
+        "--prefix",
+        "ds_"
+      ]
+    }
+  }
+}

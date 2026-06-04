@@ -440,6 +440,18 @@ Treat the served DB + server as **untrusted plumbing** (the 2026 MCP ecosystem h
    substitution (e.g. `${DATASET_DB}`) are supported in plugin-bundled `.mcp.json` args
    against live Claude Code docs (Task 3.4). If env-var interpolation isn't supported for
    the DB path, the skill must template/emit the `.mcp.json` (or pass an absolute path).
+   → **RESOLVED 2026-06-04 (Task 3.4), verified against live Claude Code docs
+   (`code.claude.com/docs` `mcp.md` + `plugins-reference.md`):** `${CLAUDE_PLUGIN_ROOT}`
+   IS supported in a plugin-bundled `.mcp.json` (`command`/`args`/`env`) and resolves to
+   the plugin install root. Env-var interpolation is supported but ONLY as `${VAR}` and
+   `${VAR:-default}` (NOT `$VAR`), in `command`/`args`/`env`/`url`/`headers`. **CRUCIAL: an
+   unset `${VAR}` with NO default makes Claude Code FAIL TO PARSE the config** — so a bare
+   `${DATASET_DB}` is unsafe. In a PLUGIN `.mcp.json`, `${CLAUDE_PROJECT_DIR}` substitutes
+   DIRECTLY (no default needed; a project/user `.mcp.json` would need
+   `${CLAUDE_PROJECT_DIR:-.}`). **Decision:** the bundled `.mcp.json` serves
+   `${CLAUDE_PROJECT_DIR}/.magpie/dataset.db` (no env-var crash risk), metadata at
+   `${CLAUDE_PLUGIN_ROOT}/skills/dataset-analyze/canned_queries.yml`; no templating needed.
+   (`${CLAUDE_PLUGIN_DATA}` is also available to plugin configs for persistent state.)
 2. **`uvx` availability on the operator's machine** — `mcp-sqlite` is launched via `uvx`
    (uv). The `setup`/`doctor` wizard (Phase 10) should probe for `uv`/`uvx` and document it
    as a Track-A prerequisite, or fall back to `pipx run mcp-sqlite==0.3.2`. Server needs
@@ -447,6 +459,12 @@ Treat the served DB + server as **untrusted plumbing** (the 2026 MCP ecosystem h
 3. **Row-cap fallback** — decide at 3.4 whether canned-queries-with-`LIMIT` (no code) is
    sufficient, or whether the thin `execute()` wrapper (enforced `LIMIT N`) is needed. If
    arbitrary `sqlite_execute` is left enabled, the no-cap behavior is a documented sharp edge.
+   → **RESOLVED 2026-06-04 (Task 3.4):** shipped canned-queries-with-`LIMIT` (no code) —
+   every query in `canned_queries.yml` embeds a `LIMIT`, enforced by a smoke test
+   (`tests/test_dataset_analyze_wiring.py::test_every_canned_query_embeds_a_limit`). The thin
+   `execute()` wrapper was NOT built. `sqlite_execute` stays enabled (read-only); its
+   no-row-cap is a documented sharp edge in `SKILL.md` ("always add a LIMIT to ad-hoc SQL").
+   Revisit the wrapper only if a recipe needs guaranteed-capped unbounded ad-hoc SQL.
 4. **chardet vs charset-normalizer** — pick one for the pre-flight. `charset-normalizer`
    3.4.x is already in the environment (pulled by `requests`); `chardet==7.4.3` is a heavier
    but more familiar dep. Recommend defaulting to `charset-normalizer` and only adding
@@ -455,6 +473,10 @@ Treat the served DB + server as **untrusted plumbing** (the 2026 MCP ecosystem h
    1.0. Re-check for a newer release at implementation; keep
    `hannesrudolph/sqlite-explorer-fastmcp-mcp-server` as the named fallback (§4.2). Audit
    the pinned transitive deps (`mcp`, `aiosqlite`, `pydantic`) for CVEs at pin time.
+   → **RESOLVED 2026-06-04 (Task 3.4):** re-checked PyPI — latest is STILL `0.3.2`
+   (2025-10-25); nothing newer shipped, so the `==0.3.2` pin stands and the §4 source-level
+   verification holds. `hannesrudolph/sqlite-explorer-fastmcp-mcp-server` remains the named
+   fallback if it goes unmaintained.
 6. **HTML result parsing** — mcp-sqlite returns HTML `<table>`, not JSON/CSV. For any recipe
    step that needs structured rows back (not just agent-readable output), query the
    Parquet/DuckDB cache directly rather than parsing the MCP HTML.

@@ -17,3 +17,18 @@ numpy==2.4.6
 #                        against the Phase 3 research gate (prior-art.md §3, §5.1).
 openpyxl==3.1.5
 charset-normalizer==3.4.3
+
+# Phase 3.4 dataset-analyze served-DB builder (scripts/build_dataset_db.py):
+#   sqlite-utils — build + index the read-only SQLite DB that mcp-sqlite serves
+#                  (TEXT-whitelist via explicit str columns before insert; FTS5
+#                  on name cols). Version verified against the Phase 3 research
+#                  gate (prior-art.md §2). mcp-sqlite itself runs via `uvx`, not
+#                  pip, so it is NOT pinned here (see skills/dataset-analyze/.mcp.json).
+sqlite-utils==3.39
+
+# Test/validation-only: parse + validate the mcp-sqlite metadata
+#   (skills/dataset-analyze/canned_queries.yml) and SKILL.md frontmatter in
+#   tests/test_dataset_analyze_wiring.py (every canned query LIMIT-capped, no
+#   write-enabled query). mcp-sqlite parses this YAML at runtime via `uvx`;
+#   PyYAML is otherwise NOT a magpie runtime dependency.
+PyYAML==6.0.2

@@ -1,0 +1,100 @@
+# mcp-sqlite (panasenco==0.3.2) metadata for the magpie-dataset server.
+#
+# Datasette-compatible. The top-level key under `databases` MUST be the served
+# DB file STEM: the bundled ../../.mcp.json serves
+# ${CLAUDE_PROJECT_DIR}/.magpie/dataset.db, so the key is `dataset`. The table is
+# `records` (the build_dataset_db default).
+#
+# RIGOR -- every query embeds an explicit LIMIT. mcp-sqlite 0.3.2 enforces NO
+# row cap (it fetchall()s and renders every row into one HTML table), so an
+# unbounded SELECT on a ~1M-row FOIA table would try to materialize the whole
+# thing. These canned queries are the safe, row-capped surface; ad-hoc SQL via
+# ds_sqlite_execute must carry its own LIMIT (a documented sharp edge). NO query
+# sets `write: true` -- the server is read-only (?mode=ro) by default and stays
+# that way (no write path is shipped). Raw PII is omitted from the served DB at
+# build time (build_dataset_db exclude_columns), since `hidden:` is NOT a
+# security boundary.
+databases:
+  dataset:
+    tables:
+      records:
+        description: >-
+          One cleaned, derived row per source record (post load_table ->
+          data_quality -> derive). The columns below are the conventional
+          derived columns; a given dataset may carry only a subset, depending on
+          the derive config. Raw PII free-text / identifiers are omitted from
+          this served DB by design.
+        columns:
+          geo: "In-state / out-of-state / unknown, derived from the requesting party's location vs the configured home state."
+          reason_cat: "First-matching reason category from the configured keyword map (word-boundary matched)."
+          is_immigration: "1 if the reason text matched an immigration keyword (word-boundary; police/service/justice do NOT trip it), else 0."
+          nets: "Numeric net width (nullable; NULL when non-numeric)."
+          has_case: "1 if a case identifier is present (a *** redaction counts as PRESENT), else 0."
+          base_type: "Mapped base / source-type label."
+          hour_et: "Hour of day (0-23) in the configured target timezone (DST-correct)."
+          dow_et: "Day of week in the target timezone (Mon=0)."
+    queries:
+      record_count:
+        title: Total record count
+        description: Total number of rows in the served dataset.
+        sql: |-
+          select count(*) as records from records limit 1
+      geo_breakdown:
+        title: In-state vs out-of-state breakdown
+        description: Record count by geo bucket (in-state / out-of-state / unknown).
+        sql: |-
+          select geo, count(*) as n
+          from records
+          group by geo
+          order by n desc
+          limit 100
+      immigration_count:
+        title: Immigration-flagged record count
+        description: Number of records whose reason matched an immigration keyword.
+        sql: |-
+          select count(*) as immigration_records
+          from records
+          where is_immigration = 1
+          limit 1
+      reason_category_breakdown:
+        title: Reason-category breakdown
+        description: Record count per derived reason category, most common first.
+        sql: |-
+          select reason_cat, count(*) as n
+          from records
+          group by reason_cat
+          order by n desc
+          limit 100
+      automation_by_hour:
+        title: Records by hour of day
+        description: Diurnal distribution (the automation-signature input) by local hour.
+        sql: |-
+          select hour_et, count(*) as n
+          from records
+          group by hour_et
+          order by hour_et
+          limit 24
+      case_presence:
+        title: Case-identifier presence
+        description: >-
+          Total rows and rows with a present case identifier (a *** redaction
+          counts as present). The two numbers feed a presence rate.
+        sql: |-
+          select count(*) as total,
+                 sum(case when has_case then 1 else 0 end) as with_case
+          from records
+          limit 1
+      base_type_breakdown:
+        title: Base / source-type breakdown
+        description: Record count per mapped base/source type, most common first.
+        sql: |-
+          select base_type, count(*) as n
+          from records
+          group by base_type
+          order by n desc
+          limit 100
+      sample_rows:
+        title: Sample rows (capped)
+        description: A small bounded sample of served rows for orientation.
+        sql: |-
+          select * from records limit 50
