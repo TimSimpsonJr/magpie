@@ -32,3 +32,19 @@ sqlite-utils==3.39
 #   write-enabled query). mcp-sqlite parses this YAML at runtime via `uvx`;
 #   PyYAML is otherwise NOT a magpie runtime dependency.
 PyYAML==6.0.2
+
+# Phase 5 pii-sweep (scripts/pii_sweep.py) — the FIRST heavy ML dependency, CPU-only:
+#   spacy           — NER engine. 3.8.14 verified (Phase 5 research gate) to install
+#                     against the pinned numpy==2.4.6 WITHOUT touching it (numpy>=1.19.0
+#                     is the only constraint), on Python 3.12.10; pulls thinc 8.3.13 +
+#                     blis 1.3.3 (CPU BLAS). pii-sweep uses NER ONLY, disabling
+#                     tagger/parser/lemmatizer/attribute_ruler so the live pipeline is
+#                     just tok2vec+ner; cold model load ≈ 1.5 s on this box.
+#   en_core_web_lg  — the trained pipeline (model v3.8.0, 400.7 MB wheel) pinned by its
+#                     reproducible GitHub-release URL — the spaCy-recommended way to pin
+#                     a model in a requirements file. PERSON is one of its 18 OntoNotes
+#                     NER labels. The Simpsonville pilot validated `lg` specifically, so
+#                     the Phase 11 golden PII tally is pinned to lg (NOT md/sm). NOTE:
+#                     `mise run bootstrap` now downloads ~400 MB for this model.
+spacy==3.8.14
+en_core_web_lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
