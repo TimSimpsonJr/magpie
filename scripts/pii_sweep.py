@@ -50,3 +50,32 @@ def text_id(text: str) -> str:
     only -- design doc Section 7).
     """
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:16]
+
+
+DEFAULT_PII_PATTERNS: dict[str, re.Pattern[str]] = {
+    "phone": re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b"),
+    "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    "email": re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
+    "dob_kw": re.compile(r"\bD\.?O\.?B\.?\b", re.IGNORECASE),
+    "alien_num": re.compile(r"\bA\d{8,9}\b"),           # tightened from prototype 8,12
+    "driver_lic": re.compile(r"\b(?:OLN|DLN|OLN#|DL|OL)\s?#?\s?[A-Z0-9]{6,}\b"),
+    "race_sex": re.compile(r"\b[BWHAI]\s?/\s?[MF]\b"),
+    "possible_birthdate": re.compile(
+        r"\b(?:0?[1-9]|1[0-2])[/-](?:0?[1-9]|[12]\d|3[01])[/-](?:19|20)\d\d\b"
+    ),
+}
+
+# possible_birthdate is the ONLY DEFAULT broad-only pattern: a bare MM/DD/YYYY
+# also matches an INCIDENT date, so it is a lead, never the publishable headline.
+# Every other DEFAULT pattern is high-precision PII (counts toward STRICT). This
+# is only the DEFAULT broad-only set; `sweep(broad_only_names=...)` overrides it --
+# e.g. the Phase 11 compatibility profile passes `frozenset()` to fold
+# possible_birthdate INTO the headline and reproduce the pilot's documented figure.
+# Naming the headline honestly: "high-precision PII", NOT "structured identifiers"
+# -- dob_kw / race_sex are sensitive descriptors, not literal IDs.
+BROAD_ONLY_PATTERN_NAMES: frozenset[str] = frozenset({"possible_birthdate"})
+
+
+def _regex_hit(pattern: re.Pattern[str], text: str) -> bool:
+    """True iff ``pattern`` matches ``text`` (``text`` is always a real str here)."""
+    return pattern.search(text) is not None
