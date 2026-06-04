@@ -348,6 +348,14 @@ from the tool's description; otherwise the SQL is appended to the description.
 `sqlite_get_catalog()` (call first — returns DBs/tables/columns + metadata),
 `sqlite_execute(sql)` (arbitrary **read-only** SQL), plus one tool per canned query.
 
+> **Note — `--prefix` is NOT canned-query-only (verified in 0.3.2 source).**
+> The unprefixed names above describe the **no-prefix default**. When a prefix is
+> set, `--prefix` prepends to **ALL** tools, the built-ins INCLUDED — not just the
+> per-canned-query tools. The bundled `.mcp.json` uses `--prefix ds_`, so the
+> agent actually sees `ds_sqlite_get_catalog`, `ds_sqlite_execute`, and one
+> `ds_<slug>` per canned query. (This corrects an ambiguity: the prefix is not
+> applied to canned queries alone.)
+
 #### Result shape
 Results are returned as an **HTML `<table>`** string (cells `html.escape`'d) — chosen per
 Siu et al. 2023 (arXiv 2305.13062) for LLM legibility. **Not JSON/CSV.** Recipes that need

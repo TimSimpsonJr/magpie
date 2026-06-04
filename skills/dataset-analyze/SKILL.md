@@ -42,15 +42,16 @@ before changing a library call.
    immigration keyword) and a `***` redaction counts as PRESENT.
 
 4. **Build the served DB** —
-   `scripts/build_dataset_db.py::build_dataset_db(df, db_path, text_columns=..., fts_columns=..., exclude_columns=...)`.
+   `scripts/build_dataset_db.py::build_dataset_db(df, db_path, include_columns=..., text_columns=..., fts_columns=..., exclude_columns=...)`.
    Write the cleaned/derived frame to the SQLite file the server reads. Use
    `${CLAUDE_PROJECT_DIR}/.magpie/dataset.db` — the path the bundled `.mcp.json`
-   points at. EXCLUDE every raw-PII column with `exclude_columns` (see "PII
+   points at. For any PII-bearing dataset, pass a fail-closed `include_columns`
+   ALLOWLIST naming only the safe derived/aggregate columns to serve (see "PII
    omission"). Pass leading-zero ID columns in `text_columns` and name-like
    columns in `fts_columns`.
 
 5. **Query read-only** through the `magpie-dataset` MCP server (bundled
-   `.mcp.json`). Call `sqlite_get_catalog` first, then use the `ds_`-prefixed
+   `.mcp.json`). Call `ds_sqlite_get_catalog` first, then use the `ds_`-prefixed
    canned queries or `ds_sqlite_execute` (see "Querying").
 
 6. **Summarize** — feed the derived columns to `scripts/stats.py` (Gini, top-k /
@@ -64,18 +65,30 @@ The served SQLite DB is a surface an analysis agent can hit with arbitrary
 read-only SQL. `mcp-sqlite`'s `hidden:` flag only omits a table from the
 catalog — the agent can still `SELECT` from it — so it is NOT a security
 boundary. The only safe way to keep raw PII (names, DOBs, full reason free-text)
-unreachable is to never put it in the served file: pass those columns to
-`build_dataset_db(..., exclude_columns=[...])`. Serve derived / aggregate
-columns (`geo`, `is_immigration`, `has_case`, counts) instead of raw
-identifiers. Full exhibits stay in local, non-served files; `redact-output`
-handles PII in published artifacts.
+unreachable is to never put it in the served file.
+
+**MANDATE an allowlist for any PII-bearing dataset.** Build the served DB by
+passing `build_dataset_db(..., include_columns=[...])` listing ONLY the safe
+derived / aggregate columns to serve (`geo`, `is_immigration`, `has_case`,
+counts) instead of raw identifiers. The allowlist is fail-closed: a column the
+analyst forgets is ABSENT from the served file, not exposed. Prefer this to a
+denylist.
+
+`exclude_columns` is the denylist alternative — name the raw-PII columns to drop
+— and `exclude_columns` always WINS (a column listed in both is dropped). A
+denylist is fail-open (a new raw column you forget to name leaks), so use it
+only when you have verified the full column list and the allowlist is awkward.
+
+PII is therefore omitted by *serving an explicit allowlist* (or a verified
+exclude list) — not unconditionally. Full exhibits stay in local, non-served
+files; `redact-output` handles PII in published artifacts.
 
 ## Querying (read-only; mind the row cap)
 
 The `magpie-dataset` server runs `mcp-sqlite==0.3.2` via `uvx`, read-only by
 default — every query opens the DB `?mode=ro`, and no write path is shipped.
 
-- **Call `sqlite_get_catalog` first** to learn the served schema.
+- **Call `ds_sqlite_get_catalog` first** to learn the served schema.
 - **Prefer the `ds_` canned queries** (`canned_queries.yml`): each is a named,
   reviewed query with an embedded `LIMIT`, mapping to the analysis recipe (geo
   breakdown, immigration count, automation-by-hour, case presence, ...).

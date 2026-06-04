@@ -111,12 +111,18 @@ def test_canned_table_is_records():
 
 def test_every_canned_query_embeds_a_limit():
     # Row-cap rigor: mcp-sqlite 0.3.2 enforces NO row cap, so a canned query
-    # without LIMIT could dump a 1M-row table as one HTML blob.
+    # without LIMIT could dump a 1M-row table as one HTML blob. Require the
+    # *outer* result to be bounded -- the query must END with a `LIMIT <int>`
+    # clause. A bare `\blimit\b` anywhere would pass on a LIMIT buried in a
+    # subquery or comment while the outer SELECT stays unbounded.
     queries = _queries()
     assert queries, "expected at least one canned query"
     for name, q in queries.items():
-        assert re.search(r"\blimit\b", q["sql"].lower()), (
-            f"canned query {name!r} has no LIMIT -- mcp-sqlite enforces no row cap"
+        sql = q["sql"].strip()
+        sql = sql.rstrip(";").strip().lower()
+        assert re.search(r"\blimit\s+\d+\s*$", sql), (
+            f"canned query {name!r} does not END with a `LIMIT <int>` clause -- "
+            f"the outer result must be bounded (mcp-sqlite enforces no row cap)"
         )
 
 
@@ -145,3 +151,22 @@ def test_skill_md_has_frontmatter_name_and_description():
     meta = yaml.safe_load(front)
     assert meta["name"] == "dataset-analyze"
     assert meta.get("description", "").strip(), "SKILL.md needs a description"
+
+
+def test_skill_md_uses_prefixed_builtin_tool_names():
+    # The bundled .mcp.json launches mcp-sqlite with `--prefix ds_`, and (verified
+    # against 0.3.2 source) `--prefix` prepends to ALL tools, the built-ins INCLUDED.
+    # So SKILL.md must name the built-ins as ds_sqlite_get_catalog / ds_sqlite_execute
+    # -- the bare sqlite_get_catalog / sqlite_execute tools do NOT exist under our prefix.
+    text = SKILL.read_text(encoding="utf-8")
+    assert "ds_sqlite_get_catalog" in text, "SKILL.md must use the prefixed catalog tool"
+    assert "ds_sqlite_execute" in text, "SKILL.md must use the prefixed ad-hoc SQL tool"
+    # No BARE built-in name. The lookbehind excludes the `ds_`-prefixed form. (For
+    # `sqlite_execute` a plain `\b...\b` already won't match `ds_sqlite_execute` since
+    # `_` is a word char, so the lookbehind there is belt-and-suspenders.)
+    assert not re.search(r"(?<!ds_)\bsqlite_get_catalog\b", text), (
+        "SKILL.md has a bare `sqlite_get_catalog` -- it does not exist under --prefix ds_"
+    )
+    assert not re.search(r"(?<!ds_)\bsqlite_execute\b", text), (
+        "SKILL.md has a bare `sqlite_execute` -- it does not exist under --prefix ds_"
+    )

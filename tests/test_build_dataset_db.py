@@ -476,3 +476,98 @@ def test_input_frame_is_not_mutated(tmp_path):
     build_dataset_db(df, db_path, exclude_columns=["ssn"])
     assert list(df.columns) == original_columns, "caller's frame was mutated"
     assert "ssn" in df.columns
+
+
+# ==========================================================================
+# Invariant 8 -- include_columns is a FAIL-CLOSED allowlist.
+# The denylist (exclude_columns) is fail-OPEN: a forgotten PII column is
+# served. The allowlist serves ONLY the named columns, so a column the caller
+# never mentions is ABSENT, not exposed -- the safe default for FOIA PII.
+# (Codex phase-3.4 review, cluster pii-fail-open.)
+# ==========================================================================
+
+def test_include_columns_serves_only_listed(tmp_path):
+    df = pd.DataFrame(
+        {"id": [1, 2], "geo": ["SC", "OOS"], "name": ["A", "B"], "ssn": ["x", "y"]}
+    )
+    db_path = tmp_path / "out.db"
+    result = build_dataset_db(df, db_path, include_columns=["id", "geo"])
+    assert set(_columns(db_path)) == {"id", "geo"}
+    assert result.report["served_columns"] == ["geo", "id"]
+    assert result.report["included_columns"] == ["geo", "id"]
+
+
+def test_include_columns_forgotten_column_is_absent_fail_closed(tmp_path):
+    # The fail-closed property: a sensitive column NOT in the allowlist is absent
+    # even though it was never named in exclude_columns. (A denylist would have
+    # served it -- the failure mode this allowlist exists to prevent.)
+    df = pd.DataFrame({"id": [1], "geo": ["SC"], "home_address": ["123 Main St"]})
+    db_path = tmp_path / "out.db"
+    build_dataset_db(df, db_path, include_columns=["id", "geo"])  # home_address never mentioned
+    cols = _columns(db_path)
+    assert "home_address" not in cols
+    assert set(cols) == {"id", "geo"}
+
+
+def test_exclude_wins_over_include(tmp_path):
+    # A column in BOTH include and exclude is DROPPED (exclude is the absolute
+    # PII guarantee; it cannot be undone by also listing the column in include).
+    df = pd.DataFrame({"id": [1], "ssn": ["111-22-3333"]})
+    db_path = tmp_path / "out.db"
+    result = build_dataset_db(
+        df, db_path, include_columns=["id", "ssn"], exclude_columns=["ssn"]
+    )
+    assert "ssn" not in _columns(db_path)
+    assert result.report["served_columns"] == ["id"]
+
+
+def test_include_columns_none_serves_all_minus_exclude(tmp_path):
+    # Backward-compat: include_columns=None keeps the all-minus-exclude default,
+    # and the report distinguishes "no allowlist" (None) from an empty one.
+    df = pd.DataFrame({"id": [1], "a": [2], "b": [3]})
+    db_path = tmp_path / "out.db"
+    result = build_dataset_db(df, db_path, exclude_columns=["b"])
+    assert set(_columns(db_path)) == {"id", "a"}
+    assert result.report["included_columns"] is None
+
+
+def test_include_columns_restricts_text_and_fts_to_allowlist(tmp_path):
+    # A text_columns / fts_columns name not in the allowlist is ignored, because
+    # it is not served at all.
+    df = pd.DataFrame(
+        {"id": [1], "zip": ["07054"], "name": ["Acme"], "secret": ["s"]}
+    )
+    db_path = tmp_path / "out.db"
+    result = build_dataset_db(
+        df, db_path, include_columns=["id", "zip"], text_columns=["zip"], fts_columns=["name"]
+    )
+    assert set(_columns(db_path)) == {"id", "zip"}
+    assert result.report["text_columns"] == ["zip"]
+    assert result.report["fts_columns"] == []  # name not served -> not indexed
+
+
+# ==========================================================================
+# Invariant 9 -- replace=False append is safe with FTS.
+# enable_fts runs ONLY on a fresh table; on a replace=False append to an
+# existing FTS table the original triggers index the new rows, so re-running
+# enable_fts (which would duplicate triggers / error) must be skipped.
+# (Codex phase-3.4 review, cluster append-fts-path.)
+# ==========================================================================
+
+def test_replace_false_append_with_fts_indexes_new_rows(tmp_path):
+    db_path = tmp_path / "out.db"
+    build_dataset_db(
+        pd.DataFrame({"id": [1, 2], "name": ["John Smith", "Jane Doe"]}),
+        db_path, fts_columns=["name"], pk="id", replace=True,
+    )
+    # Append onto the existing FTS table -- must not crash re-enabling FTS.
+    build_dataset_db(
+        pd.DataFrame({"id": [3], "name": ["Mary Smith"]}),
+        db_path, fts_columns=["name"], pk="id", replace=False,
+    )
+    assert _count(db_path) == 3
+    with _open(db_path) as db:
+        hits = sorted(h["id"] for h in db["records"].search("smith"))
+    # Both the original (John Smith) and the appended (Mary Smith) row are found,
+    # proving the existing triggers indexed the appended row.
+    assert hits == [1, 3]

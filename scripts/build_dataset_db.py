@@ -13,16 +13,27 @@ Four behaviors are load-bearing and pinned by the test suite, because the naive
 implementation (hand the whole frame to ``db[t].insert_all(df.to_dict(...))``)
 gets each one WRONG:
 
-* **PII omission is a HARD EXCLUSION, not hiding.** Every name in
-  ``exclude_columns`` is dropped from the frame BEFORE the table is created, so
-  it is absent from the served schema ENTIRELY -- there is no column to
-  ``SELECT``. This is deliberate and not the same as ``mcp-sqlite``'s ``hidden:``
-  knob: ``hidden:`` only omits a table from the catalog the agent is shown, but
-  the agent can still issue ``SELECT pii_col FROM ...`` against it. The ONLY way
-  to make a sensitive column unreachable is to never put it in the file, so
-  exclusion happens here, at build time, and exclusion WINS over
-  ``text_columns`` / ``fts_columns`` if a name appears in both (the safe column
-  cannot be re-introduced by another option).
+* **PII omission is allowlist-first / fail-CLOSED, with a denylist backstop.**
+  Two complementary controls decide which columns reach the served file, and a
+  column is dropped from the frame BEFORE the table is created so it is absent
+  from the served schema ENTIRELY -- there is no column to ``SELECT``:
+
+  - ``include_columns`` (the ALLOWLIST) is fail-CLOSED: when given, ONLY the
+    listed columns are served, so a sensitive column the caller never names is
+    ABSENT, not exposed. This is the safe default for FOIA PII: forgetting to
+    list a column hides it, rather than leaking it.
+  - ``exclude_columns`` (the DENYLIST) is fail-OPEN: a forgotten PII column gets
+    served. It is the backstop -- it ALWAYS wins, so a column in both the
+    allowlist and the denylist is dropped (a safe column cannot be
+    re-introduced by also listing it in ``include_columns``).
+
+  This is deliberate and not the same as ``mcp-sqlite``'s ``hidden:`` knob:
+  ``hidden:`` only omits a table from the catalog the agent is shown, but the
+  agent can still issue ``SELECT pii_col FROM ...`` against it. The ONLY way to
+  make a sensitive column unreachable is to never put it in the file, so the
+  allowlist/denylist resolution happens here, at build time, and WINS over
+  ``text_columns`` / ``fts_columns`` (a text/FTS name for a column that is not
+  served is silently ignored).
 
 * **Leading-zero / ID preservation.** A ``text_columns`` column (a ZIP, a
   case number, an account id) is given an explicit ``str`` type when the table
@@ -58,6 +69,14 @@ text columns are honored: ``str`` for ``text_columns``, and an inferred
 idempotent -- same schema, same row count, no duplicate rows, no stale columns.
 The parent directory is created if missing.
 
+An FTS5 index is enabled ONLY when the table is freshly created (a column's
+table did not already exist). On a ``replace=False`` append to an EXISTING FTS
+table, ``enable_fts`` is skipped: the ``create_triggers=True`` triggers from the
+first build keep the index in sync as rows are appended, so re-enabling is both
+unnecessary and an error (``CREATE VIRTUAL TABLE [records_fts]`` would raise
+``sqlite3.OperationalError: table already exists``). With ``replace=True`` the
+file is unlinked first, so the table is always fresh and FTS is always enabled.
+
 The builder is pure except for file IO: no network, no clock, no randomness, and
 the caller's DataFrame is never mutated (exclusion / sanitization operate on a
 local copy / fresh row dicts).
@@ -86,14 +105,20 @@ class BuildResult:
             * ``table`` -- the table name written.
             * ``rows_written`` -- number of data rows inserted.
             * ``served_columns`` -- sorted list of columns ACTUALLY written
-              (i.e. after exclusions), the columns the served DB exposes.
-            * ``excluded_columns`` -- sorted list of columns DROPPED from the
-              served DB entirely (the PII-omission set that was present in the
-              frame; a name not in the frame is silently ignored, not listed).
+              (i.e. after the allowlist/denylist resolution), the columns the
+              served DB exposes.
+            * ``included_columns`` -- when an ``include_columns`` allowlist was
+              given, the sorted list of its columns PRESENT in the frame; when no
+              allowlist was given, ``None``. ``None`` (no allowlist) is distinct
+              from ``[]`` (an allowlist that matched no present column).
+            * ``excluded_columns`` -- sorted list of columns DROPPED by the
+              ``exclude_columns`` denylist backstop (the names that were present
+              in the frame; a name not in the frame is silently ignored, not
+              listed). The denylist always wins over the allowlist.
             * ``text_columns`` -- sorted list of columns forced to TEXT (only
-              those present and not excluded).
+              those actually served).
             * ``fts_columns`` -- sorted list of columns given an FTS5 full-text
-              index (only those present and not excluded).
+              index (only those actually served).
     """
 
     db_path: str
@@ -184,6 +209,7 @@ def build_dataset_db(
     db_path: str | os.PathLike,
     *,
     table_name: str = "records",
+    include_columns: list[str] | None = None,
     text_columns: list[str] | None = None,
     fts_columns: list[str] | None = None,
     exclude_columns: list[str] | None = None,
@@ -197,18 +223,33 @@ def build_dataset_db(
         db_path: destination path for the SQLite file (``str`` or
             :class:`os.PathLike`). Its parent directory is created if missing.
         table_name: name of the table to create (default ``"records"``).
+        include_columns: the fail-CLOSED PII ALLOWLIST. When ``None`` (default),
+            every column is served minus ``exclude_columns`` (the historical
+            all-minus-denylist behavior). When a list, ONLY the listed columns
+            are served (intersected with the frame's actual columns), still minus
+            ``exclude_columns`` -- so a sensitive column the caller never lists is
+            ABSENT, not exposed. Prefer this over ``exclude_columns`` for PII:
+            forgetting to list a column hides it (fail-closed), whereas forgetting
+            to exclude one leaks it (fail-open). A name not present in the frame
+            is silently dropped from the allowlist.
         text_columns: column names to store as TEXT regardless of their pandas
             dtype, so leading-zero IDs (a ZIP, a case number) survive byte-exact
-            (``"07054"`` stays ``"07054"``). A name not present in the frame --
-            or one also in ``exclude_columns`` -- is ignored.
+            (``"07054"`` stays ``"07054"``). A name that is not ultimately served
+            (not present in the frame, outside the ``include_columns`` allowlist,
+            or in ``exclude_columns``) is ignored.
         fts_columns: column names to expose through an FTS5 full-text index
-            (``create_triggers=True``). A name not present in the frame -- or one
-            also in ``exclude_columns`` -- is ignored.
-        exclude_columns: column names to DROP from the served DB entirely (PII
-            omission). These are removed before the table is created, so they are
-            absent from the schema and cannot be ``SELECT``ed. Exclusion takes
-            precedence over ``text_columns`` / ``fts_columns``. A name not present
-            in the frame is ignored.
+            (``create_triggers=True``). A name that is not ultimately served (not
+            present in the frame, outside the ``include_columns`` allowlist, or in
+            ``exclude_columns``) is ignored.
+        exclude_columns: the DENYLIST backstop -- column names to DROP from the
+            served DB entirely (PII omission). These are removed before the table
+            is created, so they are absent from the schema and cannot be
+            ``SELECT``ed. Exclusion ALWAYS wins: a column in both
+            ``include_columns`` and ``exclude_columns`` is dropped, and exclusion
+            takes precedence over ``text_columns`` / ``fts_columns``. A name not
+            present in the frame is ignored. Note this denylist is fail-OPEN (a
+            forgotten PII column is served); ``include_columns`` is the
+            fail-closed control.
         pk: optional primary-key column name (passed through to table creation).
         replace: when ``True`` (default), an existing file at ``db_path`` is
             removed first so the rebuild is idempotent (same schema + row count,
@@ -220,19 +261,39 @@ def build_dataset_db(
     """
     path = Path(db_path)
 
-    # Resolve the option name lists against the ACTUAL columns. Exclusion is
-    # computed first and wins: a column dropped for PII cannot be re-introduced
-    # as a text/FTS column, so the served set never contains an excluded name.
+    # Resolve the option name lists against the ACTUAL columns. Two PII controls
+    # decide the served set, and exclusion always wins so a dropped column can
+    # never be re-introduced by another option:
+    #   * include_columns is the fail-CLOSED allowlist -- when given, a column is
+    #     served only if it is listed (a column the caller never names is absent,
+    #     not leaked).
+    #   * exclude_columns is the fail-OPEN denylist backstop -- it always drops,
+    #     even a column that also appears in the allowlist.
+    # A text/FTS name is honored only if its column is ultimately served.
     present = set(df.columns)
     exclude_set = {c for c in _normalize_name_list(exclude_columns) if c in present}
 
-    served = [c for c in df.columns if c not in exclude_set]
-    text_set = [
-        c for c in _normalize_name_list(text_columns) if c in present and c not in exclude_set
-    ]
-    fts_set = [
-        c for c in _normalize_name_list(fts_columns) if c in present and c not in exclude_set
-    ]
+    # include_set is None when no allowlist was given (serve all-minus-exclude),
+    # else the requested names intersected with the present columns. None (no
+    # allowlist) stays distinct from [] (an allowlist matching no column).
+    include_set: set[str] | None
+    if include_columns is None:
+        include_set = None
+    else:
+        include_set = {c for c in _normalize_name_list(include_columns) if c in present}
+
+    def _is_served(col: str) -> bool:
+        if col not in present:  # a name not in the frame is never served
+            return False
+        if col in exclude_set:  # denylist wins, fail-open backstop
+            return False
+        if include_set is not None and col not in include_set:  # fail-closed allowlist
+            return False
+        return True
+
+    served = [c for c in df.columns if _is_served(c)]
+    text_set = [c for c in _normalize_name_list(text_columns) if _is_served(c)]
+    fts_set = [c for c in _normalize_name_list(fts_columns) if _is_served(c)]
 
     # Operate on a column-subset VIEW for type/row extraction without mutating
     # the caller's frame (pure-except-IO). ``df[served]`` is a new frame.
@@ -265,19 +326,28 @@ def build_dataset_db(
     try:
         table = db[table_name]
 
+        # Capture freshness BEFORE creating the table: enable_fts must run only
+        # on a brand-new table. On a replace=False append to an existing FTS
+        # table, the create_triggers=True triggers from the first build already
+        # index appended rows, so re-running enable_fts is both unnecessary and
+        # an error (CREATE VIRTUAL TABLE [<t>_fts] -> "table already exists").
+        # With replace=True the file was unlinked above, so the table is fresh.
+        fresh = not table.exists()
+
         # Create the table with the explicit schema FIRST (even when there are
         # no rows), so an empty frame still yields a correctly-typed empty table
         # and the text-column affinity is set before any insert. When appending
         # (replace=False) to an already-existing table, skip creation.
-        if not table.exists():
+        if fresh:
             table.create(columns_spec, pk=pk)
 
         if rows:
             table.insert_all(rows, pk=pk)
 
-        if fts_set:
+        if fts_set and fresh:
             # FTS5 (sqlite-utils' default) with triggers so the index stays in
-            # sync with the base table.
+            # sync with the base table -- including rows appended by a later
+            # replace=False build, which is why enable_fts runs ONLY when fresh.
             table.enable_fts(fts_set, create_triggers=True)
     finally:
         # Close the connection so the file handle is released. This is required
@@ -291,6 +361,9 @@ def build_dataset_db(
         "table": table_name,
         "rows_written": len(rows),
         "served_columns": sorted(served, key=str),
+        # None (no allowlist given) stays distinct from [] (allowlist matched no
+        # present column); when given, the requested allowlist's present columns.
+        "included_columns": None if include_set is None else sorted(include_set, key=str),
         "excluded_columns": sorted(exclude_set, key=str),
         "text_columns": sorted(text_set, key=str),
         "fts_columns": sorted(fts_set, key=str),
