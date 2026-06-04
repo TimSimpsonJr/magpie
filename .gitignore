@@ -8,6 +8,12 @@ __pycache__/
 # --- Data caches (derived; rebuildable, often large) ---
 *.parquet
 
+# Phase 3.4 served SQLite DB the dataset-analyze skill builds at
+# ${CLAUDE_PROJECT_DIR}/.magpie/ for the read-only mcp-sqlite server. Derived +
+# rebuildable, and it may hold PII-derived rows -- never commit it. (Normally
+# built in the operator's data project, not here; defensive for dev/testing.)
+.magpie/
+
 # --- Research-workflow scratch ---
 .research-workflow/
 
