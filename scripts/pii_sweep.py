@@ -79,3 +79,77 @@ BROAD_ONLY_PATTERN_NAMES: frozenset[str] = frozenset({"possible_birthdate"})
 def _regex_hit(pattern: re.Pattern[str], text: str) -> bool:
     """True iff ``pattern`` matches ``text`` (``text`` is always a real str here)."""
     return pattern.search(text) is not None
+
+
+@dataclass(frozen=True)
+class PersonFlags:
+    """Per-text PERSON classification (a text may carry both)."""
+    official: bool = False
+    unknown_role: bool = False
+
+
+# A classifier maps texts -> one PersonFlags per text (order-preserving).
+PersonClassifier = Callable[[Sequence[str]], "list[PersonFlags]"]
+
+
+def _tally(counts: Sequence[int], bools: Sequence[bool]) -> dict[str, int]:
+    return {
+        "weighted": int(sum(c for c, b in zip(counts, bools) if b)),
+        "distinct": int(sum(1 for b in bools if b)),
+    }
+
+
+def sweep(
+    series: pd.Series,
+    *,
+    person_classifier: PersonClassifier | None = None,
+    patterns: Mapping[str, re.Pattern[str]] | None = None,
+    broad_only_names: frozenset[str] | None = None,
+    official_names: Sequence[str] | None = None,
+    collect_local_texts: bool = False,
+) -> dict[str, Any]:
+    """PII-exposure tally over ``series`` (one free-text column).
+
+    NER/classification runs over DISTINCT texts; every category is weighted by
+    the row counts those distinct texts cover. If ``person_classifier`` is None a
+    lazy :class:`SpacyPersonClassifier` is built (using ``official_names``). See
+    the design doc for the output contract.
+    """
+    patterns = DEFAULT_PII_PATTERNS if patterns is None else patterns
+    n_rows = len(series)
+    texts, counts = distinct_texts(series)
+    n_distinct = len(texts)
+    n_nonblank = int(sum(counts))
+
+    if person_classifier is None:
+        person_classifier = SpacyPersonClassifier(
+            official_names=frozenset(official_names or ())
+        )
+    flags = list(person_classifier(texts))
+    if len(flags) != n_distinct:
+        raise ValueError("person_classifier must return one PersonFlags per text")
+
+    official = [f.official for f in flags]
+    unknown = [f.unknown_role for f in flags]
+    regex_hits = {name: [_regex_hit(p, t) for t in texts] for name, p in patterns.items()}
+
+    categories: dict[str, dict[str, int]] = {
+        name: _tally(counts, hits) for name, hits in regex_hits.items()
+    }
+    categories["person_official"] = _tally(counts, official)
+    categories["person_unknown_role"] = _tally(counts, unknown)
+
+    result: dict[str, Any] = {
+        "n_rows": int(n_rows),
+        "n_nonblank_rows": n_nonblank,
+        "n_distinct_texts": int(n_distinct),
+        "efficiency_ratio": (n_nonblank / n_distinct) if n_distinct else None,
+        "categories": categories,
+    }
+    # exposure + local_texts added in Tasks 4 & 5.
+    return result
+
+
+class SpacyPersonClassifier:  # real implementation lands in Task 7
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError("SpacyPersonClassifier is implemented in Task 7")

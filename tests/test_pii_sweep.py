@@ -1,6 +1,14 @@
 import pandas as pd
 from scripts.pii_sweep import distinct_texts, text_id
 from scripts.pii_sweep import DEFAULT_PII_PATTERNS, BROAD_ONLY_PATTERN_NAMES, _regex_hit
+from scripts.pii_sweep import PersonFlags, sweep
+
+
+class FakePersonClassifier:
+    """Marker-driven: '<<OFFICIAL>>' -> official, '<<PERSON>>' -> unknown_role."""
+    def __call__(self, texts):
+        return [PersonFlags(official="<<OFFICIAL>>" in t,
+                            unknown_role="<<PERSON>>" in t) for t in texts]
 
 
 def test_distinct_texts_strips_outer_whitespace_and_drops_blanks():
@@ -48,3 +56,18 @@ def test_possible_birthdate_is_the_only_broad_only_pattern():
     assert BROAD_ONLY_PATTERN_NAMES == {"possible_birthdate"}
     assert {"ssn", "phone", "email", "alien_num", "dob_kw", "race_sex",
             "driver_lic"}.isdisjoint(BROAD_ONLY_PATTERN_NAMES)
+
+
+def test_sweep_weights_distinct_by_counts():
+    s = pd.Series(["ssn 123-45-6789"] * 50 + ["nothing here"] * 3)
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["categories"]["ssn"] == {"weighted": 50, "distinct": 1}
+    assert r["n_rows"] == 53 and r["n_nonblank_rows"] == 53
+    assert r["n_distinct_texts"] == 2
+
+
+def test_sweep_classifies_official_vs_unknown_role():
+    s = pd.Series(["<<OFFICIAL>> Sgt called", "<<PERSON>> a subject", "plain"])
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["categories"]["person_official"]["distinct"] == 1
+    assert r["categories"]["person_unknown_role"]["distinct"] == 1
