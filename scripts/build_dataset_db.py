@@ -69,13 +69,26 @@ text columns are honored: ``str`` for ``text_columns``, and an inferred
 idempotent -- same schema, same row count, no duplicate rows, no stale columns.
 The parent directory is created if missing.
 
-An FTS5 index is enabled ONLY when the table is freshly created (a column's
-table did not already exist). On a ``replace=False`` append to an EXISTING FTS
-table, ``enable_fts`` is skipped: the ``create_triggers=True`` triggers from the
-first build keep the index in sync as rows are appended, so re-enabling is both
-unnecessary and an error (``CREATE VIRTUAL TABLE [records_fts]`` would raise
-``sqlite3.OperationalError: table already exists``). With ``replace=True`` the
-file is unlinked first, so the table is always fresh and FTS is always enabled.
+An FTS5 index is enabled when the table does NOT already have an FTS index
+(detected via ``Table.detect_fts()``), not merely when the table is freshly
+created. ``enable_fts`` runs AFTER the rows are inserted, so its populate covers
+them. This resolves all three cases honestly:
+
+* a freshly-created table has no FTS yet, so FTS is enabled and indexes the
+  just-inserted rows;
+* a ``replace=False`` append to an EXISTING FTS table is detected (``detect_fts``
+  returns the FTS table's name) and ``enable_fts`` is SKIPPED -- the
+  ``create_triggers=True`` triggers from the first build already keep the index
+  in sync, and re-enabling would be an error (``CREATE VIRTUAL TABLE
+  [records_fts]`` -> ``sqlite3.OperationalError: table already exists``);
+* a ``replace=False`` append to an EXISTING table that was built WITHOUT FTS,
+  now requesting ``fts_columns``, has no FTS index, so FTS is enabled on the
+  now-populated table and indexes the pre-existing + appended rows. (Gating on
+  freshness instead would SILENTLY skip this -- a no-op that still dishonestly
+  reported ``fts_columns``.)
+
+With ``replace=True`` the file is unlinked first, so the table is always fresh
+and FTS is always enabled.
 
 The builder is pure except for file IO: no network, no clock, no randomness, and
 the caller's DataFrame is never mutated (exclusion / sanitization operate on a
@@ -238,9 +251,14 @@ def build_dataset_db(
             (not present in the frame, outside the ``include_columns`` allowlist,
             or in ``exclude_columns``) is ignored.
         fts_columns: column names to expose through an FTS5 full-text index
-            (``create_triggers=True``). A name that is not ultimately served (not
-            present in the frame, outside the ``include_columns`` allowlist, or in
-            ``exclude_columns``) is ignored.
+            (``create_triggers=True``). The index is enabled when the table does
+            not already have an FTS index (detected via ``Table.detect_fts()``),
+            after the rows are inserted -- so a ``replace=False`` append onto a
+            previously-non-FTS table indexes the pre-existing + appended rows,
+            while an append onto an already-FTS table is left to its existing
+            triggers (re-enabling would error). A name that is not ultimately
+            served (not present in the frame, outside the ``include_columns``
+            allowlist, or in ``exclude_columns``) is ignored.
         exclude_columns: the DENYLIST backstop -- column names to DROP from the
             served DB entirely (PII omission). These are removed before the table
             is created, so they are absent from the schema and cannot be
@@ -326,12 +344,10 @@ def build_dataset_db(
     try:
         table = db[table_name]
 
-        # Capture freshness BEFORE creating the table: enable_fts must run only
-        # on a brand-new table. On a replace=False append to an existing FTS
-        # table, the create_triggers=True triggers from the first build already
-        # index appended rows, so re-running enable_fts is both unnecessary and
-        # an error (CREATE VIRTUAL TABLE [<t>_fts] -> "table already exists").
-        # With replace=True the file was unlinked above, so the table is fresh.
+        # Capture freshness BEFORE creating the table: it gates table.create
+        # (an already-existing table on a replace=False append must not be
+        # re-created). With replace=True the file was unlinked above, so the
+        # table is always fresh here.
         fresh = not table.exists()
 
         # Create the table with the explicit schema FIRST (even when there are
@@ -344,10 +360,22 @@ def build_dataset_db(
         if rows:
             table.insert_all(rows, pk=pk)
 
-        if fts_set and fresh:
-            # FTS5 (sqlite-utils' default) with triggers so the index stays in
-            # sync with the base table -- including rows appended by a later
-            # replace=False build, which is why enable_fts runs ONLY when fresh.
+        # Enable FTS5 (sqlite-utils' default) with triggers whenever the table
+        # does NOT already have an FTS index -- detect, don't assume. Running
+        # AFTER insert_all means the populate covers the just-inserted rows
+        # (including a replace=False append onto a previously-non-FTS table).
+        # detect_fts() returns the associated FTS table's name if FTS is
+        # configured, else None, so the three cases resolve correctly:
+        #   * fresh table -> no FTS yet -> enable (indexes the inserted rows);
+        #   * replace=False append onto an EXISTING FTS table -> detect_fts() is
+        #     not None -> skip (the original create_triggers keep the index in
+        #     sync; re-enabling would raise "table [<t>_fts] already exists");
+        #   * replace=False append onto an EXISTING NON-FTS table requesting fts
+        #     -> detect_fts() is None -> enable now (enable_fts on the populated
+        #     table indexes the pre-existing + appended rows). The old
+        #     "only when fresh" gate SILENTLY skipped this case while still
+        #     reporting fts_columns -- a dishonest no-op.
+        if fts_set and table.detect_fts() is None:
             table.enable_fts(fts_set, create_triggers=True)
     finally:
         # Close the connection so the file handle is released. This is required

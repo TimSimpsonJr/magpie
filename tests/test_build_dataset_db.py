@@ -547,11 +547,17 @@ def test_include_columns_restricts_text_and_fts_to_allowlist(tmp_path):
 
 
 # ==========================================================================
-# Invariant 9 -- replace=False append is safe with FTS.
-# enable_fts runs ONLY on a fresh table; on a replace=False append to an
-# existing FTS table the original triggers index the new rows, so re-running
-# enable_fts (which would duplicate triggers / error) must be skipped.
-# (Codex phase-3.4 review, cluster append-fts-path.)
+# Invariant 9 -- replace=False append is safe with FTS, and FTS is enabled
+# whenever the table does NOT already have an FTS index (detect-don't-assume).
+# Gating enable_fts on "fresh table" was wrong twice over:
+#   * append onto an existing FTS table -> must SKIP (the original
+#     create_triggers keep the index in sync; re-enabling errors with
+#     "table <t>_fts already exists").
+#   * append onto an existing NON-FTS table requesting fts -> must ENABLE now
+#     (a "fresh"-only gate silently no-ops AND dishonestly reports fts_columns).
+# So gate on table.detect_fts() is None, not on freshness.
+# (Codex phase-3.4 review, cluster append-fts-path; confirmatory re-review,
+# cluster fts-existing-table.)
 # ==========================================================================
 
 def test_replace_false_append_with_fts_indexes_new_rows(tmp_path):
@@ -571,3 +577,38 @@ def test_replace_false_append_with_fts_indexes_new_rows(tmp_path):
     # Both the original (John Smith) and the appended (Mary Smith) row are found,
     # proving the existing triggers indexed the appended row.
     assert hits == [1, 3]
+
+
+def test_replace_false_append_enables_fts_on_existing_non_fts_table(tmp_path):
+    # Regression (confirmatory re-review, cluster fts-existing-table): the prior
+    # "enable FTS only when fresh" gate SILENTLY skipped enable_fts here -- the
+    # table exists (not fresh) but was built WITHOUT FTS, so requesting fts on a
+    # replace=False append was a no-op AND the report dishonestly claimed
+    # fts_columns. Gating on detect_fts() is None enables FTS on the now-populated
+    # table, indexing both the original and the appended rows.
+    db_path = tmp_path / "out.db"
+    # First build: an EXISTING table created WITHOUT any FTS index.
+    build_dataset_db(
+        pd.DataFrame({"id": [1, 2], "name": ["John Smith", "Jane Doe"]}),
+        db_path, pk="id", replace=True,  # no fts_columns
+    )
+    with _open(db_path) as db:
+        assert db["records"].detect_fts() is None  # guard: not FTS-indexed yet
+
+    # Append with replace=False AND request FTS for the first time.
+    result = build_dataset_db(
+        pd.DataFrame({"id": [3], "name": ["Mary Smith"]}),
+        db_path, fts_columns=["name"], pk="id", replace=False,
+    )
+
+    # (a) no crash, and the rows are all present.
+    assert _count(db_path) == 3
+    # (b) an FTS search now works and returns BOTH an original (John Smith, id=1)
+    #     and the appended (Mary Smith, id=3) row -- proving enable_fts ran on the
+    #     populated table and indexed the pre-existing + appended rows.
+    with _open(db_path) as db:
+        assert db["records"].detect_fts() is not None
+        hits = sorted(h["id"] for h in db["records"].search("smith"))
+    assert hits == [1, 3]
+    # (c) the report honestly records the indexing that actually happened.
+    assert result.report["fts_columns"] == ["name"]
