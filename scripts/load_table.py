@@ -138,14 +138,16 @@ _CAMEL_BOUNDARY_RE = re.compile(
 )
 _NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
 
-# Empty-string spellings that ``empty_null`` collapses to missing. Kept narrow
-# on purpose: only a literal empty cell (and surrounding whitespace) is treated
-# as absent. Sentinel tokens like "***", "N/A", "NULL" are NOT swept here --
-# distinguishing a redaction ("***", a value that exists but is withheld) from a
-# genuine blank is a downstream rigor concern, and over-eager NA coercion would
-# erase that signal. This narrowness is ENFORCED on the CSV read by pinning
-# keep_default_na=False (so pandas does not add its default N/A / NULL / NaN /
-# None spellings on top of this set); see _load_csv.
+# The two COMMON empty spellings passed to read_csv's na_values at load time: a
+# truly-empty cell and a single space. This is only the read-time fast path --
+# kept narrow so an otherwise-numeric column whose blanks are plain empties stays
+# numeric. The AUTHORITATIVE "a whitespace-only cell is missing" rule (any
+# multi-space / tab run) is enforced post-read by _apply_empty_null, shared with
+# the XLSX path. Sentinel tokens like "***", "N/A", "NULL" are NOT swept by
+# either: distinguishing a redaction ("***", a value that exists but is withheld)
+# from a genuine blank is a downstream rigor concern, so keep_default_na=False is
+# pinned on the CSV read (pandas must not add its default N/A / NULL / NaN / None
+# spellings); see _load_csv.
 _EMPTY_NA_VALUES: tuple[str, ...] = ("", " ")
 
 
@@ -405,7 +407,14 @@ def _coerce_text_columns(df: pd.DataFrame, text_columns: list[str]) -> list[str]
 
 
 def _apply_empty_null(df: pd.DataFrame) -> None:
-    """In-place: turn empty / whitespace-only string cells into ``None``."""
+    """In-place: turn empty / whitespace-only string cells into ``None``.
+
+    The authoritative ``empty_null`` whitespace rule, shared by the CSV and XLSX
+    paths: any object/string cell whose ``.strip()`` is empty (``""``, a single
+    space, multiple spaces, a tab, ...) becomes ``None``. Numeric columns are
+    skipped (dtype guard), and a non-blank token like ``"N/A"`` / ``"***"`` is
+    left untouched, so the narrow-NA / presence-vs-value contract holds.
+    """
     for col in df.columns:
         series = df[col]
         if series.dtype != object and not pd.api.types.is_string_dtype(series):
@@ -488,8 +497,12 @@ def _load_csv(
         "dtype": dtype,
     }
     if empty_null:
-        # ONLY empty/whitespace cells are NA; default NA spellings are kept as
-        # their literal strings (keep_default_na=False is load-bearing here).
+        # Read-time NA for the two COMMON empties ("" and " ") so an otherwise
+        # numeric column stays numeric. keep_default_na=False is load-bearing:
+        # pandas must NOT add its default N/A / NULL / NaN / None spellings, so a
+        # literal "NULL" survives as a string. The AUTHORITATIVE whitespace-only
+        # sweep (any multi-space / tab run) is _apply_empty_null, applied
+        # post-read below to match the XLSX path.
         read_kwargs["na_values"] = list(_EMPTY_NA_VALUES)
         read_kwargs["keep_default_na"] = False
     else:
@@ -500,7 +513,17 @@ def _load_csv(
 
     df = pd.read_csv(path, **read_kwargs)
 
-    if not empty_null:
+    if empty_null:
+        # na_values=("", " ") above nulled the two COMMON empties at read time
+        # (which keeps an otherwise-numeric column numeric), but na_values cannot
+        # express "any whitespace run" -- a multi-space or tab cell would survive
+        # as a literal string and read as PRESENT downstream (presence-rate /
+        # has_case inflation). Apply the SAME post-read sweep the XLSX path uses
+        # (_apply_empty_null: v.strip() == "" -> None) so whitespace-only ->
+        # missing holds CONSISTENTLY across both paths. A literal "N/A" / "NULL"
+        # (strip() != "") is untouched, preserving the narrow-NA contract.
+        _apply_empty_null(df)
+    else:
         # Restore literal "" in the whitelisted text columns (read_csv may have
         # NA'd them). Non-text columns are left as pandas read them.
         df = _restore_empty_strings_for_text(path, df, resolved_text, used_encoding, skiprows)

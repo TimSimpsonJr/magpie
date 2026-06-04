@@ -231,6 +231,63 @@ def test_empty_null_false_also_preserves_literal_na_sentinels(tmp_path):
 
 
 # ==========================================================================
+# 3.1.c''  empty_null whitespace-only is CONSISTENT across CSV and XLSX
+# (regression: IMPORTANT -- the CSV path's na_values=("", " ") only caught an
+#  empty cell or a SINGLE space, while the XLSX path's v.strip()=="" sweep
+#  nulled ANY whitespace-only cell. A multi-space or tab CSV cell survived as a
+#  literal string and was counted PRESENT downstream -- presence-rate /
+#  has_case inflation -- contradicting the module's "consistently across both
+#  paths" narrow-NA contract. Found by a cross-model (Codex) confirmatory
+#  re-review of the 42b0a1c fixes.)
+# ==========================================================================
+
+def test_empty_null_treats_multiwhitespace_csv_cells_as_missing(tmp_path):
+    # Whitespace-only cells -- multiple spaces, a tab, a space+tab mix -- must
+    # become NA just like a truly-empty cell, matching the XLSX path. A literal
+    # "N/A" sentinel must STILL survive as a string (narrow-NA contract).
+    p = tmp_path / "whitespace_cells.csv"
+    p.write_bytes(
+        b"id,note\n"
+        b'r1,"   "\n'      # three spaces -> whitespace-only -> NA
+        b'r2,"\t"\n'       # a tab        -> whitespace-only -> NA
+        b'r3," \t "\n'     # space+tab    -> whitespace-only -> NA
+        b"r4,\n"           # empty        -> NA
+        b'r5," "\n'        # single space -> NA
+        b"r6,N/A\n"        # literal sentinel -> survives as a STRING
+        b"r7,plain\n"
+    )
+    note = load_table(p, empty_null=True).df["note"]
+    assert note.iloc[0:5].isna().all(), (
+        f"whitespace-only cells must be NA (CSV/XLSX consistency), got "
+        f"{note.iloc[0:5].tolist()!r}"
+    )
+    assert note.iloc[5] == "N/A"   # narrow-NA contract still holds
+    assert note.iloc[6] == "plain"
+
+
+def test_empty_null_multiwhitespace_in_text_whitelist_column(tmp_path):
+    # Same whitespace-only -> missing rule on a whitelisted TEXT column
+    # (dtype=str path): a case_number of "   " or a tab is ABSENT, not a present
+    # value, so it cannot inflate has_case downstream. A real leading-zero ID and
+    # a literal "NULL" sentinel are untouched.
+    p = tmp_path / "whitespace_id.csv"
+    p.write_bytes(
+        b"case_number,amount\n"
+        b'"   ",1\n'       # whitespace-only -> NA
+        b'"\t",2\n'        # tab            -> NA
+        b"00891,3\n"       # real ID, leading zero preserved
+        b"NULL,4\n"        # literal sentinel survives
+    )
+    result = load_table(p, empty_null=True)
+    assert "case_number" in result.report["text_columns"]
+    cn = result.df["case_number"]
+    assert pd.isna(cn.iloc[0])
+    assert pd.isna(cn.iloc[1])
+    assert cn.iloc[2] == "00891"   # leading zero still preserved
+    assert cn.iloc[3] == "NULL"    # narrow-NA contract still holds
+
+
+# ==========================================================================
 # 3.1.d  XLSX merged cells (vertical label fills its region)
 # ==========================================================================
 
