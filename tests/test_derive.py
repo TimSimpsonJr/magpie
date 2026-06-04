@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 
 from scripts.derive import (
+    compile_keyword_regex,
     derive_base_type,
     derive_columns,
     derive_geo,
@@ -29,6 +30,7 @@ from scripts.derive import (
     derive_nets,
     derive_reason,
     derive_temporal_et,
+    keyword_mask,
 )
 
 
@@ -483,3 +485,56 @@ def test_derive_columns_unknown_key_raises():
     df = _full_df()
     with pytest.raises(ValueError, match="unknown derivation"):
         derive_columns(df, {"bogus": {}})
+
+
+# --------------------------------------------------------------------------- #
+# public keyword guardrail (compile_keyword_regex / keyword_mask)
+#
+# Phase 4's recipe checks (immigration / pretext / co-travel) REUSE this single
+# implementation of the word-boundary defense rather than reimplementing it, so
+# the ICE/"polICE" trap is defeated in exactly one place. These pin the public
+# surface and the boundary semantics the recipe relies on.
+# --------------------------------------------------------------------------- #
+
+def test_compile_keyword_regex_word_boundary_and_none():
+    pat = compile_keyword_regex(["ice", "cbp"])
+    assert pat.search("ICE detainer") is not None        # whole word (any case)
+    assert pat.search("CBP referral") is not None
+    assert pat.search("Assist local police") is None     # 'ice' substring -> no match
+    assert pat.search("community service") is None
+    assert pat.search("department of justice") is None
+    # empty / blank keyword set -> None (matches nothing)
+    assert compile_keyword_regex([]) is None
+    assert compile_keyword_regex(["", "  "]) is None
+
+
+def test_keyword_mask_is_boundary_anchored_and_null_safe():
+    s = pd.Series(
+        ["Assist local police", "ICE detainer", "service road", "deportation", None, ""]
+    )
+    mask = keyword_mask(s, ["ice", "deportation"])
+    assert mask.tolist() == [False, True, False, True, False, False]
+    assert mask.dtype == bool
+    # empty keyword set -> all False, index preserved
+    empty = keyword_mask(s, [])
+    assert empty.tolist() == [False] * 6
+    assert list(empty.index) == list(s.index)
+
+
+def test_keyword_mask_preserves_a_non_default_index():
+    s = pd.Series(["ICE hold", "police log"], index=[10, 20])
+    mask = keyword_mask(s, ["ice"])
+    assert list(mask.index) == [10, 20]
+    assert mask.tolist() == [True, False]
+
+
+def test_compile_keyword_regex_multiword_and_escaping():
+    # A multi-word keyword is matched as a whole phrase on word boundaries.
+    pat = compile_keyword_regex(["department of justice", "co-travel"])
+    assert pat.search("referred to the Department of Justice today") is not None
+    assert pat.search("a co-travel convoy") is not None
+    # regex metacharacters in a keyword are matched LITERALLY (re.escape), not as
+    # a pattern -- so 'c.b.p' matches the literal text, never 'cXbYp'.
+    pat2 = compile_keyword_regex(["c.b.p"])
+    assert pat2.search("see c.b.p note") is not None
+    assert pat2.search("cabbp not a match") is None

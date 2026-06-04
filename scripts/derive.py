@@ -89,7 +89,7 @@ def _match_text(value: Any) -> str:
     return str(value).strip().lower()
 
 
-def _compile_keyword_regex(keywords: Iterable[str]) -> re.Pattern[str] | None:
+def compile_keyword_regex(keywords: Iterable[str]) -> re.Pattern[str] | None:
     """Compile keywords into one case-insensitive WORD-BOUNDARY alternation.
 
     Returns a pattern that matches when ANY keyword appears as a whole word in
@@ -108,6 +108,11 @@ def _compile_keyword_regex(keywords: Iterable[str]) -> re.Pattern[str] | None:
     For a keyword that begins or ends with a non-word character the adjacent
     ``\\b`` would never match; keywords here are alphabetic tokens, for which
     ``\\b`` is exactly the whole-word anchor we want.
+
+    This is the PUBLIC, reusable surface of the word-boundary keyword defense:
+    Phase 4's recipe checks (immigration / pretext / co-travel) compile their
+    keyword sets through here (directly or via :func:`keyword_mask`) so the
+    ICE/"polICE" trap is defeated by ONE implementation, not several.
     """
     cleaned = [str(k).strip().lower() for k in keywords if str(k).strip()]
     if not cleaned:
@@ -118,6 +123,39 @@ def _compile_keyword_regex(keywords: Iterable[str]) -> re.Pattern[str] | None:
     cleaned.sort(key=len, reverse=True)
     alternation = "|".join(re.escape(k) for k in cleaned)
     return re.compile(rf"\b(?:{alternation})\b", re.IGNORECASE)
+
+
+# Back-compat alias: internal callers (``derive_reason`` / ``derive_immigration``)
+# and any out-of-tree importer that referenced the private name keep working
+# unchanged after the promotion to the public ``compile_keyword_regex``.
+_compile_keyword_regex = compile_keyword_regex
+
+
+def keyword_mask(series: pd.Series, keywords: Iterable[str]) -> pd.Series:
+    """Boolean mask: True where a cell contains ANY keyword on a WORD boundary.
+
+    The reusable ICE/"polICE" guardrail at the Series level. Matching is
+    case-insensitive and word-boundary anchored via :func:`compile_keyword_regex`,
+    so "Assist local police" / "community service" / "Department of Justice" do
+    NOT match the keyword "ice", while "ICE detainer" does. Null / blank cells
+    are False (via the shared :func:`_match_text` null-safe normalizer, so a
+    missing reason never becomes the literal string ``"nan"``). An empty / blank
+    keyword set yields an all-False mask.
+
+    Phase 4's keyword checks (immigration / pretext / co-travel) route through
+    here so the defense lives in exactly one place. The input ``series`` index is
+    preserved on the returned :class:`pandas.Series` (dtype ``bool``), so the
+    mask aligns back to the caller's frame.
+    """
+    pattern = compile_keyword_regex(keywords)
+    if pattern is None:
+        return pd.Series(False, index=series.index, dtype=bool)
+
+    def matches(value: Any) -> bool:
+        text = _match_text(value)
+        return bool(text) and pattern.search(text) is not None
+
+    return series.map(matches).astype(bool)
 
 
 # --------------------------------------------------------------------------- #
