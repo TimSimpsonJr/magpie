@@ -32,6 +32,9 @@ immigration_exhibit.csv
 # --- Cross-model-review plugin (local session / hook state) ---
 .claude/*.local.md
 
+# --- Session handoffs (local-only: internal process notes + local paths; public repo) ---
+docs/handoffs/
+
 # --- OS / editor noise ---
 .DS_Store
 Thumbs.db
