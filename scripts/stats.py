@@ -27,11 +27,21 @@ def gini(values):
     same), approaching ``1.0`` is total concentration (one actor holds it all).
     ``None`` entries are dropped. An empty or all-zero input returns ``0.0``.
 
+    Negative magnitudes are rejected with :class:`ValueError`. The Gini formula
+    here assumes non-negative magnitudes; a negative value silently yields an
+    out-of-``[0, 1]`` result (e.g. ``gini([-5, 0, 5, 10])`` would be ``1.25``)
+    and the all-zero guard can mask real dispersion (e.g. ``[-10, -10, 10, 10]``
+    sums to zero). Since these figures get published, fail loudly instead.
+
     Example:
         >>> gini([5, 5, 5, 5])
         0.0
     """
     x = np.sort(np.asarray([v for v in values if v is not None], dtype=float))
+    if x.size and x[0] < 0:
+        raise ValueError(
+            f"gini expects non-negative magnitudes; got negative value {x[0]:g}"
+        )
     n = x.size
     if n == 0 or x.sum() == 0:
         return 0.0
@@ -110,15 +120,33 @@ def automation_signature(
     half-open ``[day_start, day_end)``, so ``day_end`` itself counts as
     overnight.
 
+    Rows whose ``hour`` is null/NaN or outside ``0..23`` are DROPPED before
+    each actor's shares are computed, so missing or garbage timestamps can
+    never inflate ``overnight_pct`` or trip ``flagged`` (a rigor guardrail: a
+    dirty hour must not manufacture an automation signal). An actor whose rows
+    are *all* invalid still appears in the output but with
+    ``daytime_pct == overnight_pct == 0.0`` and ``flagged == False``.
+
     Returns a :class:`pandas.DataFrame` indexed by actor with columns
     ``daytime_pct``, ``overnight_pct``, ``flagged``.
     """
-    hours = df[hour_col]
-    is_daytime = (hours >= day_start) & (hours < day_end)
-    work = pd.DataFrame({"agency": df[agency_col].values, "daytime": is_daytime.values})
-    grouped = work.groupby("agency")["daytime"]
-    daytime_pct = grouped.mean()
-    overnight_pct = 1.0 - daytime_pct
+    agencies = pd.Series(df[agency_col].values, name="agency")
+    hours = pd.to_numeric(df[hour_col], errors="coerce").to_numpy()
+    valid = (hours >= 0) & (hours <= 23)  # False for NaN and out-of-range
+    is_daytime = valid & (hours >= day_start) & (hours < day_end)
+
+    work = pd.DataFrame(
+        {"agency": agencies.values, "valid": valid, "daytime": is_daytime}
+    )
+    grouped = work.groupby("agency")
+    valid_count = grouped["valid"].sum()
+    daytime_count = grouped["daytime"].sum()
+
+    # Shares are over VALID rows only; agencies with zero valid rows -> 0.0/0.0.
+    daytime_pct = (daytime_count / valid_count).where(valid_count > 0, 0.0)
+    overnight_pct = ((valid_count - daytime_count) / valid_count).where(
+        valid_count > 0, 0.0
+    )
     result = pd.DataFrame(
         {
             "daytime_pct": daytime_pct,

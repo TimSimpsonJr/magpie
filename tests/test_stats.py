@@ -35,10 +35,11 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 def load_fixture_counts():
     """Load the synthetic per-agency search-count fixture.
 
-    A heavy-tailed distribution (a few mega-agencies plus a long tail of
-    one/two-search agencies) crafted so its Gini lands in the pilot band
-    [0.75, 0.85] and its top-1% / bottom-50% volume shares reproduce the
-    documented pilot concentration (~27% / ~2.5%).
+    A heavy-tailed distribution (a mega-agency plus a long tail of
+    one-search agencies) calibrated so its Gini lands on the pilot target
+    ~0.805 (band [0.79, 0.82]) and its top-1% / bottom-50% volume shares
+    reproduce the documented pilot concentration (~27% / ~2.5%). Actual
+    fixture values: Gini 0.805, top-1% 0.271, bottom-50% 0.025.
     """
     return json.loads((FIXTURES / "agency_counts_sample.json").read_text(encoding="utf-8"))
 
@@ -68,10 +69,29 @@ def test_gini_ignores_none():
     assert gini([5, None, 5, None, 5, 5]) == 0.0
 
 
+def test_gini_rejects_negative_values():
+    # Negative magnitudes are nonsensical here and silently break the formula
+    # (gini([-5, 0, 5, 10]) would be 1.25; [-10, -10, 10, 10] sums to zero and
+    # the all-zero guard would mask real dispersion). Fail loudly instead.
+    import pytest
+
+    with pytest.raises(ValueError, match="non-negative"):
+        gini([-5, 0, 5, 10])
+    with pytest.raises(ValueError, match="non-negative"):
+        gini([-10, -10, 10, 10])
+    # None-filtering still runs before the negative check.
+    with pytest.raises(ValueError, match="non-negative"):
+        gini([None, -1, 2])
+    # Existing non-negative cases are unaffected.
+    assert gini([5, 5, 5, 5]) == 0.0
+    assert gini([0] * 99 + [100]) > 0.95
+
+
 def test_gini_matches_pilot_band():
     counts = load_fixture_counts()
     g = gini(counts)
-    assert 0.75 <= g <= 0.85, f"fixture Gini {g} outside pilot band [0.75, 0.85]"
+    # Pinned to the pilot target ~0.805 (design doc 9), not a loose band.
+    assert 0.79 <= g <= 0.82, f"fixture Gini {g} outside pilot band [0.79, 0.82]"
 
 
 # --------------------------------------------------------------------------
@@ -81,13 +101,13 @@ def test_gini_matches_pilot_band():
 def test_top_k_share_reproduces_pilot():
     counts = load_fixture_counts()
     # Documented pilot: top 1% of agencies hold ~27% of all volume.
-    assert top_k_share(counts, k_frac=0.01) == pytest_approx(0.27, abs=0.05)
+    assert top_k_share(counts, k_frac=0.01) == pytest_approx(0.27, abs=0.02)
 
 
 def test_bottom_half_share_reproduces_pilot():
     counts = load_fixture_counts()
     # Documented pilot: bottom 50% of agencies hold ~2.5% of all volume.
-    assert bottom_half_share(counts) == pytest_approx(0.025, abs=0.02)
+    assert bottom_half_share(counts) == pytest_approx(0.025, abs=0.005)
 
 
 def test_top_k_share_all_volume_in_one_agency():
@@ -200,6 +220,69 @@ def test_automation_boundary_hours():
     a = result.loc["A"]
     assert a["daytime_pct"] == pytest_approx(0.5)
     assert a["overnight_pct"] == pytest_approx(0.5)
+
+
+def test_automation_drops_invalid_hours_no_inflation():
+    # A daytime agency with a NaN hour and an out-of-range hour (25). Those
+    # dirty rows must be DROPPED, not bucketed as overnight: overnight_pct must
+    # stay 0 and the agency must not be flagged. Without the guard, the two
+    # invalid rows would land in the overnight bucket (2/6 -> 0.33 overnight).
+    df = pd.DataFrame(
+        {
+            "agency": ["DAYDESK"] * 6,
+            "hour": [10, 11, 12, 13, float("nan"), 25],
+        }
+    )
+    result = automation_signature(df, "hour", "agency")
+    day = result.loc["DAYDESK"]
+    assert day["daytime_pct"] == pytest_approx(1.0)  # all 4 valid rows are daytime
+    assert day["overnight_pct"] == pytest_approx(0.0)
+    assert bool(day["flagged"]) is False
+
+
+def test_automation_invalid_hours_do_not_trip_flag():
+    # A mostly-daytime agency padded with invalid hours. If invalid hours were
+    # counted as overnight, overnight_pct would exceed 0.5 and flag falsely.
+    df = pd.DataFrame(
+        {
+            "agency": ["A"] * 5,
+            "hour": [10, 11, float("nan"), 99, -3],
+        }
+    )
+    result = automation_signature(df, "hour", "agency")
+    a = result.loc["A"]
+    # Only hours 10 and 11 are valid; both daytime.
+    assert a["daytime_pct"] == pytest_approx(1.0)
+    assert a["overnight_pct"] == pytest_approx(0.0)
+    assert bool(a["flagged"]) is False
+
+
+def test_automation_all_invalid_hours_not_flagged():
+    # Every row for this agency has an invalid hour. After dropping them it has
+    # zero valid rows: shares are 0.0/0.0 and it is NOT flagged.
+    df = pd.DataFrame(
+        {
+            "agency": ["GHOST", "GHOST", "GHOST"],
+            "hour": [float("nan"), 24, -1],
+        }
+    )
+    result = automation_signature(df, "hour", "agency")
+    ghost = result.loc["GHOST"]
+    assert ghost["daytime_pct"] == pytest_approx(0.0)
+    assert ghost["overnight_pct"] == pytest_approx(0.0)
+    assert bool(ghost["flagged"]) is False
+
+
+def test_automation_valid_hours_unchanged_with_drop_logic():
+    # Sanity: with only valid hours, the drop logic changes nothing. A genuine
+    # overnight agency is still flagged; a midday agency is still clean.
+    result = automation_signature(_automation_df(), "hour", "agency")
+    night = result.loc["NIGHTBOT"]
+    day = result.loc["DAYDESK"]
+    assert night["overnight_pct"] == pytest_approx(1.0)
+    assert bool(night["flagged"]) is True
+    assert day["daytime_pct"] == pytest_approx(1.0)
+    assert bool(day["flagged"]) is False
 
 
 # --------------------------------------------------------------------------
