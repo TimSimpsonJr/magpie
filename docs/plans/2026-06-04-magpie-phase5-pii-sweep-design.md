@@ -44,9 +44,11 @@ over-claim is just as wrong: the non-official remainder is **not** provably
      (`Officer/Ofc/Sgt/Sergeant/Deputy/Det/Detective/Lt/Cpl/Capt/Captain/Chief/
      Sheriff/Trooper/Marshal/Agent/Investigator/Patrolman/Cmdr/Major/Col/...`,
      config-overridable), **or**
-  2. the span **exact-matches** (normalized) an **officials lexicon** — built by
-     the skill from the structured *searcher/user/org* field and passed in. This
-     is the stronger signal (catches an official named without a title).
+  2. the span **contains** an **officials-lexicon** name — a normalized
+     token-SUBSET match (the official's name tokens ⊆ the span's tokens, robust to
+     spaCy span over-extension), the lexicon built by the skill from the structured
+     *searcher/user/org* field and passed in. This is the stronger signal (catches
+     an official named without a title); e.g. `"Dana Wheeler DOB"` still matches.
 - **`person_unknown_role`** — a PERSON **not** identified as official. Published
   wording: *"person names not identified as officials"* — a **lead**, never
   "private people." (Positive private-subject cues — `victim`/`subject`/`passenger`
@@ -57,10 +59,13 @@ over-claim is just as wrong: the non-official remainder is **not** provably
 ### 2.2 Two exposure metrics — strict headline + broad leads
 - **`exposure.strict`** — rows carrying a **high-precision PII pattern**: every
   default pattern EXCEPT the ambiguous bare date — `ssn`, `phone`, `email`,
-  `dob_kw`, `alien_num`, `driver_lic`, `race_sex`. Defined as "not in
-  `BROAD_ONLY_PATTERN_NAMES`", so a custom pattern set stays correct. This is the
-  **publishable headline**: each is an identifier or sensitive descriptor that
-  should have been sanitized. (`dob_kw`/`race_sex` are sensitive *descriptors*, not
+  `dob_kw`, `alien_num`, `driver_lic`, `race_sex`. Defined as "not in the
+  broad-only set" — the default is `BROAD_ONLY_PATTERN_NAMES`, and a caller passing
+  a custom `patterns` map marks its own ambiguous patterns via
+  `sweep(broad_only_names=...)` (this is also how the Phase 11 compat profile folds
+  `possible_birthdate` back into the headline). This is the **publishable
+  headline**: each is an identifier or sensitive descriptor that should have been
+  sanitized. (`dob_kw`/`race_sex` are sensitive *descriptors*, not
   literal IDs — hence "high-precision PII", not "structured identifiers".)
 - **`exposure.broad`** — `strict` ∪ `person_unknown_role` ∪ `possible_birthdate`:
   the broader **review/leads** set (names not identified as officials; bare dates

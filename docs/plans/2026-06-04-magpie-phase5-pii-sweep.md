@@ -188,13 +188,14 @@ DEFAULT_PII_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
 }
 
-# possible_birthdate is the ONLY broad-only pattern: a bare MM/DD/YYYY also
-# matches an INCIDENT date, so it is a lead, never the publishable headline.
-# Every OTHER pattern is high-precision PII and counts toward the STRICT headline.
-# (Defining the broad-only set -- rather than enumerating "strict" -- keeps the
-# rule correct even when a caller passes a custom `patterns` map, and names the
-# headline honestly: "high-precision PII", NOT "structured identifiers" -- dob_kw
-# and race_sex are sensitive descriptors, not IDs.)
+# possible_birthdate is the ONLY DEFAULT broad-only pattern: a bare MM/DD/YYYY
+# also matches an INCIDENT date, so it is a lead, never the publishable headline.
+# Every other DEFAULT pattern is high-precision PII (counts toward STRICT). This
+# is only the DEFAULT broad-only set; `sweep(broad_only_names=...)` overrides it --
+# e.g. the Phase 11 compatibility profile passes `frozenset()` to fold
+# possible_birthdate INTO the headline and reproduce the pilot's documented figure.
+# Naming the headline honestly: "high-precision PII", NOT "structured identifiers"
+# -- dob_kw / race_sex are sensitive descriptors, not literal IDs.
 BROAD_ONLY_PATTERN_NAMES: frozenset[str] = frozenset({"possible_birthdate"})
 
 
@@ -265,6 +266,7 @@ def sweep(
     *,
     person_classifier: PersonClassifier | None = None,
     patterns: Mapping[str, re.Pattern[str]] | None = None,
+    broad_only_names: frozenset[str] | None = None,
     official_names: Sequence[str] | None = None,
     collect_local_texts: bool = False,
 ) -> dict[str, Any]:
@@ -403,12 +405,14 @@ def test_efficiency_ratio():
 **Step 3: Implementation** — insert before `return result` in `sweep`:
 
 ```python
-    strict_names = [n for n in patterns if n not in BROAD_ONLY_PATTERN_NAMES]
-    broad_only_names = [n for n in patterns if n in BROAD_ONLY_PATTERN_NAMES]
+    broad_only = (BROAD_ONLY_PATTERN_NAMES if broad_only_names is None
+                  else frozenset(broad_only_names))
+    strict_names = [n for n in patterns if n not in broad_only]
+    broad_only_present = [n for n in patterns if n in broad_only]
     strict_bool, broad_bool = [], []
     for i in range(n_distinct):
         strict_i = any(regex_hits[n][i] for n in strict_names)
-        broad_i = strict_i or unknown[i] or any(regex_hits[n][i] for n in broad_only_names)
+        broad_i = strict_i or unknown[i] or any(regex_hits[n][i] for n in broad_only_present)
         strict_bool.append(strict_i)
         broad_bool.append(broad_i)
 
@@ -475,6 +479,18 @@ def test_non_string_cells_do_not_crash_and_carry_no_pii():
     assert r["n_nonblank_rows"] == 3                        # None dropped; 42/3.14 kept as text
     assert r["categories"]["ssn"]["distinct"] == 1
     assert r["exposure"]["strict"]["distinct"] == 1
+
+def test_custom_broad_only_names_marks_a_custom_pattern_as_a_lead():
+    # a custom `patterns` map marks its OWN ambiguous pattern broad-only via the
+    # broad_only_names param (also how the Phase 11 compat profile works).
+    import re as _re
+    pats = {"ssn": DEFAULT_PII_PATTERNS["ssn"], "mycode": _re.compile(r"\bMC\d{4}\b")}
+    s = pd.Series(["MC1234", "ssn 123-45-6789"])
+    r = sweep(s, person_classifier=FakePersonClassifier(), patterns=pats,
+              broad_only_names=frozenset({"mycode"}))
+    assert r["exposure"]["strict"]["distinct"] == 1        # ssn row only (mycode is broad-only)
+    assert r["exposure"]["broad"]["distinct"] == 2         # + the mycode lead
+    assert r["categories"]["mycode"]["distinct"] == 1
 ```
 
 **Step 2: Run — FAIL.**
@@ -492,7 +508,10 @@ def test_non_string_cells_do_not_crash_and_carry_no_pii():
                 cats.append("person_official")
             if unknown[i]:
                 cats.append("person_unknown_role")
-            local[text_id(t)] = {"text": t, "count": int(counts[i]), "categories": cats}
+            tid = text_id(t)
+            if tid in local:   # two DISTINCT texts collided on the truncated hash
+                raise ValueError(f"text_id collision {tid!r}; widen the text_id truncation")
+            local[tid] = {"text": t, "count": int(counts[i]), "categories": cats}
         result["local_texts"] = local
 ```
 
@@ -611,8 +630,10 @@ class SpacyPersonClassifier:
 
     Lazily loads ``en_core_web_lg`` (NER-only) on first call. A PERSON span is
     ``official`` if (a) a title/rank token immediately precedes it (<=2 tokens),
-    or (b) the span's name tokens match the ``official_names`` lexicon (built by
-    the caller from the structured searcher/user field); else ``unknown_role``.
+    or (b) the span CONTAINS an ``official_names`` entry -- a normalized token-
+    SUBSET match (the official's name tokens are a subset of the span's tokens,
+    robust to span over-extension), the lexicon built by the caller from the
+    structured searcher/user field; else ``unknown_role``.
     Classification uses token/context windows, NEVER exact span strings (spans
     over-extend). Heuristic by design -- a lead, not a verdict (see design doc).
     """
