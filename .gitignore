@@ -29,6 +29,9 @@ pretext_exhibit.csv
 immigration_exhibit.csv
 # ============================================================
 
+# --- Cross-model-review plugin (local session / hook state) ---
+.claude/*.local.md
+
 # --- OS / editor noise ---
 .DS_Store
 Thumbs.db
