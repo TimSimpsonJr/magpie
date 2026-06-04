@@ -1,6 +1,7 @@
 import json
 
 import pandas as pd
+import pytest
 from scripts.pii_sweep import distinct_texts, text_id
 from scripts.pii_sweep import DEFAULT_PII_PATTERNS, BROAD_ONLY_PATTERN_NAMES, _regex_hit
 from scripts.pii_sweep import PersonFlags, sweep
@@ -214,3 +215,44 @@ def test_overlap_patterns_stay_consistent_with_recipe_check_pii():
     overlap = {"ssn": "ssn", "phone": "phone", "email": "email", "alien_num": "a_number"}
     for sweep_key, recipe_key in overlap.items():
         assert DEFAULT_PII_PATTERNS[sweep_key].pattern == RECIPE_PII[recipe_key], sweep_key
+
+
+@pytest.fixture(scope="module")
+def spacy_classifier():
+    pytest.importorskip("en_core_web_lg")     # CI without the 400MB model skips cleanly
+    from scripts.pii_sweep import SpacyPersonClassifier
+    return SpacyPersonClassifier
+
+
+@pytest.mark.spacy
+def test_real_ner_finds_person_presence(spacy_classifier):
+    flags = spacy_classifier()(["John Smith was pulled over", "vehicle of interest"])
+    assert flags[0].unknown_role and not flags[0].official     # bare name -> unknown_role
+    assert not flags[1].unknown_role and not flags[1].official # no person
+
+
+@pytest.mark.spacy
+def test_title_prefix_marks_official(spacy_classifier):
+    (f,) = spacy_classifier()(["Officer Ramirez requested backup"])
+    assert f.official and not f.unknown_role                   # title prefix -> official
+
+
+@pytest.mark.spacy
+def test_official_names_lexicon_marks_untitled_official(spacy_classifier):
+    clf = spacy_classifier(official_names={"dana wheeler"})  # built from the searcher field
+    (f,) = clf(["Dana Wheeler ran the plate"])
+    assert f.official
+
+
+def test_norm_name_tokens_keeps_internal_punctuation_drops_badge():
+    from scripts.pii_sweep import _norm_name_tokens            # PURE -- no model needed
+    assert _norm_name_tokens("O'Brien") == frozenset({"o'brien"})
+    assert _norm_name_tokens("Anne-Marie Diaz, #4471") == frozenset({"anne-marie", "diaz"})
+
+
+@pytest.mark.spacy
+def test_sweep_wires_official_names_through_to_default_classifier(spacy_classifier):
+    # the LAZY default path: sweep() must build SpacyPersonClassifier(official_names=...)
+    r = sweep(pd.Series(["Dana Wheeler ran the plate"]), official_names={"dana wheeler"})
+    assert r["categories"]["person_official"]["distinct"] == 1
+    assert r["categories"]["person_unknown_role"]["distinct"] == 0

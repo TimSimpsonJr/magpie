@@ -3,3 +3,6 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "spacy: model-gated pii_sweep integration tests that load en_core_web_lg (select with -k spacy)",
+]

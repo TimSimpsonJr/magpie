@@ -181,6 +181,87 @@ def sweep(
     return result
 
 
-class SpacyPersonClassifier:  # real implementation lands in Task 7
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError("SpacyPersonClassifier is implemented in Task 7")
+OFFICIAL_TITLES: frozenset[str] = frozenset({
+    "officer", "ofc", "ofcr", "sgt", "sergeant", "deputy", "dep", "det",
+    "detective", "lt", "lieutenant", "cpl", "corporal", "capt", "cpt", "captain",
+    "chief", "sheriff", "trooper", "marshal", "agent", "investigator",
+    "patrolman", "cmdr", "commander", "major", "col", "colonel",
+})
+
+
+def _norm_name_tokens(text: str) -> frozenset[str]:
+    """Normalize a name into comparable tokens for the officials lexicon: lower,
+    split on whitespace, strip SURROUNDING punctuation, keep tokens with >=1
+    letter. Internal apostrophes/hyphens survive ("o'brien", "anne-marie"); a
+    badge suffix like "#4471" drops. Used for BOTH the lexicon and the PERSON
+    span so they compare on the same footing (and span over-extension is safe --
+    extra span tokens never block a subset match)."""
+    out: set[str] = set()
+    for w in text.lower().split():
+        w = w.strip(".,'\"-#/()")
+        if any(ch.isalpha() for ch in w):
+            out.add(w)
+    return frozenset(out)
+
+
+class SpacyPersonClassifier:
+    """Production PersonClassifier: spaCy PERSON NER + official/unknown split.
+
+    Lazily loads ``en_core_web_lg`` (NER-only) on first call. A PERSON span is
+    ``official`` if (a) a title/rank token immediately precedes it (<=2 tokens),
+    or (b) the span CONTAINS an ``official_names`` entry -- a normalized token-
+    SUBSET match (the official's name tokens are a subset of the span's tokens,
+    robust to span over-extension), the lexicon built by the caller from the
+    structured searcher/user field; else ``unknown_role``.
+    Classification uses token/context windows, NEVER exact span strings (spans
+    over-extend). Heuristic by design -- a lead, not a verdict (see design doc).
+    """
+
+    def __init__(self, *, official_names: Sequence[str] = (),
+                 titles: frozenset[str] = OFFICIAL_TITLES,
+                 model: str = "en_core_web_lg") -> None:
+        self._lexicon = frozenset(
+            toks for toks in (_norm_name_tokens(n) for n in official_names) if toks
+        )
+        self._titles = frozenset(t.lower() for t in titles)
+        self._model = model
+        self._nlp = None
+
+    def _load(self):
+        if self._nlp is None:
+            import spacy
+            self._nlp = spacy.load(
+                self._model,
+                disable=["tagger", "parser", "lemmatizer", "attribute_ruler"],
+            )
+        return self._nlp
+
+    def __call__(self, texts: Sequence[str]) -> list[PersonFlags]:
+        nlp = self._load()
+        out: list[PersonFlags] = []
+        for doc in nlp.pipe(list(texts), batch_size=256):
+            official = unknown = False
+            for ent in doc.ents:
+                # len>2 floor: drop 1-2 char PERSON false positives (initials).
+                # DELIBERATE default (matches the pilot); misses very short
+                # surnames like "Li"/"Ng" -- documented trade (user decision).
+                if ent.label_ != "PERSON" or len(ent.text.strip()) <= 2:
+                    continue
+                if self._is_official(doc, ent):
+                    official = True
+                else:
+                    unknown = True
+            out.append(PersonFlags(official=official, unknown_role=unknown))
+        return out
+
+    def _is_official(self, doc, ent) -> bool:
+        # (b) lexicon: some official's normalized name-token-set is contained in
+        # the span (span over-extension is safe -- extra tokens don't block it).
+        span_tokens = _norm_name_tokens(ent.text)
+        if self._lexicon and any(name <= span_tokens for name in self._lexicon):
+            return True
+        # (a) title/rank token immediately preceding the span (<=2 tokens back)
+        for j in range(max(0, ent.start - 2), ent.start):
+            if doc[j].text.strip(".").lower() in self._titles:
+                return True
+        return False
