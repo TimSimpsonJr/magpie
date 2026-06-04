@@ -9,3 +9,11 @@ pandas==3.0.3
 duckdb==1.5.3
 pyarrow==24.0.0
 numpy==2.4.6
+
+# Phase 3.1 dirty-data loader (scripts/load_table.py):
+#   openpyxl           — read .xlsx + unmerge merged cells (the XLSX path).
+#   charset-normalizer — encoding pre-flight (sniff a byte sample so a latin-1
+#                        FOIA export reads without mojibake). Versions verified
+#                        against the Phase 3 research gate (prior-art.md §3, §5.1).
+openpyxl==3.1.5
+charset-normalizer==3.4.3
