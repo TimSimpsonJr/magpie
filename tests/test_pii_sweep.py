@@ -58,6 +58,16 @@ def test_each_pattern_matches_positive_and_rejects_negative():
     assert not _regex_hit(DEFAULT_PII_PATTERNS["ssn"], "order 12345 6789")
 
 
+def test_driver_lic_requires_a_digit_in_the_body():
+    # POSITIVES: a real license body always carries >=1 digit.
+    for text in ("OLN# AB1234567", "DL 1234567", "OL A1234567"):
+        assert _regex_hit(DEFAULT_PII_PATTERNS["driver_lic"], text), text
+    # NEGATIVES: a bare 2-char prefix + an all-caps WORD (no digit) is prose,
+    # not a license -- must not inflate the strict headline.
+    for text in ("OL HENDERSON", "a DL ABCDEFG", "DL HENDERSON"):
+        assert not _regex_hit(DEFAULT_PII_PATTERNS["driver_lic"], text), text
+
+
 def test_alien_num_is_8_or_9_digits_not_more():
     assert _regex_hit(DEFAULT_PII_PATTERNS["alien_num"], "A12345678")        # 8
     assert _regex_hit(DEFAULT_PII_PATTERNS["alien_num"], "A123456789")       # 9
@@ -65,12 +75,22 @@ def test_alien_num_is_8_or_9_digits_not_more():
     assert not _regex_hit(DEFAULT_PII_PATTERNS["alien_num"], "A1234567890")  # 10
 
 
-def test_possible_birthdate_is_the_only_broad_only_pattern():
-    # a bare date is also an incident date -> broad-only; every OTHER default
-    # pattern is high-precision PII (counts toward the strict headline).
-    assert BROAD_ONLY_PATTERN_NAMES == {"possible_birthdate"}
-    assert {"ssn", "phone", "email", "alien_num", "dob_kw", "race_sex",
+def test_broad_only_patterns_are_birthdate_and_race_sex():
+    # a bare date is also an incident date, and a 2-char demographic ratio
+    # collides with prose ("H/M ratio") -> both are broad-only leads. Every
+    # OTHER default pattern is high-precision PII (counts toward the headline).
+    assert BROAD_ONLY_PATTERN_NAMES == {"possible_birthdate", "race_sex"}
+    assert {"ssn", "phone", "email", "alien_num", "dob_kw",
             "driver_lic"}.isdisjoint(BROAD_ONLY_PATTERN_NAMES)
+
+
+def test_race_sex_is_a_broad_lead_not_the_strict_headline():
+    # a demographic ratio still FIRES as a category, but it is a medium-precision
+    # lead -> it must land in broad, never strict.
+    r = sweep(pd.Series(["susp B/M"]), person_classifier=FakePersonClassifier())
+    assert r["categories"]["race_sex"]["distinct"] == 1
+    assert r["exposure"]["strict"]["distinct"] == 0
+    assert r["exposure"]["broad"]["distinct"] == 1
 
 
 def test_sweep_weights_distinct_by_counts():
@@ -79,6 +99,15 @@ def test_sweep_weights_distinct_by_counts():
     assert r["categories"]["ssn"] == {"weighted": 50, "distinct": 1}
     assert r["n_rows"] == 53 and r["n_nonblank_rows"] == 53
     assert r["n_distinct_texts"] == 2
+
+
+def test_sweep_excludes_blanks_from_the_weighting_base():
+    # n_rows counts EVERY row; the weighting base (n_nonblank_rows) drops blank /
+    # whitespace-only / None cells so they never dilute the exposure tally.
+    s = pd.Series(["ssn 123-45-6789", "", "   ", None])
+    r = sweep(s, person_classifier=FakePersonClassifier())
+    assert r["n_rows"] == 4
+    assert r["n_nonblank_rows"] == 1
 
 
 def test_sweep_classifies_official_vs_unknown_role():
@@ -248,6 +277,15 @@ def test_norm_name_tokens_keeps_internal_punctuation_drops_badge():
     from scripts.pii_sweep import _norm_name_tokens            # PURE -- no model needed
     assert _norm_name_tokens("O'Brien") == frozenset({"o'brien"})
     assert _norm_name_tokens("Anne-Marie Diaz, #4471") == frozenset({"anne-marie", "diaz"})
+
+
+def test_empty_official_names_are_filtered_from_the_lexicon():
+    # PURE -- constructing the classifier does NOT load the model. The `if toks`
+    # guard is load-bearing: a badge-only / empty official name normalizes to
+    # frozenset(), and frozenset() <= span_tokens is ALWAYS True, which would mark
+    # EVERY person official and silently zero the exposure headline.
+    from scripts.pii_sweep import SpacyPersonClassifier
+    assert SpacyPersonClassifier(official_names=["#4471", ""])._lexicon == frozenset()
 
 
 @pytest.mark.spacy
