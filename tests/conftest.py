@@ -20,6 +20,20 @@ from pathlib import Path
 
 import pytest
 
+# Phase 7 redaction-check fixtures (synthetic, PyMuPDF-free; built with
+# pikepdf + fpdf2 + crafted bytes). Star-imported here so pytest discovers them
+# for tests/test_redaction_check.py. noqa: the names are used as fixtures.
+from tests.conftest_redaction import (  # noqa: F401
+    acroform_pdf,
+    annotation_text_pdf,
+    clean_pdf,
+    clean_single_rev_pdf,
+    embedded_file_pdf,
+    incremental_save_pdf,
+    metadata_pdf,
+    redact_annot_pdf,
+)
+
 # A latin-1-safe garbled text-layer line the gate must diagnose as garbled_text:
 # gibberish non-dictionary LETTER tokens (so the page clears the alphabetic-token
 # floor with a ~0 wordlist hit-rate -- a present text layer Docling would TRUST)
