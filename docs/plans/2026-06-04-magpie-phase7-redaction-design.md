@@ -2,7 +2,8 @@
 title: Magpie Phase 7 -- redaction-check + redact-output (design)
 date: 2026-06-04
 phase: 7
-status: draft
+status: approved
+design_review: APPROVE (Codex, round 2, 2026-06-05)
 codex_thread_id: 019e95ea-d5d9-72f0-87db-e1bbd50a4c42
 supersedes:
 ---
