@@ -142,6 +142,30 @@ def redact_annot_pdf(tmp_path) -> Path:
 
 
 @pytest.fixture
+def redact_annot_text_pdf(tmp_path) -> Path:
+    """A page that carries BOTH a ``/Subtype /Redact`` annotation AND an
+    extractable text layer ``hidden secret text here`` under it -- the trigger-(i)
+    co-occurrence the text_layer check needs (a /Redact-flagged page whose text is
+    still extractable). Built fpdf2-first (native text) then a pikepdf pass adds
+    the unapplied /Redact annot (NO fitz). Distinct from ``redact_annot_pdf``,
+    which is a blank page + annot with no text layer."""
+    import pikepdf
+    from pikepdf import Array, Dictionary, Name
+
+    text_path = _fpdf_line_pdf(tmp_path / "redact_annot_text.pdf", "hidden secret text here")
+    pdf = pikepdf.open(str(text_path), allow_overwriting_input=True)
+    page = pdf.pages[0]
+    annot = Dictionary(
+        Type=Name.Annot,
+        Subtype=Name.Redact,
+        Rect=Array([18, 40, 120, 55]),
+    )
+    page.Annots = Array([pdf.make_indirect(annot)])
+    pdf.save(str(text_path))
+    return text_path
+
+
+@pytest.fixture
 def embedded_file_pdf(tmp_path) -> Path:
     """pikepdf carrying an embedded attachment ``hidden_notes.txt`` (13 bytes of
     ``internal only``). The FILENAME can itself leak PII (e.g. ``John_Doe_DOB``),

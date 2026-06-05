@@ -582,3 +582,92 @@ def check_box_over_text(path) -> list[RedactionFinding]:
                 )
             )
     return findings
+
+
+# --------------------------------------------------------------------------- #
+# text_layer (Task 3h / design 1.1 check 2, 1.4). pdfminer.six per-page
+# extractable-text presence. This is NOT a standalone alarm (every normal PDF has
+# legitimate extractable text). It becomes a FINDING only on PAGE-LEVEL
+# CO-OCCURRENCE with another redaction signal:
+#   (i)   the page is in ``signal_pages`` (pages the orchestrator flagged via
+#         box_over_text OR unapplied_redact) AND the page has extractable text, OR
+#   (iii) the page is image-bearing (scanned-looking) yet ALSO carries a text
+#         layer (an image-only page should have no selectable text -- a hidden
+#         text layer under a scan is itself the anomaly).
+# (Trigger (ii), the box_over_text corroboration, is just case (i) with the
+# signal page coming from x-ray -- the orchestrator unions both signal sources.)
+# PAGE-LEVEL ONLY -- NO cross-engine bbox correlation (the coordinate trap, 1.4).
+# pdfminer text is raw -> if surfaced it goes in ``local_evidence``; ``detail``
+# carries page + char-count facts only.
+# --------------------------------------------------------------------------- #
+
+
+def check_text_layer(path, *, signal_pages) -> list[RedactionFinding]:
+    """LEAD: a page carries extractable text that CO-OCCURS (page-level) with a
+    redaction signal. ``signal_pages`` is the set of 1-based page numbers the
+    orchestrator flagged via box_over_text / unapplied_redact (passed in -- this is
+    the only cross-check ordering dependency). A finding fires for page ``p`` when
+    either (i) ``p in signal_pages`` and the page has extractable text, OR (iii)
+    the page is image-bearing yet still carries a text layer. NEVER a standalone
+    "text exists => bad" alarm. Page-level co-occurrence ONLY (design 1.4): no
+    cross-engine bbox math.
+
+    ``detail`` carries the page + char count + which trigger fired (publishable
+    facts); the extracted text itself is NOT surfaced (a normal page's full text is
+    not evidence -- the char count + co-occurrence is the lead). If a future
+    variant surfaces a snippet it MUST go in ``local_evidence``."""
+    from pdfminer.high_level import extract_pages
+    from pdfminer.layout import LTChar, LTFigure, LTImage, LTTextContainer
+
+    signal_pages = set(signal_pages or ())
+    findings: list[RedactionFinding] = []
+    for pageno, layout in enumerate(extract_pages(str(path)), start=1):
+        char_count, has_image = _page_text_and_image(
+            layout, LTChar, LTImage, LTTextContainer, LTFigure
+        )
+        if char_count <= 0:
+            continue  # nothing extractable on this page -> no text-layer lead
+        on_signal_page = pageno in signal_pages
+        # (iii) image-bearing page that ALSO carries a hidden text layer.
+        image_only_with_text = has_image
+        if not (on_signal_page or image_only_with_text):
+            continue  # extractable text but no co-occurrence -> not a lead
+        trigger = "redaction_signal" if on_signal_page else "image_with_text_layer"
+        findings.append(
+            RedactionFinding(
+                check="text_layer",
+                severity="medium",
+                page=pageno,
+                summary=(
+                    f"page {pageno} carries {char_count} extractable text char(s) "
+                    f"co-occurring with a redaction signal ({trigger}) -- the text "
+                    f"layer may be recoverable (a lead, page-level only)"
+                ),
+                detail={
+                    "char_count": char_count,
+                    "trigger": trigger,
+                    "has_image": has_image,
+                },
+            )
+        )
+    return findings
+
+
+def _page_text_and_image(layout, LTChar, LTImage, LTTextContainer, LTFigure):
+    """Walk a pdfminer page ``layout`` (descending text containers + figures) and
+    return ``(extractable_char_count, has_image)``."""
+    char_count = 0
+    has_image = False
+
+    def _walk(obj) -> None:
+        nonlocal char_count, has_image
+        for el in obj:
+            if isinstance(el, LTChar):
+                char_count += 1
+            elif isinstance(el, LTImage):
+                has_image = True
+            if isinstance(el, (LTTextContainer, LTFigure)):
+                _walk(el)
+
+    _walk(layout)
+    return char_count, has_image

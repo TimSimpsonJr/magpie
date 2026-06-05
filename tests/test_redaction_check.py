@@ -323,3 +323,61 @@ def test_box_over_text_degrades_when_xray_missing(monkeypatch, clean_pdf):
     monkeypatch.setitem(sys.modules, "xray", None)
     with pytest.raises(CheckUnavailable):
         check_box_over_text(clean_pdf)
+
+
+# --------------------------------------------------------------------------- #
+# 3h. text_layer check (pdfminer) -- PAGE-LEVEL co-occurrence ONLY (design 1.1
+#     check 2 / 1.4). A finding ONLY when a page co-occurs with a redaction
+#     signal (signal_pages, from /Redact or box_over_text) AND has extractable
+#     text -- NEVER a standalone "text exists => bad" alarm. No cross-engine bbox.
+# --------------------------------------------------------------------------- #
+
+
+def test_text_layer_fires_on_signal_page_with_text(redact_annot_text_pdf):
+    # trigger (i): page 1 carries a /Redact signal (orchestrator passes it in via
+    # signal_pages) AND extractable text -> a co-occurrence finding.
+    from scripts.redaction_check import check_text_layer
+
+    findings = check_text_layer(redact_annot_text_pdf, signal_pages={1})
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.check == "text_layer"
+    assert f.page == 1
+    # the char count is a publishable fact -> detail; raw extracted text (if any)
+    # is local-only.
+    assert f.detail["char_count"] > 0
+    assert "hidden secret text here" not in str(f.detail)
+
+
+def test_text_layer_no_finding_without_co_occurrence(clean_pdf):
+    # the standalone-false-positive guard: a plain PDF full of legitimate
+    # extractable text but NO redaction signal (signal_pages empty) -> NO finding.
+    from scripts.redaction_check import check_text_layer
+
+    assert check_text_layer(clean_pdf, signal_pages=set()) == []
+
+
+def test_text_layer_no_finding_on_signal_page_without_text(redact_annot_pdf):
+    # a /Redact-signalled page that has NO extractable text (blank page + annot)
+    # -> NO text_layer finding (there is nothing in the text layer to recover).
+    from scripts.redaction_check import check_text_layer
+
+    assert check_text_layer(redact_annot_pdf, signal_pages={1}) == []
+
+
+@pytest.mark.xray
+def test_text_layer_corroborates_box_over_text(bad_redaction_pdf):
+    # trigger (ii): the box_over_text corroboration path. The orchestrator finds an
+    # x-ray box on page 1 (a signal page) and pdfminer extracts text there -> a
+    # text_layer corroboration finding. Page-level co-occurrence (NOT bbox math):
+    # here we simulate the orchestrator by computing signal_pages from x-ray.
+    from scripts.redaction_check import (
+        check_box_over_text,
+        check_text_layer,
+    )
+
+    box_hits = check_box_over_text(bad_redaction_pdf)
+    signal_pages = {h.page for h in box_hits if h.page is not None}
+    assert 1 in signal_pages  # x-ray flagged page 1
+    findings = check_text_layer(bad_redaction_pdf, signal_pages=signal_pages)
+    assert any(f.page == 1 and f.check == "text_layer" for f in findings)
