@@ -3,7 +3,7 @@ title: Magpie Phase 7 -- redaction-check + redact-output (design)
 date: 2026-06-04
 phase: 7
 status: draft
-codex_thread_id:
+codex_thread_id: 019e95ea-d5d9-72f0-87db-e1bbd50a4c42
 supersedes:
 ---
 
@@ -86,6 +86,13 @@ complex; a known gap, flagged for humans).
   the report carries `safe_to_publish: bool` = False if any finding at/above a
   high threshold. The SKILL refuses to publish until cleared.
 
+**FAIL-CLOSED (design-review fix, cluster publish-gate):** in `pre-publish` mode
+`safe_to_publish` is True ONLY when every check ran AND no finding meets the high
+threshold. If ANY check is `checks_unavailable` (x-ray absent, a check raised),
+`safe_to_publish` is **False** with a warning ("cannot certify: <check> did not
+run") -- an un-run check NEVER yields a publish-safe verdict. The gate fails
+closed, never open.
+
 Same check engines both ways; mode sets framing, default severity, and the
 `safe_to_publish` disposition (only computed in `pre-publish`).
 
@@ -97,9 +104,14 @@ class RedactionFinding:
     check: str            # "box_over_text" | "metadata" | ...
     severity: str         # "info" | "low" | "medium" | "high"
     page: int | None      # 1-based; None for doc-level (metadata, incr_save)
-    summary: str          # human lead, e.g. "1 box-over-text region on page 2"
-    detail: dict          # check-specific, PUBLISHABLE facts (counts, field names, bbox)
-    recovered_text: str | None = None   # LOCAL-ONLY: the under-box / hidden text; never published
+    summary: str          # human lead, PUBLISHABLE, e.g. "1 box-over-text region on page 2"
+    detail: dict          # PUBLISHABLE FACTS ONLY: counts, field NAMES, page, {bbox, origin}.
+                          # MUST NOT contain any raw leaked STRING -- no metadata VALUES, no
+                          # AcroForm /V values, no annotation /Contents, no under-box text.
+    local_evidence: dict | None = None  # LOCAL-ONLY (design-review fix): EVERY raw leaked
+                          # string this finding exposed (under-box text, metadata values, form
+                          # values, comment text), keyed by sub-source. publishable_view() DROPS
+                          # this whole field. The ONLY place raw recovered strings live.
 
 @dataclass
 class RedactionReport:
@@ -116,11 +128,15 @@ class RedactionReport:
     def to_dict(self) -> dict: ...    # JSON-able; publishable_view() strips recovered_text
 ```
 
-`publishable_view()` returns the report with EVERY `recovered_text` dropped --
-that field (the actual hidden/recovered string) NEVER crosses a published path.
-Librarian publishes counts + locations + severity + check names + the
-cannot_catch footer; the recovered text stays in the LOCAL report object only
-(same discipline as `pii_sweep` counts-publish / texts-stay-local).
+`publishable_view()` returns the report with EVERY finding's `local_evidence`
+dropped AND asserts no finding's `detail` carries a raw string (a defensive
+schema check, not just convention) -- so no raw recovered/leaked string EVER
+crosses a published path. Librarian publishes summary + counts + locations +
+severity + check names + the cannot_catch footer; all raw strings stay in the
+LOCAL report object's `local_evidence` only (same discipline as `pii_sweep`
+counts-publish / texts-stay-local). Every check that can surface a raw string
+(box_over_text, metadata, acroform_values, annotation_text, embedded_files names)
+puts that string in `local_evidence`, never in `detail`.
 
 ### 1.4 Coordinate-space discipline (research-gate Codex finding)
 
@@ -151,32 +167,46 @@ LAZILY inside the box_over_text check; if x-ray is absent OR `inspect()` raises 
 a malformed PDF, that ONE check degrades to `checks_unavailable` / a
 flag-for-humans warning -- never a crash, and never a false "clean". A
 per-check try/except keeps one failing check from sinking the others (each failure
--> a warning + that check listed unavailable).
+-> a warning + that check listed unavailable). **In `pre-publish` mode an
+unavailable check is fail-closed (1.2): it forces `safe_to_publish=False`, because
+a check that did not run cannot certify the absence of what it checks for.**
 
 ## 2. redact-output -- architecture
 
 ### 2.0 Entry points (I/O)
 
-Three functions, smallest-to-largest:
+Four functions. The PUBLISH-PATH CONTRACT (design-review fix) is enforced by
+which functions can emit a published string and which carry `text_id`/raw text:
 
 1. `redact_text(text, *, keep_names=(), officials=(), person_classifier=None,
-   patterns=DEFAULT_PII_PATTERNS) -> str` -- the CORE string redactor: a lazy
-   PERSON-NER + regex pass over ONE string that initials uninvolved names and
-   masks structured PII (2.1-2.3). This is what sanitizes ANY published string,
-   including a findings note that quotes reason-field text (the Task-7.2 test:
-   "a findings note with PII is redacted to initials"). Pure-testable with a fake
-   classifier.
+   patterns=DEFAULT_PII_PATTERNS) -> str` -- the CORE per-text redactor: a lazy
+   PERSON-NER + regex pass over ONE FLAGGED reason-field string that initials
+   uninvolved names and masks structured PII (2.1-2.3). SCOPE (locked, prior-art
+   RESOLVED): applied to `pii_sweep`-flagged reason-field texts, NOT run as an
+   autonomous scanner over arbitrary analyst narrative. Returns a redacted string
+   with NO `text_id`. Pure-testable with a fake classifier.
 2. `redact_local_texts(local_texts, *, keep_names=(), ...) -> dict[text_id, str]`
-   -- applies `redact_text` to each `pii_sweep` `local_texts` entry, returning the
-   redacted text per `text_id` (for a caller that publishes per-text references).
-3. `write_local_exhibit(local_texts, exhibit_dir, *, vault_roots=(),
-   redacted=False) -> Path` -- writes the FULL un-redacted exhibit (or, if
-   `redacted=True`, the redacted view) to a CSV under `exhibit_dir`, after the
-   vault-root validation (2.4). Returns the written path.
+   -- a LOCAL-ONLY helper that pairs each `pii_sweep` `text_id` with its
+   `redact_text` output. This text_id->redacted map is consumed ONLY by (4) (the
+   local exhibit); it is NEVER returned to or used as a published surface. (The
+   `text_id` is itself sha256(raw)[:16] -- treated as local, never published.)
+3. `redact_note(note_text, local_texts, *, keep_names=(), ...) -> str` -- the
+   PUBLISH-safe note sanitizer (the Task-7.2 "a findings note with PII is redacted
+   to initials" path): finds each KNOWN flagged raw text from `local_texts` that
+   occurs in `note_text` and replaces it IN PLACE with its `redact_text` form,
+   leaving the analyst's surrounding narrative untouched. Emits NO `text_id` and
+   no un-redacted flagged text. This is the ONLY redact-output function that
+   produces a PUBLISHED multi-sentence string.
+4. `write_local_exhibit(local_texts, exhibit_dir, *, vault_roots=(),
+   redacted=False) -> Path` -- writes the exhibit CSV (FULL un-redacted, or the
+   redacted view if `redacted=True`) under `exhibit_dir` AFTER the vault-root
+   validation (2.4). This LOCAL CSV is the ONLY surface that carries `text_id` +
+   raw text. Returns the written path.
 
-The PUBLISHED surface is always the output of (1)/(2); the un-redacted full text
-exists only inside (3)'s local CSV. `text_id` is an internal join key for (2)/(3)
-and is never emitted on a published path.
+CONTRACT: the only PUBLISHED outputs are (1) a redacted string and (3) a redacted
+note -- neither carries a `text_id` or a raw matched text. The `text_id` <-> raw
+mapping lives ONLY in (2)'s local map and (4)'s local CSV. A test asserts neither
+(1) nor (3)'s output contains any `text_id` or any original flagged substring.
 
 ### 2.1 The redaction POLICY (Tim's call -- involved vs uninvolved)
 
@@ -222,6 +252,23 @@ This keeps the `pii_sweep` DATA contract (local_texts shape) UNCHANGED; the only
 Phase-5 touch is extracting a pure helper the existing classifier already
 implements inline.
 
+**Per-consumer short-name policy (design-review fix, cluster role-helper-drift).**
+The shared `person_role_in_span` helper decides ROLE only (official/involved/
+uninvolved); the spaCy ent-filtering policy DIFFERS by consumer and is NOT shared:
+- `pii_sweep` (COUNTING) keeps its `len(ent.text.strip()) <= 2` skip -- an
+  acceptable, documented UNDER-count of 1-2 char names (Li/Ng).
+- `redact_output` (REDACTING) does NOT apply that skip: for redaction, a missed
+  name is a LEAK (an uninvolved/minor 2-char name would otherwise stay visible),
+  so it considers EVERY PERSON ent and redacts any that is not official/involved.
+The shared helper takes `span_text` + `preceding_token_texts` (the up-to-2
+normalized preceding tokens) + `officials` + `involved` + `titles`; it does the
+token-subset match and the title-prefix check EXACTLY as `_is_official` does
+today. The **drift test pins Phase-5 behavior precisely**: it re-runs the existing
+pii_sweep classifier cases through the refactored `SpacyPersonClassifier` and
+asserts identical PersonFlags (lexicon subset match, `<=2`-token title lookback,
+AND the `len<=2` ent-skip all preserved) -- the refactor is behavior-preserving or
+the test fails.
+
 ### 2.3 names -> initials + typed PII placeholders
 
 - A redacted PERSON span -> initials: first alphabetic char of each
@@ -233,17 +280,30 @@ implements inline.
   `[A-NUMBER]`, driver_lic -> `[DL]`. (Typed, not a blanket `[REDACTED]`, so the
   published artifact still conveys WHAT kind of PII was present.)
 
+**Span application order + overlap (design-review fix, cluster span-application).**
+`redact_text` collects ALL replacement spans (PERSON-name spans to initialize +
+regex PII spans to mask) as `(start, end, replacement)` against the original
+string, then applies them **right-to-left (descending start offset)** so earlier
+offsets never shift. Overlap rule: if two spans overlap, the LONGER span wins and
+the contained span is dropped (a PII match inside a PERSON span, or vice versa, is
+covered by the outer replacement -- never double-redacted); equal-length ties
+resolve PERSON-before-PII deterministically. Tests pin an overlapping fixture
+(e.g. a name adjacent to / containing a date).
+
 ### 2.4 Surfaces + the never-publish-raw invariant
 
 `redact_output` produces two surfaces from `local_texts`:
 
-- **Published artifact** (redacted): the texts with uninvolved names initialized
-  and structured PII masked, joined back by `text_id`, routed through Librarian
-  (or returned for the caller to publish). Carries NO `text_id`, NO raw text.
+- **Published artifact** (redacted): the output of `redact_text` (2.0 #1) or
+  `redact_note` (2.0 #3) -- uninvolved names initialized, structured PII masked.
+  Carries NO `text_id` and NO raw matched text. Routed through Librarian or
+  returned for the caller to publish.
 - **Local exhibit** (FULL, un-redacted): the original matched texts + counts +
   categories written to a CSV at a caller-supplied `exhibit_dir`. redact-output
   VALIDATES `exhibit_dir` is OUTSIDE every configured vault root (a `vault_roots`
-  param); it RAISES if the exhibit path resolves inside a vault (a fail-closed
+  param): it resolves BOTH `exhibit_dir` and each vault root to a real absolute
+  path (`Path.resolve()` -- collapsing symlinks and `..`) and RAISES if the
+  resolved exhibit path is at or under any resolved vault root (a fail-closed
   guard -- the full exhibit must never land where it could be published/synced).
 
 Invariant (design 7): a `text_id` or a raw matched `text` NEVER crosses a
@@ -277,9 +337,21 @@ for the box_over_text e2e (loads PyMuPDF). Two tiers:
 - **`xray`-marked tier**: real x-ray over a synthetic bad-redaction PDF (fpdf2
   text + solid black rect) -> asserts the page/bbox/text contract + the clean
   control returns no finding.
-- A **drift test** guards the shared `person_role_in_span` helper against the
-  Phase-5 official-detection behavior (the existing pii_sweep tests must stay
-  green after the refactor).
+- A **drift test** pins the shared `person_role_in_span` extraction: it asserts
+  the refactored `SpacyPersonClassifier` returns IDENTICAL PersonFlags to the
+  pre-refactor logic across the existing Phase-5 cases (lexicon subset match,
+  `<=2`-token title lookback, and the `len<=2` ent-skip) -- all existing pii_sweep
+  tests must stay green.
+- A **publish-path leak test** (the safety-critical one): asserts that
+  `publishable_view()` drops every `local_evidence` and that no finding's `detail`
+  contains a raw string; and that `redact_text` / `redact_note` outputs contain no
+  `text_id` and no original flagged substring. A redact_output test also confirms
+  a SHORT uninvolved name (2-char) IS redacted (the role-helper-drift guard) and a
+  PERSON/PII overlap fixture redacts cleanly (the span-application guard).
+- A **fail-closed test**: in `pre-publish` mode with x-ray forced unavailable,
+  `safe_to_publish` is False (never True) with the cannot-certify warning.
+- A **vault-guard test**: `write_local_exhibit` RAISES when `exhibit_dir` resolves
+  (via realpath, after symlink/`..` resolution) inside any `vault_roots` entry.
 
 All fixtures SYNTHETIC + ASCII-only; the real corpus is wired only at Task 11.2
 behind an env var, never committed.
