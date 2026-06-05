@@ -22,7 +22,12 @@ import sys
 
 import pytest
 
-from scripts.redact_output import redact_text
+from scripts.redact_output import (
+    redact_local_texts,
+    redact_note,
+    redact_text,
+    write_local_exhibit,
+)
 
 
 class FakeSpans:
@@ -35,6 +40,26 @@ class FakeSpans:
 
     def __call__(self, text):
         return self.ents
+
+
+class NameFinder:
+    """Model-free ``person_spans`` for the multi-text paths (redact_local_texts /
+    redact_note). Configured with PERSON name strings; on each call it scans the
+    GIVEN text for every configured name and reports its occurrences as PERSON
+    ent spans (empty preceding tokens). Works no matter which sub-text
+    redact_text/redact_note hands it."""
+
+    def __init__(self, names):
+        self.names = list(names)
+
+    def __call__(self, text):
+        ents = []
+        for name in self.names:
+            start = text.find(name)
+            while start != -1:
+                ents.append((name, start, start + len(name), []))
+                start = text.find(name, start + 1)
+        return ents
 
 
 # --------------------------------------------------------------------------- #
@@ -119,3 +144,145 @@ def test_import_redact_output_does_not_import_spacy():
     # module (and running the fake-span core) must not load spaCy.
     assert "scripts.redact_output" in sys.modules
     assert "spacy" not in sys.modules
+
+
+# --------------------------------------------------------------------------- #
+# Task 6: redact_local_texts / redact_note / write_local_exhibit + vault guard.
+# --------------------------------------------------------------------------- #
+
+
+def test_redact_local_texts_is_local_only_map():
+    lt = {
+        "abc123": {
+            "text": "John Doe stopped",
+            "count": 3,
+            "categories": ["person_unknown_role"],
+        }
+    }
+    m = redact_local_texts(lt, person_spans=NameFinder(["John Doe"]))
+    assert set(m.keys()) == {"abc123"}  # text_id key is LOCAL (feeds exhibit only)
+    assert "John" not in m["abc123"]
+    assert m["abc123"].startswith("J.D.")
+
+
+def test_redact_note_replaces_known_text_no_textid_no_raw():
+    lt = {
+        "abc123": {
+            "text": "John Doe stopped",
+            "count": 1,
+            "categories": ["person_unknown_role"],
+        }
+    }
+    note = "Per the log, John Doe stopped near 5th St. Officer Ruiz responded."
+    out = redact_note(note, lt, person_spans=NameFinder(["John Doe", "Ruiz"]))
+    assert "abc123" not in out and "John Doe" not in out
+    # analyst narrative untouched: redact_note only replaces KNOWN flagged texts,
+    # so "Officer Ruiz" (never a flagged local_text) and "5th St" survive.
+    assert "Officer Ruiz" in out and "5th St" in out
+
+
+def test_redact_note_overlapping_known_texts_longest_first_no_raw_suffix():
+    # two known flagged texts where one is a prefix of the other in the note;
+    # longest-match-first + right-to-left must leave NO raw PII suffix.
+    lt = {
+        "a": {"text": "John Doe", "count": 1, "categories": ["person_unknown_role"]},
+        "b": {
+            "text": "John Doe Jr DOB on file",
+            "count": 1,
+            "categories": ["person_unknown_role", "dob_kw"],
+        },
+    }
+    note = "Subject John Doe Jr DOB on file was logged."
+    out = redact_note(note, lt, person_spans=NameFinder(["John Doe Jr", "John Doe"]))
+    assert "John Doe" not in out and "DOB on file" not in out  # no raw suffix survives
+
+
+def test_redact_note_emits_no_textid_and_no_raw_flagged_substring():
+    # PUBLISH-PATH CONTRACT: a published note carries neither a text_id key nor
+    # any original flagged substring.
+    lt = {
+        "deadbeefdeadbeef": {
+            "text": "Jane Roe SSN 123-45-6789",
+            "count": 2,
+            "categories": ["person_unknown_role", "ssn"],
+        }
+    }
+    note = "Filed by analyst. Jane Roe SSN 123-45-6789 was in the reason field."
+    out = redact_note(note, lt, person_spans=NameFinder(["Jane Roe"]))
+    assert "deadbeefdeadbeef" not in out
+    assert "Jane Roe" not in out and "123-45-6789" not in out
+    assert "[SSN]" in out  # structured PII still typed-masked
+
+
+def test_redact_text_output_carries_no_textid_no_raw_name():
+    # The CORE published surface likewise leaks neither the id nor the raw name.
+    raw = "Sam Spade"
+    tid = "0123456789abcdef"
+    out = redact_text(raw + " here", person_spans=NameFinder([raw]))
+    assert tid not in out and raw not in out and "Sam" not in out
+
+
+def _exhibit_lt():
+    return {
+        "abc123": {
+            "text": "John Doe stopped",
+            "count": 3,
+            "categories": ["person_unknown_role"],
+        },
+        "def456": {
+            "text": "call 555-123-4567",
+            "count": 1,
+            "categories": ["phone"],
+        },
+    }
+
+
+def test_write_local_exhibit_outside_vault(tmp_path):
+    exhibit_dir = tmp_path / "exhibits"
+    exhibit_dir.mkdir()
+    p = write_local_exhibit(
+        _exhibit_lt(), exhibit_dir, vault_roots=[tmp_path / "vault"]
+    )
+    assert p.exists()
+    body = p.read_text(encoding="utf-8")
+    assert "John Doe" in body  # FULL un-redacted, LOCAL
+    assert "abc123" in body  # the text_id lives here (local CSV only)
+    # CSV is parseable with the documented header.
+    rows = list(csv.DictReader(body.splitlines()))
+    assert {"text_id", "text", "count", "categories"} <= set(rows[0].keys())
+
+
+def test_write_local_exhibit_redacted_view(tmp_path):
+    exhibit_dir = tmp_path / "exhibits"
+    exhibit_dir.mkdir()
+    p = write_local_exhibit(
+        _exhibit_lt(),
+        exhibit_dir,
+        vault_roots=[tmp_path / "vault"],
+        redacted=True,
+        person_spans=NameFinder(["John Doe"]),
+    )
+    body = p.read_text(encoding="utf-8")
+    assert "John Doe" not in body  # redacted view: names initialed
+    assert "J.D." in body and "[PHONE]" in body
+
+
+def test_write_local_exhibit_raises_inside_vault(tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "ex").mkdir(parents=True)
+    with pytest.raises(ValueError):
+        write_local_exhibit(_exhibit_lt(), vault / "ex", vault_roots=[vault])
+
+
+def test_write_local_exhibit_raises_on_symlink_into_vault(tmp_path):
+    # a link that RESOLVES into the vault must be rejected (Path.resolve()
+    # collapses the symlink before the containment check).
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    link = tmp_path / "exhibits"  # looks outside the vault by name...
+    try:
+        link.symlink_to(vault, target_is_directory=True)  # ...but resolves inside it
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this platform/run")
+    with pytest.raises(ValueError):
+        write_local_exhibit(_exhibit_lt(), link, vault_roots=[vault])

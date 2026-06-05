@@ -199,6 +199,149 @@ def redact_text(
     return _apply_spans(text, spans)
 
 
+def redact_local_texts(
+    local_texts: Mapping[str, Mapping[str, Any]],
+    *,
+    keep_names: Sequence[str] = (),
+    officials: Sequence[str] = (),
+    person_spans: PersonSpans | None = None,
+    patterns: Mapping[str, re.Pattern[str]] | None = None,
+) -> dict[str, str]:
+    """LOCAL-ONLY map: each ``pii_sweep`` ``text_id`` -> ``redact_text(entry["text"])``
+    (design 2.0 #2). Consumed ONLY by the exhibit; it is NEVER returned to or used
+    as a published surface (the ``text_id`` key is sha256(raw)[:16], treated as
+    local). ``local_texts`` is the ``{text_id: {text, count, categories}}`` shape
+    pii_sweep emits with ``collect_local_texts=True``."""
+    return {
+        tid: redact_text(
+            entry["text"],
+            keep_names=keep_names,
+            officials=officials,
+            person_spans=person_spans,
+            patterns=patterns,
+        )
+        for tid, entry in local_texts.items()
+    }
+
+
+def redact_note(
+    note_text: str,
+    local_texts: Mapping[str, Mapping[str, Any]],
+    *,
+    keep_names: Sequence[str] = (),
+    officials: Sequence[str] = (),
+    person_spans: PersonSpans | None = None,
+    patterns: Mapping[str, re.Pattern[str]] | None = None,
+) -> str:
+    """PUBLISH-safe note sanitizer (design 2.0 #3): replace every occurrence of
+    every KNOWN flagged ``text`` (from ``local_texts``) in ``note_text`` with its
+    ``redact_text`` form, leaving the analyst's surrounding narrative untouched.
+
+    Emits NO ``text_id`` and no un-redacted flagged text -- the only redact-output
+    function that produces a PUBLISHED multi-sentence string. By construction it
+    only touches spans equal to a known flagged text, so contextual names the
+    analyst wrote into the narrative are not NER-scanned.
+
+    Known texts are sorted LONGEST-FIRST so a longer flagged text is not
+    pre-empted by a shorter one that is its prefix; overlap resolution +
+    right-to-left application is delegated to the SHARED ``_apply_spans`` (longest
+    match wins, contained dropped) -- NOT a hand-rolled ``str.replace`` loop
+    (shorter-first replace was the bug to avoid). This is the no-raw-suffix
+    guarantee."""
+    if person_spans is None:
+        person_spans = SpacyPersonSpans()
+
+    # Distinct flagged texts, longest-first (so a longer match is collected before
+    # any shorter prefix; _apply_spans then drops the contained shorter span).
+    flagged = sorted(
+        {entry["text"] for entry in local_texts.values()},
+        key=len,
+        reverse=True,
+    )
+
+    spans: list[tuple[int, int, str]] = []
+    for flagged_text in flagged:
+        if not flagged_text:
+            continue
+        replacement = redact_text(
+            flagged_text,
+            keep_names=keep_names,
+            officials=officials,
+            person_spans=person_spans,
+            patterns=patterns,
+        )
+        start = note_text.find(flagged_text)
+        while start != -1:
+            spans.append((start, start + len(flagged_text), replacement))
+            start = note_text.find(flagged_text, start + 1)
+
+    return _apply_spans(note_text, spans)
+
+
+_EXHIBIT_FIELDS = ("text_id", "text", "count", "categories")
+
+
+def write_local_exhibit(
+    local_texts: Mapping[str, Mapping[str, Any]],
+    exhibit_dir,
+    *,
+    vault_roots: Sequence[Any] = (),
+    redacted: bool = False,
+    keep_names: Sequence[str] = (),
+    officials: Sequence[str] = (),
+    person_spans: PersonSpans | None = None,
+    patterns: Mapping[str, re.Pattern[str]] | None = None,
+) -> Path:
+    """Write the exhibit CSV (FULL un-redacted, or the redacted view if
+    ``redacted=True``) under ``exhibit_dir`` and return its path (design 2.0 #4).
+    This LOCAL CSV is the ONLY surface that carries ``text_id`` + raw text.
+
+    VAULT GUARD (design 2.4, fail-closed): both ``exhibit_dir`` and each
+    ``vault_roots`` entry are resolved via ``Path.resolve()`` (collapsing symlinks
+    and ``..``); RAISE ValueError if the resolved exhibit path is AT or UNDER any
+    resolved vault root -- the full exhibit must never land where it could be
+    published/synced. The directory is created (after the guard) if absent."""
+    exhibit_dir = Path(exhibit_dir)
+    resolved_dir = exhibit_dir.resolve()
+    for root in vault_roots:
+        resolved_root = Path(root).resolve()
+        if resolved_dir == resolved_root or resolved_root in resolved_dir.parents:
+            raise ValueError(
+                "exhibit_dir resolves at/under a vault root "
+                f"({resolved_dir} <= {resolved_root}); the un-redacted exhibit "
+                "must be written outside every vault root"
+            )
+
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    out_path = resolved_dir / ("exhibit_redacted.csv" if redacted else "exhibit.csv")
+
+    redacted_map: dict[str, str] = {}
+    if redacted:
+        redacted_map = redact_local_texts(
+            local_texts,
+            keep_names=keep_names,
+            officials=officials,
+            person_spans=person_spans,
+            patterns=patterns,
+        )
+
+    with out_path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_EXHIBIT_FIELDS)
+        writer.writeheader()
+        for tid, entry in local_texts.items():
+            text = redacted_map[tid] if redacted else entry["text"]
+            categories = entry.get("categories", [])
+            writer.writerow(
+                {
+                    "text_id": tid,
+                    "text": text,
+                    "count": entry.get("count", ""),
+                    "categories": ";".join(categories),
+                }
+            )
+    return out_path
+
+
 class SpacyPersonSpans:
     """Default ``person_spans`` provider: lazy spaCy PERSON-NER over ONE text,
     yielding ``(ent.text, ent.start_char, ent.end_char, preceding_token_texts)``
