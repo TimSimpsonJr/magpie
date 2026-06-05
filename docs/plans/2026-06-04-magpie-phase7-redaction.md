@@ -103,11 +103,47 @@ def test_person_role_uninvolved_default():
 def test_person_role_official_beats_involved():
     toks = frozenset({frozenset({"pat", "lee"})})
     assert person_role_in_span("Pat Lee", [], officials=toks, involved=toks) == "official"
+
+# --- Boundary DRIFT guards: pin the CLASSIFIER semantics the refactor must keep.
+# Model-free (a fake nlp/doc), so they run in the offline suite. These PASS both
+# BEFORE and AFTER the refactor -- if the refactor widens/narrows the <=2 lookback
+# window or drops the caller-side len<=2 skip, they fail.
+class _FakeTok:
+    def __init__(self, text): self.text = text
+class _FakeEnt:
+    def __init__(self, text, start, label="PERSON"):
+        self.text, self.start, self.label_ = text, start, label
+class _FakeDoc:
+    def __init__(self, toks, ents):
+        self._toks = [_FakeTok(t) for t in toks]; self.ents = ents
+    def __getitem__(self, i): return self._toks[i]
+
+def _flags_for(doc):
+    from scripts.pii_sweep import SpacyPersonClassifier
+    c = SpacyPersonClassifier(official_names=())
+    c._nlp = type("N", (), {"pipe": lambda self, t, batch_size=256: [doc]})()  # bypass _load
+    return c([" "])[0]
+
+def test_title_lookback_window_is_at_most_two_tokens():
+    from scripts.pii_sweep import PersonFlags
+    # title exactly 2 tokens before ent.start=3 -> official
+    ok = _FakeDoc(["the", "sgt", "x", "Ramirez"], [_FakeEnt("Ramirez", 3)])
+    assert _flags_for(ok) == PersonFlags(official=True, unknown_role=False)
+    # title 3 tokens before ent.start=3 -> NOT official (outside the <=2 window)
+    far = _FakeDoc(["sgt", "on", "duty", "Ramirez"], [_FakeEnt("Ramirez", 3)])
+    assert _flags_for(far) == PersonFlags(official=False, unknown_role=True)
+
+def test_caller_side_len_le_2_person_is_skipped():
+    from scripts.pii_sweep import PersonFlags
+    doc = _FakeDoc(["Li", "ran"], [_FakeEnt("Li", 0)])     # 2-char PERSON ent
+    assert _flags_for(doc) == PersonFlags(official=False, unknown_role=False)
 ```
 
 **Step 2: Run to verify fail**
-Run: `& .venv\Scripts\python.exe -m pytest tests/test_pii_sweep.py -k person_role -v`
-Expected: FAIL (ImportError: cannot import name 'person_role_in_span')
+Run: `& .venv\Scripts\python.exe -m pytest tests/test_pii_sweep.py -k "person_role or lookback or len_le_2" -v`
+Expected: the `person_role_*` tests FAIL (ImportError: cannot import name
+'person_role_in_span'); the two boundary guards PASS already (they test the
+EXISTING classifier and must STILL pass after the refactor).
 
 **Step 3: Implement** in `scripts/pii_sweep.py` (a pure module-level function near
 `_norm_name_tokens`):
@@ -313,7 +349,10 @@ finding is `metadata` (medium) -> `safe_to_publish is True` (medium does not
 block); each check wrapped so one raising check -> a warning + `checks_unavailable`,
 others still run; `cannot_catch` always populated; `publishable_view()` carries no
 raw string.
-**Implement:** `source_sha256` (reuse `scripts.ingest.sha256_file`); run
+**Implement:** `source_sha256` via a SMALL streamed-sha256 helper INLINE in
+`redaction_check.py` (do NOT import from `scripts.ingest` -- design 5 forbids
+Phase-7 code-sharing with ingest/recipe; the ~6-line chunked `hashlib.sha256`
+hash is trivially re-implemented, keeping the modules decoupled); run
 box_over_text + unapplied_redact FIRST, compute `signal_pages`, then text_layer;
 run the rest; each under try/except (failure -> warning + `checks_unavailable`).
 Apply `_PREPUBLISH_SEVERITY` in pre-publish mode. `safe_to_publish` = (NO finding
