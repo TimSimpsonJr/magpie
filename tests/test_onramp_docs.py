@@ -42,3 +42,9 @@ def test_readme_routes_both_personas():
     assert "two onramps" in low
     assert "setup" in low and "doctor" in low
     assert "detect_tier" in low
+
+
+def test_readme_never_mentions_docker():
+    # the no-Docker framing covers the whole onramp surface, README included
+    # (Layer 0-1 is laptop-local; Docker is a later layer, never planted here)
+    assert "docker" not in README.read_text(encoding="utf-8").lower()

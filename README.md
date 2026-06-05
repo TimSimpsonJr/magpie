@@ -16,7 +16,7 @@ publishable.
 - **Track A — Dataset analysis (flagship, Layer 1).** Quantitative analysis of large
   structured FOIA releases (CSV/XLSX): concentration statistics, automation
   signatures, repeatable per-source recipes that roll up across sources, and PII
-  sweeps. Pure local Python — no heavy Docker.
+  sweeps. Pure local Python — no heavy infrastructure.
 - **Track B — Entity-network analysis (Layer 2).** Documents → entity + relation
   extraction → resolution → graph → cross-reference against watchlists. Not part of
   Layer 0–1.
@@ -28,7 +28,7 @@ Magpie has **two onramps**, one per person who touches it:
 - **Operators** set it up once — install dependencies, download the spaCy model,
   verify the toolchain: [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md). Run the
   **`setup`** skill, or `& .venv\Scripts\python.exe scripts\detect_tier.py` to
-  install-and-verify outside Claude Code.
+  verify outside Claude Code.
 - **Investigators** use it every day, conversationally, with no infrastructure to
   manage: [`docs/JOURNALIST_START.md`](docs/JOURNALIST_START.md). Run the
   **`doctor`** skill anytime for a read-only health check of what is ready.

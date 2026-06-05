@@ -38,7 +38,7 @@ reports this as DEGRADED, not broken).
 
 Install uv (which provides `uvx`):
 
-- **Windows:** `winget install astral-sh.uv` (or `pip install uv`)
+- **Windows:** `winget install astral-sh.uv` (or `choco install uv`)
 - **macOS:** `brew install uv`
 - **Linux:** `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
