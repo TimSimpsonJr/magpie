@@ -246,10 +246,14 @@ author/creator/producer/title; field names -> detail, raw values -> local_eviden
 **Implement:** iterate pages `/Annots`, match `str(a.get("/Subtype")) == "/Redact"`.
 
 ### 3e. embedded_files check (pikepdf, incl /AF + /FileAttachment)
-**Test:** `check_embedded_files(embedded_file_pdf)` -> finding listing
-`hidden_notes.txt` (name + size in detail; NEVER the bytes).
-**Implement:** `pdf.attachments` names + `/Names/EmbeddedFiles` + `/AF` +
-`/FileAttachment` annots; enumerate name/size only.
+**Test (publish-path fix, cluster publish-path-contract):** `check_embedded_files(
+embedded_file_pdf)` -> finding; the embedded FILENAME `hidden_notes.txt` is in
+`local_evidence` (a filename can itself leak PII, e.g. `John_Doe_DOB.xlsx`), and
+`detail` carries ONLY non-string facts: `{"count": 1, "sizes": [<int>]}`. NEVER the
+file bytes, NEVER the name in detail. Assert `"hidden_notes.txt" not in str(detail)`.
+**Implement:** `pdf.attachments` + `/Names/EmbeddedFiles` + `/AF` +
+`/FileAttachment` annots; names -> `local_evidence["names"]`, count + byte-sizes ->
+`detail`.
 
 ### 3f. acroform_values check (pikepdf)
 **Test:** `check_acroform_values(acroform_pdf)` -> finding; the `/V` value
@@ -262,20 +266,58 @@ string is in `local_evidence`, not detail.
 **Implement:** comment-type annots (`/Text`/`/FreeText`/`/Popup`) `/Contents`.
 
 ### 3h. text_layer check (pdfminer)
-**Test:** on a page that co-occurs with a redaction signal, the sweep reports
-extractable text as a lead; on a plain clean PDF it does NOT fire standalone
-(page-level co-occurrence only; no cross-engine bbox math).
-**Implement:** pdfminer per-page char count; finding only when the page also has
-another redaction signal (a /Redact annot on that page) OR is image-only-but-has-text.
+**Test (cluster text-layer-scope -- design 1.1 check 2 has THREE co-occurrence
+triggers):** the per-page sweep reports extractable text as a lead ONLY when the
+page co-occurs (page-level) with a redaction signal:
+  (i) a `/Redact` annot on that page (offline test), OR
+  (ii) a `box_over_text` hit on that page (the x-ray corroboration path -- an
+       `@pytest.mark.xray` test over `bad_redaction_pdf`: the page has an x-ray box
+       AND pdfminer extracts text there -> a text_layer corroboration finding), OR
+  (iii) an image-only / scanned-looking page that nonetheless carries a
+        substantial hidden text layer (offline test).
+On a plain clean PDF it does NOT fire standalone. Page-level co-occurrence only;
+NO cross-engine bbox math. The check takes the other checks' per-page signals
+(e.g. a set of pages flagged by box_over_text / unapplied_redact) so the
+orchestrator passes them in.
+**Implement:** `check_text_layer(pdf, *, signal_pages: set[int])` -- pdfminer
+per-page char count; a finding for page p iff `p in signal_pages` (from /Redact or
+box_over_text) and the page has extractable text, OR the page is image-only-with-text.
+The orchestrator (3i) computes `signal_pages` from the box_over_text + unapplied_redact
+findings and passes it in (this is the ONLY ordering dependency between checks).
 
 ### 3i. Orchestrator `check_redactions(pdf_path, *, mode, vault_roots=())`
-**Test:** runs all available checks; `mode="pre-publish"` sets `safe_to_publish`;
-each check wrapped so one raising check -> a warning + listed in
-`checks_unavailable`, others still run; `cannot_catch` always populated;
-`publishable_view()` clean.
-**Implement:** `source_sha256` (reuse `scripts.ingest.sha256_file`), run each pure
-check under try/except, assemble `RedactionReport`. pre-publish `safe_to_publish`
-= (no finding >= high) AND (checks_unavailable is empty) -- **fail-closed**.
+
+**Pinned pre-publish severity map (cluster severity-gate -- so the gate cannot be
+weakened without tripping TDD).** A module constant pins each check's severity in
+`pre-publish` mode (checks that expose third-party CONTENT are HIGH = blocking):
+```python
+_PREPUBLISH_SEVERITY = {
+    "box_over_text":   "high",   # we drew a box over still-live text
+    "text_layer":      "high",   # extractable text under a redaction signal
+    "unapplied_redact":"high",   # marked but never applied -> text still present
+    "embedded_files":  "high",   # an attachment can carry un-redacted source
+    "acroform_values": "high",   # a form field holds data behind a flat-looking page
+    "annotation_text": "high",   # a comment can carry PII
+    "metadata":        "medium", # document properties (often our own author/tool)
+    "incremental_save":"medium", # prior revision exists -> a lead, not a leak proof
+}
+```
+In `received` mode severity reflects investigative interest (a separate map or a
+default of "low"/"medium"); `safe_to_publish` is None.
+
+**Test:** runs all available checks; `mode="pre-publish"` sets `safe_to_publish`
+and each finding's severity EQUALS `_PREPUBLISH_SEVERITY[check]` (assert the map is
+applied, not just "some severity"); a fixture with a `box_over_text` (or
+unapplied_redact) finding -> `safe_to_publish is False`; a fixture whose ONLY
+finding is `metadata` (medium) -> `safe_to_publish is True` (medium does not
+block); each check wrapped so one raising check -> a warning + `checks_unavailable`,
+others still run; `cannot_catch` always populated; `publishable_view()` carries no
+raw string.
+**Implement:** `source_sha256` (reuse `scripts.ingest.sha256_file`); run
+box_over_text + unapplied_redact FIRST, compute `signal_pages`, then text_layer;
+run the rest; each under try/except (failure -> warning + `checks_unavailable`).
+Apply `_PREPUBLISH_SEVERITY` in pre-publish mode. `safe_to_publish` = (NO finding
+of severity "high") AND (`checks_unavailable` is empty) -- **fail-closed**.
 
 **Commit after EACH of 3a-3i** (`git commit -m "Phase 7.1: redaction-check <check>"`).
 
@@ -350,11 +392,21 @@ def test_short_name_is_redacted_no_len_skip():
     out = redact_text("Li was here", person_spans=FakeSpans([("Li", 0, 2, [])]))
     assert "L." in out and "Li " not in out
 
-def test_overlapping_person_and_pii_right_to_left():
-    # a name span and a date span that touch -> no offset corruption, no double-redact
+def test_overlap_longer_person_span_wins_contained_pii_dropped():
+    # PERSON span "Sam 01/02/1990" (0..14) CONTAINS the date; longer span wins,
+    # the contained date is NOT separately masked. Initials = "S." (Sam's S; the
+    # date token has no alpha char -> contributes nothing). EXACT output pins it.
     ents = [("Sam 01/02/1990", 0, 14, [])]
     out = redact_text("Sam 01/02/1990 noted", person_spans=FakeSpans(ents))
-    assert "Sam" not in out and out.count("[") <= 1  # contained PII not double-applied
+    assert out == "S. noted"          # no [DOB]; contained span dropped; offsets stable
+
+def test_right_to_left_offset_stability_multi_span():
+    # two non-overlapping spans (name early, phone late): right-to-left application
+    # must replace BOTH correctly without the early replacement shifting the late
+    # offset. EXACT output pins it.
+    ents = [("John Public", 0, 11, [])]
+    out = redact_text("John Public at 555-123-4567 today", person_spans=FakeSpans(ents))
+    assert out == "J.P. at [PHONE] today"
 ```
 
 **Step 2: run-fail.**
@@ -366,9 +418,13 @@ preceding_tokens)` for PERSON ents WITHOUT the `len<=2` skip), injectable
 `person_role_in_span` (reused) with `officials`/`involved` lexicons (normalized
 from `keep_names` via the imported `_norm_name_tokens`); role `uninvolved` ->
 initials replacement; else keep. For each `DEFAULT_PII_PATTERNS` match ->
-typed-placeholder replacement. Resolve overlaps (longer wins, PERSON-before-PII
-tie), apply RIGHT-TO-LEFT. Initials: first alpha char per whitespace token,
-upper, dot-joined.
+typed-placeholder replacement. Factor the overlap-resolution + right-to-left
+application into a reusable internal helper `_apply_spans(text, spans) -> str`
+(spans = list of `(start, end, replacement)`; longer span wins on overlap,
+PERSON-before-PII on equal-length ties, applied descending-by-start). BOTH
+`redact_text` and `redact_note` (Task 6 #3) call `_apply_spans` -- one code path,
+one set of overlap tests. Initials: first alpha char per whitespace token, upper,
+dot-joined; a token with no alpha char contributes nothing.
 
 **Step 4: run-pass. Step 5: commit** `Phase 7.2: redact_output redact_text core`.
 
@@ -393,6 +449,17 @@ def test_redact_note_replaces_known_text_no_textid_no_raw():
     assert "abc123" not in out and "John Doe" not in out
     assert "Officer Ruiz" in out and "5th St" in out   # analyst narrative untouched
 
+def test_redact_note_overlapping_known_texts_longest_first_no_raw_suffix():
+    # two known flagged texts where one is a prefix of the other in the note;
+    # longest-match-first + right-to-left must leave NO raw PII suffix.
+    lt = {
+        "a": {"text": "John Doe", "count": 1, "categories": [...]},
+        "b": {"text": "John Doe Jr DOB on file", "count": 1, "categories": [...]},
+    }
+    note = "Subject John Doe Jr DOB on file was logged."
+    out = redact_note(note, lt, person_spans=...)
+    assert "John Doe" not in out and "DOB on file" not in out   # no raw suffix survives
+
 def test_write_local_exhibit_outside_vault(tmp_path):
     exhibit_dir = tmp_path / "exhibits"; exhibit_dir.mkdir()
     p = write_local_exhibit({...}, exhibit_dir, vault_roots=[tmp_path / "vault"])
@@ -407,10 +474,19 @@ def test_write_local_exhibit_raises_on_symlink_into_vault(tmp_path):
     # a link that resolves into the vault must be rejected (Path.resolve())
     ...
 ```
-**Implement** the three functions per design 2.0 (#2 local-only map, #3 note
-sanitizer = find-and-replace each known flagged `text` with its `redact_text`
-form, #4 vault-guarded CSV via `Path.resolve()` containment). Commit
-`Phase 7.2: redact_output local_texts/note/exhibit + vault guard`.
+**Implement** the three functions per design 2.0:
+- #2 `redact_local_texts` -- the LOCAL-only text_id->redacted map.
+- #3 `redact_note` -- collect EVERY occurrence span of EVERY known flagged `text`
+  in the note as `(start, end, redact_text(flagged_text))`; resolve overlaps with
+  the SAME rule as redact_text (LONGEST known-text match wins, contained dropped);
+  apply RIGHT-TO-LEFT. Sorting known texts longest-first before matching ensures a
+  longer flagged text isn't pre-empted by a shorter one that is its prefix (the
+  no-raw-suffix guarantee). Reuse redact_text's span-application helper -- do NOT
+  hand-roll a second `str.replace` loop (shorter-first `replace` is the bug Codex
+  flagged).
+- #4 `write_local_exhibit` -- vault-guarded CSV via `Path.resolve()` containment.
+
+Commit `Phase 7.2: redact_output local_texts/note/exhibit + vault guard`.
 
 ---
 
