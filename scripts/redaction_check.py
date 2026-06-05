@@ -435,3 +435,58 @@ def _walk_acroform_fields(fields_array):
             yield from _walk_acroform_fields(kids)
         else:
             yield field_obj
+
+
+# comment-type annotation subtypes that carry human-authored /Contents (reviewer
+# notes / leaked text). NOT /Redact (that is check_unapplied_redact).
+_COMMENT_ANNOT_SUBTYPES = ("/Text", "/FreeText", "/Popup")
+
+
+def check_annotation_text(path) -> list[RedactionFinding]:
+    """LEAD: a comment-type annotation (``/Text``, ``/FreeText``, ``/Popup``)
+    carries ``/Contents`` -- a reviewer note or leaked text.
+
+    The ``/Contents`` string is raw, potentially-PII text -> ``local_evidence``
+    (one finding per page, the page's comment texts keyed by subtype). ``detail``
+    carries only publishable facts: the per-page count and the subtypes seen --
+    never the comment text."""
+    import pikepdf
+
+    findings: list[RedactionFinding] = []
+    with pikepdf.open(str(path)) as pdf:
+        for pageno, page in enumerate(pdf.pages, start=1):
+            annots = page.get("/Annots")
+            if annots is None:
+                continue
+            texts: list[str] = []
+            subtypes: list[str] = []
+            for annot in annots:
+                subtype = str(annot.get("/Subtype"))
+                if subtype not in _COMMENT_ANNOT_SUBTYPES:
+                    continue
+                contents = annot.get("/Contents")
+                if contents is None:
+                    continue
+                rendered = str(contents).strip()
+                if not rendered:
+                    continue
+                texts.append(rendered)
+                subtypes.append(subtype)
+            if texts:
+                findings.append(
+                    RedactionFinding(
+                        check="annotation_text",
+                        severity="medium",
+                        page=pageno,
+                        summary=(
+                            f"{len(texts)} comment annotation(s) with text on page "
+                            f"{pageno} -- a reviewer note can carry PII (a lead)"
+                        ),
+                        detail={
+                            "count": len(texts),
+                            "subtypes": sorted(set(subtypes)),
+                        },
+                        local_evidence={"contents": texts},
+                    )
+                )
+    return findings

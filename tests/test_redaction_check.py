@@ -252,3 +252,38 @@ def test_check_acroform_values_clean_pdf_no_finding(clean_pdf):
     from scripts.redaction_check import check_acroform_values
 
     assert check_acroform_values(clean_pdf) == []
+
+
+# --------------------------------------------------------------------------- #
+# 3g. annotation_text check (pikepdf comment annots /Contents).
+# --------------------------------------------------------------------------- #
+
+
+def test_check_annotation_text_contents_local_not_detail(annotation_text_pdf):
+    from scripts.redaction_check import check_annotation_text
+
+    findings = check_annotation_text(annotation_text_pdf)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.check == "annotation_text"
+    assert f.page == 1
+    # the /Contents reviewer note is a raw leak -> local_evidence only.
+    assert "John Doe" in str(f.local_evidence)
+    assert "reviewer note" in str(f.local_evidence)
+    # detail must NOT carry the raw comment text.
+    assert "John Doe" not in str(f.detail)
+    assert "reviewer note" not in str(f.detail)
+
+
+def test_check_annotation_text_clean_pdf_no_finding(clean_pdf):
+    from scripts.redaction_check import check_annotation_text
+
+    assert check_annotation_text(clean_pdf) == []
+
+
+def test_check_annotation_text_ignores_redact_annot(redact_annot_pdf):
+    # a /Redact annot is NOT a comment-type annot and carries no /Contents here;
+    # the comment-text check must not fire on it (that is unapplied_redact's job).
+    from scripts.redaction_check import check_annotation_text
+
+    assert check_annotation_text(redact_annot_pdf) == []
