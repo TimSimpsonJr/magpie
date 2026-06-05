@@ -52,3 +52,48 @@ def test_enums_have_the_documented_members():
 def test_default_wordlist_loads_and_is_lowercased():
     wl = load_default_wordlist()
     assert "the" in wl and len(wl) > 200 and all(w == w.lower() for w in wl)
+
+
+# --------------------------------------------------------------------------- #
+# Task 2: diagnose_page -- per-page diagnosis (golden; inject SMALL_WL).
+# --------------------------------------------------------------------------- #
+
+from scripts.ingest_gate import diagnose_page, PageDiagnosis as PD
+
+def D(text, **kw): return diagnose_page(text, wordlist=SMALL_WL, **kw)
+
+def test_clean_native_text_is_native_ok():
+    assert D("The police department search reason vehicle record.") == PD.native_ok
+
+def test_empty_or_near_empty_is_image_only():
+    assert D("") == PD.image_only
+    assert D("   \n  ") == PD.image_only
+
+def test_present_but_garbled_is_garbled_text():
+    # enough tokens, low hit-rate, AND density anomaly => garbled
+    assert D("xqzklm zzzz vvvv bbbb ;;;;;;;;;;;;;;;; ############ qwzx lkjhg nnnn") == PD.garbled_text
+
+def test_sparse_below_token_floor_is_uncertain_not_garbled():
+    # too few alpha tokens to judge a hit-rate => uncertain_review (NOT garbled)
+    assert D("Ref: 88-A") == PD.uncertain_review
+
+def test_native_table_page_low_hitrate_stays_native_ok():
+    # numeric/short-token table content: low wordlist hit-rate but normal density
+    assert D("2026 2026 14 18 SC OOS 49417 1792 2943 1979 SVPD ALPR") == PD.native_ok
+
+def test_all_caps_legal_page_stays_native_ok():
+    assert D("FOIA RESPONSE CONFIDENTIAL RECORDS DIVISION CASE NUMBER REDACTED") == PD.native_ok
+
+def test_multi_column_runon_stays_native_ok_when_density_normal():
+    assert D("the police department the search reason the vehicle the officer record") == PD.native_ok
+
+def test_repeated_boilerplate_does_not_force_or_avoid_ocr_spuriously():
+    # a Bates/letterhead-only page is sparse text => uncertain_review (flag), not native_ok-trusted nor garbled
+    assert D("SVPD-000123") == PD.uncertain_review
+
+def test_low_parse_score_downgrades_otherwise_native_to_uncertain():
+    # parse_score MUST be consumed: Docling's own low-confidence parse contradicts
+    # otherwise-acceptable text -> uncertain_review (the contradictory-signal hook).
+    text = "the police department search reason record vehicle officer"
+    assert D(text) == PD.native_ok
+    assert D(text, parse_score=0.02) == PD.uncertain_review

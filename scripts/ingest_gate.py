@@ -174,3 +174,66 @@ def _resolve_wordlist(wordlist: frozenset[str] | None) -> frozenset[str]:
     if wordlist is not None:
         return wordlist
     return load_default_wordlist()
+
+
+# --------------------------------------------------------------------------- #
+# Per-page diagnosis
+# --------------------------------------------------------------------------- #
+
+
+def diagnose_page(
+    native_text: str,
+    *,
+    parse_score: float | None = None,
+    lang: str = "en",
+    wordlist: frozenset[str] | None = None,
+) -> PageDiagnosis:
+    """Diagnose ONE page's ``do_ocr=False`` native text layer (a LEAD, not a
+    verdict). Pure: only the extracted text + an optional Docling ``parse_score``
+    feed the decision, against the injected (or bundled-default) ``wordlist``.
+
+    Ordered, first-match rules -- each branch is driven by a NAMED constant and
+    deliberately conservative (false positives that needlessly OCR or flag a good
+    page are worse than a missed garble, which the doc-wide rollup can still
+    catch):
+
+    1. ``len(stripped) < _MIN_CHARS`` -> ``image_only`` -- an essentially empty
+       text layer is a scanned image that needs OCR.
+    2. fewer than ``_MIN_TOKENS`` alpha tokens -> ``uncertain_review`` -- too
+       little signal to judge a hit-rate (a Bates / letterhead-only page); flag
+       it rather than trust OR garble it.
+    3. ``garbled_text`` requires CO-OCCURRENCE: a low wordlist hit-rate
+       (``hit is not None and hit < _GARBLED_HIT_RATE``) AND a density anomaly
+       (``not char_density_ok``). A low hit-rate ALONE never garbles, so numeric
+       tables / all-caps headers / multi-column run-ons stay ``native_ok``.
+    4. contradictory-signal / handwriting hook: an otherwise-acceptable page
+       whose Docling ``parse_score`` is at/under ``_MIN_PARSE_SCORE`` (Docling
+       itself flags an unreliable parse) -> ``uncertain_review``.
+    5. else -> ``native_ok``.
+    """
+    resolved_wl = _resolve_wordlist(wordlist)
+
+    stripped = native_text.strip()
+    toks = alphabetic_tokens(native_text)
+
+    # (1) Essentially-empty text layer -> a scanned image that needs OCR. The
+    # design's guard is "native_char_count ~= 0": a SHORT but present text token
+    # (e.g. a sparse "SVPD-000123" form/Bates page) is NOT image_only -- it has
+    # alphabetic content and must fall through to the token-floor branch below
+    # (-> uncertain_review). So the _MIN_CHARS floor only fires when there is no
+    # alphabetic content to judge (a truly blank / image-only layer).
+    if len(stripped) < _MIN_CHARS and not toks:
+        return PageDiagnosis.image_only
+
+    # (2) Some text, but below the alpha-token floor -> not enough signal to
+    # judge a hit-rate (a sparse form / Bates / letterhead-only page). Flag it.
+    if len(toks) < _MIN_TOKENS:
+        return PageDiagnosis.uncertain_review
+
+    hit = wordlist_hit_rate(native_text, resolved_wl)
+    density = char_density_ok(native_text)
+    if hit is not None and hit < _GARBLED_HIT_RATE and not density:
+        return PageDiagnosis.garbled_text
+    if parse_score is not None and parse_score <= _MIN_PARSE_SCORE:
+        return PageDiagnosis.uncertain_review
+    return PageDiagnosis.native_ok
