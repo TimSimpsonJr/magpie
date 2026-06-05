@@ -207,6 +207,11 @@ def test_archive_evidence_reason_present_when_not_verified(tmp_path):
     ts = m.to_dict()["timestamp"]
     assert ts["status"] == "unavailable" and ts["reason"] == "offline"
     assert ts["token_path"] is None and ts["token_sha256"] is None
+    # even an unavailable timestamp carries the FULL 7-key verification (all False),
+    # never a null verification object
+    assert set(ts["verification"]) == {"granted", "chain_ok", "nonce_ok",
+        "eku_timestamping", "imprint_match", "revocation_checked", "verified"}
+    assert ts["verification"]["verified"] is False
 
 
 def test_archive_evidence_imprint_mismatch_surfaced(tmp_path):
@@ -480,12 +485,26 @@ class EvidenceManifest:
         return dataclasses.asdict(self)
 
 
+def _full_verification(**overrides: Any) -> Dict[str, Any]:
+    """ALWAYS the complete 7-key verification object (design 5); deterministic on
+    every branch. revocation_checked is always False (honest limit: no OCSP/CRL).
+    PURE -- lives in the core so _timestamp_block (core) and the TSA edge both share
+    it, and every manifest carries the full object even on an unavailable timestamp."""
+    base = {"granted": False, "chain_ok": False, "nonce_ok": False,
+            "eku_timestamping": False, "imprint_match": False,
+            "revocation_checked": False, "verified": False}
+    base.update(overrides)
+    return base
+
+
 def _timestamp_block(tr: TimestampResult, token_path: Optional[str],
                      token_sha256: Optional[str]) -> Dict[str, Any]:
+    # NORMALIZE verification here (the choke point): every manifest carries the full
+    # 7-key object, even an unavailable timestamp (all-False) -- never null (design 5).
     return {"status": tr.status, "reason": tr.reason, "tsa_url": tr.tsa_url,
             "transport": tr.transport, "gen_time": tr.gen_time, "serial": tr.serial,
             "token_path": token_path, "token_sha256": token_sha256,
-            "verification": tr.verification}
+            "verification": _full_verification(**(tr.verification or {}))}
 
 
 def archive_evidence(path, *, timestamper: Timestamper, out_dir, now: datetime,
@@ -660,6 +679,32 @@ def test_empty_file_is_unavailable_empty_file(tmp_path):
     assert res.status == "unavailable" and res.reason == "empty_file"
 
 
+def test_bad_pki_status_reason_preserved(monkeypatch, tmp_path):
+    # A non-GRANTED PKIStatus must surface as reason 'bad_pki_status:...', NOT collapse
+    # to a generic http_error (the design 8 reason vocabulary).
+    p = tmp_path / "f.txt"; p.write_bytes(b"data")
+    receipt = sha256_file(p)
+
+    def _bad(*a, **k):
+        raise evidence._TsaError("bad_pki_status:2", http_status=200)
+    monkeypatch.setattr(evidence, "_tsa_roundtrip", _bad)
+    res = Rfc3161Timestamper().timestamp_path(str(p), expected_sha256=receipt)
+    assert res.status == "unavailable" and res.reason == "bad_pki_status:2"
+    assert res.transport["http_status"] == 200
+
+
+def test_verify_failed_reason(monkeypatch, tmp_path):
+    # freeTSA default -> bundled root resolves; a fake roundtrip with decoded=None
+    # makes verify() raise -> reason 'verify_failed' (not a collapsed bucket).
+    p = tmp_path / "f.txt"; p.write_bytes(b"data")
+    receipt = sha256_file(p)
+    monkeypatch.setattr(evidence, "_tsa_roundtrip", _fake_roundtrip(receipt))
+    res = Rfc3161Timestamper().timestamp_path(str(p), expected_sha256=receipt)
+    assert res.status == "unverified" and res.reason.startswith("verify_failed")
+    assert res.verification["imprint_match"] is True
+    assert res.verification["verified"] is False
+
+
 @pytest.mark.tsa
 def test_live_freetsa_roundtrip_verifies(tmp_path):
     p = tmp_path / "f.txt"; p.write_bytes(b"magpie phase 9 live tsa test")
@@ -723,14 +768,7 @@ def _classify_network_error(exc: Exception) -> str:
     return "http_error:%s" % name
 
 
-def _full_verification(**overrides: Any) -> Dict[str, Any]:
-    """ALWAYS the complete 7-key verification object (design 5); deterministic on
-    every branch. revocation_checked is always False (honest limit: no OCSP/CRL)."""
-    base = {"granted": False, "chain_ok": False, "nonce_ok": False,
-            "eku_timestamping": False, "imprint_match": False,
-            "revocation_checked": False, "verified": False}
-    base.update(overrides)
-    return base
+# _full_verification lives in the PURE CORE (above); the edge reuses it.
 
 
 def _tsa_roundtrip(tsa_url: str, req_der: bytes, timeout: int) -> "_RoundtripResult":
