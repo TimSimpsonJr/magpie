@@ -290,8 +290,11 @@ def archive_evidence(path, *, timestamper: Timestamper, out_dir, now: datetime,
     try:
         append_custody_event(out / custody_name, "archived", now=now,  # 7. custody ONLY AFTER commit
                              artifact_sha256=receipt, actor=actor)      #    (never claim a non-commit)
-    except OSError as exc:                            # manifest IS committed; surface the stranded
-        raise CustodyAppendError(manifest_path, exc) from exc          # state EXPLICITLY (recoverable)
+    except Exception as exc:                          # ANY post-commit append failure (unwritable
+        # OSerror OR a malformed preexisting custody log -> json/Key error): the manifest IS
+        # committed, so surface the stranded state EXPLICITLY (recoverable via on_exists=
+        # 'append_event'). Excludes BaseException (KeyboardInterrupt/SystemExit) by design.
+        raise CustodyAppendError(manifest_path, exc) from exc
     return manifest
 
 

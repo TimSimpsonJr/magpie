@@ -255,3 +255,22 @@ def test_custody_chain_rejects_nondict_line(tmp_path):
     with open(log, "a", encoding="utf-8") as f:
         f.write("1\n")  # valid JSON, but not an object -> must fail, not crash
     assert verify_custody_chain(log) is False
+
+
+# --- regression: a post-commit custody append can fail with a NON-OSError if a
+# preexisting custody log for this hash is malformed (json.loads on its last line).
+# That must STILL surface as the explicit, recoverable CustodyAppendError, not a
+# bare JSONDecodeError that strands the committed manifest. ---
+def test_post_commit_custody_failure_on_malformed_existing_log_is_explicit(tmp_path):
+    src = _write(tmp_path, "f.txt")
+    out = tmp_path / "o"
+    out.mkdir()
+    receipt = sha256_file(src)
+    # a preexisting MALFORMED custody log for this content (no manifest yet, so the
+    # archive proceeds + commits the manifest, then the post-commit append reads this)
+    (out / (receipt + ".custody.jsonl")).write_text("{not valid json\n", encoding="utf-8")
+    with pytest.raises(evidence.CustodyAppendError) as ei:
+        archive_evidence(src, timestamper=_verified_fake(), out_dir=out, now=T0)
+    manifest = out / (receipt + ".manifest.json")
+    assert manifest.exists()                       # the manifest DID commit
+    assert ei.value.manifest_path == manifest      # explicit + recoverable, not a bare raise
