@@ -8,4 +8,5 @@ markers = [
     "docling: model-gated docling integration; select with -k docling",
     "xray: tests that import x-ray / PyMuPDF (box-over-text detection); select with -k xray",
     "tsa: tests that hit a live RFC 3161 Time-Stamp Authority over the network (select with -m tsa)",
+    "mcp: served-DB smoke that launches uvx mcp-sqlite (skipped if uvx absent)",
 ]
