@@ -31,7 +31,7 @@ ingest.
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -111,3 +111,45 @@ def _iter_raw_strings(local_evidence: dict):
             for item in value:
                 if isinstance(item, str):
                     yield item
+
+
+# --------------------------------------------------------------------------- #
+# The checks. Each is a STANDALONE function (path -> list[RedactionFinding]).
+# Each returns [] when nothing is found -- a clean check is never a "fully
+# redacted" verdict (the orchestrator's cannot_catch footer carries that
+# honesty). Every check that can surface a raw string puts it in
+# ``local_evidence``, never in ``detail`` (the never-publish-raw invariant).
+# --------------------------------------------------------------------------- #
+
+
+def check_incremental_save(path) -> list[RedactionFinding]:
+    """LEAD: the PDF carries more than one revision (prior content -- including
+    pre-"redaction" text -- may be recoverable from an earlier generation).
+
+    Pure byte scan (no parse, engine-independent): count ``b"%%EOF"`` paired with
+    ``b"startxref"`` (both increment per revision -- the sturdier revision-count
+    lead from the research gate). A finding iff ``eof_count > 1``. Legitimate
+    incremental saves exist (signatures, form fill), so this is a LEAD, NEVER
+    proof. The counts are publishable ints -> they go in ``detail``."""
+    raw = Path(path).read_bytes()
+    eof_count = raw.count(b"%%EOF")
+    startxref_count = raw.count(b"startxref")
+    if eof_count <= 1:
+        return []
+    n_revisions = eof_count  # one %%EOF per revision
+    return [
+        RedactionFinding(
+            check="incremental_save",
+            severity="medium",
+            page=None,
+            summary=(
+                f"PDF carries {n_revisions} revisions (>1); a prior revision may "
+                f"hold pre-redaction content -- a lead for a human, not proof"
+            ),
+            detail={
+                "eof_count": eof_count,
+                "startxref_count": startxref_count,
+                "n_revisions": n_revisions,
+            },
+        )
+    ]

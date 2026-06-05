@@ -111,3 +111,30 @@ def test_publishable_view_raises_if_detail_carries_raw_evidence():
     )
     with pytest.raises(AssertionError):
         rep.publishable_view()
+
+
+# --------------------------------------------------------------------------- #
+# 3b. incremental_save check (pure bytes).
+# --------------------------------------------------------------------------- #
+
+
+def test_check_incremental_save_flags_second_revision(incremental_save_pdf):
+    from scripts.redaction_check import check_incremental_save
+
+    findings = check_incremental_save(incremental_save_pdf)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.check == "incremental_save"
+    assert f.severity == "medium"
+    assert f.page is None
+    # counts are publishable ints -> they live in detail
+    assert f.detail["eof_count"] == 2
+    assert f.detail["startxref_count"] == 2
+    # lead framing in the summary, never a verdict
+    assert "revision" in f.summary.lower()
+
+
+def test_check_incremental_save_clean_single_rev_no_finding(clean_single_rev_pdf):
+    from scripts.redaction_check import check_incremental_save
+
+    assert check_incremental_save(clean_single_rev_pdf) == []
