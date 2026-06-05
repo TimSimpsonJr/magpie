@@ -20,11 +20,19 @@ from pathlib import Path
 
 import pytest
 
-# The EXACT latin-1-safe garbage string the gate must diagnose as garbled_text:
-# a wall of long identical-symbol runs + a long digit run with essentially no
-# letters. fpdf2's Helvetica renders it (latin-1 safe). Tuned TOGETHER with
-# ingest_gate._MIN_LETTER_RATIO / _MAX_NONLETTER_RUN (see test_ingest_gate).
-_GARBLED_LINE = ";;;;;;;;;;;;;;;; ################ %%%%%%%%%%%% 8492037184920371 @@@@@@@@@@@@ "
+# A latin-1-safe garbled text-layer line the gate must diagnose as garbled_text:
+# gibberish non-dictionary LETTER tokens (so the page clears the alphabetic-token
+# floor with a ~0 wordlist hit-rate -- a present text layer Docling would TRUST)
+# CO-OCCURRING with long identical-symbol runs + a long digit run (the
+# char_density_ok anomaly). The co-occurrence is exactly what diagnose_page
+# requires for garbled_text (a low hit-rate ALONE never garbles); mirrors the
+# committed Task-2 garbled golden. fpdf2's Helvetica renders it (latin-1 safe).
+# Tuned TOGETHER with ingest_gate._GARBLED_HIT_RATE / _MIN_LETTER_RATIO /
+# _MAX_NONLETTER_RUN.
+_GARBLED_LINE = (
+    "xqzklmn zzzzqv vvvbb bbbww ;;;;;;;;;;;;;;;; ################ "
+    "%%%%%%%%%%%% 8492037184920371 @@@@@@@@@@@@ jjjjwq lkjhgf nnnnmq "
+)
 
 
 # --------------------------------------------------------------------------- #
