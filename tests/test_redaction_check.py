@@ -381,3 +381,153 @@ def test_text_layer_corroborates_box_over_text(bad_redaction_pdf):
     assert 1 in signal_pages  # x-ray flagged page 1
     findings = check_text_layer(bad_redaction_pdf, signal_pages=signal_pages)
     assert any(f.page == 1 and f.check == "text_layer" for f in findings)
+
+
+# --------------------------------------------------------------------------- #
+# 3i. Orchestrator check_redactions -- run order + signal_pages wiring + the
+#     pinned pre-publish severity map + the FAIL-CLOSED safe_to_publish gate.
+#     The offline orchestrator tests STUB check_box_over_text so they stay
+#     PyMuPDF-free (the real x-ray path is covered by the xray-marked tests).
+# --------------------------------------------------------------------------- #
+
+
+def _stub_box_over_text_empty(monkeypatch):
+    """Stub the x-ray edge to a no-op (ran, no findings) so an offline orchestrator
+    test does not load PyMuPDF. The check still appears in checks_run."""
+    import scripts.redaction_check as r
+
+    monkeypatch.setattr(r, "check_box_over_text", lambda path: [])
+
+
+def test_orchestrator_prepublish_severity_equals_pinned_map(
+    monkeypatch, multi_finding_pdf
+):
+    # pre-publish mode: EVERY finding's severity must equal _PREPUBLISH_SEVERITY
+    # for its check (the gate cannot be silently weakened without tripping this).
+    from scripts.redaction_check import _PREPUBLISH_SEVERITY, check_redactions
+
+    _stub_box_over_text_empty(monkeypatch)
+    rep = check_redactions(multi_finding_pdf, mode="pre-publish")
+    assert rep.findings  # the fixture trips several checks
+    for f in rep.findings:
+        assert f.severity == _PREPUBLISH_SEVERITY[f.check], f.check
+    # the multi-finding fixture trips checks that expose CONTENT (high) -> blocked.
+    assert rep.safe_to_publish is False
+
+
+def test_orchestrator_publishable_view_has_no_raw_string(
+    monkeypatch, multi_finding_pdf
+):
+    # the end-to-end never-publish-raw guard: across ALL findings, the published
+    # view drops every local_evidence and carries NO raw leaked string anywhere.
+    from scripts.redaction_check import check_redactions
+
+    _stub_box_over_text_empty(monkeypatch)
+    rep = check_redactions(multi_finding_pdf, mode="pre-publish")
+    pub = rep.publishable_view()
+    blob = str(pub)
+    # the RAW leaked strings each check surfaced (metadata author, embedded
+    # filename, AcroForm /V, the comment /Contents PII) -- none may survive.
+    for raw in (
+        "Jane Author",
+        "hidden_notes.txt",
+        "123-45-6789",
+        "John Doe",
+        "DOB on file",
+    ):
+        assert raw not in blob, raw
+    # every finding's local_evidence is dropped in the published view.
+    assert all(fd["local_evidence"] is None for fd in pub["findings"])
+
+
+def test_orchestrator_high_finding_blocks_publish(monkeypatch, redact_annot_pdf):
+    # a single high-severity finding (unapplied_redact) -> safe_to_publish False.
+    from scripts.redaction_check import check_redactions
+
+    _stub_box_over_text_empty(monkeypatch)
+    rep = check_redactions(redact_annot_pdf, mode="pre-publish")
+    assert any(f.check == "unapplied_redact" for f in rep.findings)
+    assert rep.safe_to_publish is False
+
+
+def test_orchestrator_metadata_only_is_publishable(monkeypatch, metadata_pdf):
+    # a fixture whose ONLY finding is metadata (medium) -> medium does NOT block,
+    # and with every check having run, safe_to_publish is True.
+    from scripts.redaction_check import check_redactions
+
+    _stub_box_over_text_empty(monkeypatch)
+    rep = check_redactions(metadata_pdf, mode="pre-publish")
+    checks = {f.check for f in rep.findings}
+    assert checks == {"metadata"}  # the metadata_pdf trips metadata only
+    assert rep.checks_unavailable == []
+    assert rep.safe_to_publish is True
+
+
+def test_orchestrator_fail_closed_when_check_unavailable(
+    monkeypatch, metadata_pdf
+):
+    # FAIL-CLOSED: force a check unavailable in pre-publish (box_over_text raises
+    # CheckUnavailable). Even with ZERO high findings, safe_to_publish must be
+    # False, with a "cannot certify" warning naming the un-run check.
+    import scripts.redaction_check as r
+    from scripts.redaction_check import CheckUnavailable, check_redactions
+
+    def _boom(path):
+        raise CheckUnavailable("box_over_text: forced for test")
+
+    monkeypatch.setattr(r, "check_box_over_text", _boom)
+    rep = check_redactions(metadata_pdf, mode="pre-publish")
+    # the only real finding is metadata (medium) -> no high findings present.
+    assert all(f.severity != "high" for f in rep.findings)
+    # ...yet the gate fails CLOSED because a check did not run.
+    assert rep.safe_to_publish is False
+    assert any("box_over_text" in u for u in rep.checks_unavailable)
+    assert any("cannot certify" in w for w in rep.warnings)
+
+
+def test_orchestrator_received_mode_safe_to_publish_is_none(
+    monkeypatch, redact_annot_pdf
+):
+    # received mode: no pass/fail disposition -> safe_to_publish is None even with
+    # a finding present; cannot_catch is still populated (the honesty footer).
+    from scripts.redaction_check import check_redactions
+
+    _stub_box_over_text_empty(monkeypatch)
+    rep = check_redactions(redact_annot_pdf, mode="received")
+    assert rep.safe_to_publish is None
+    assert rep.cannot_catch  # honesty footer always present
+    assert rep.source_sha256 and len(rep.source_sha256) == 64  # streamed sha256
+
+
+def test_orchestrator_one_failing_check_does_not_sink_others(
+    monkeypatch, metadata_pdf
+):
+    # a raising check -> a warning + a checks_unavailable entry; the OTHER checks
+    # still run (metadata still fires) and are listed in checks_run.
+    import scripts.redaction_check as r
+    from scripts.redaction_check import check_redactions
+
+    def _boom(path):
+        raise RuntimeError("embedded_files exploded")
+
+    monkeypatch.setattr(r, "check_box_over_text", lambda path: [])
+    monkeypatch.setattr(r, "check_embedded_files", _boom)
+    rep = check_redactions(metadata_pdf, mode="received")
+    assert any(f.check == "metadata" for f in rep.findings)  # others still ran
+    assert "metadata" in rep.checks_run
+    assert any("embedded_files" in u for u in rep.checks_unavailable)
+
+
+@pytest.mark.xray
+def test_orchestrator_end_to_end_with_xray_blocks_bad_redaction(bad_redaction_pdf):
+    # REAL end-to-end: the live x-ray edge finds a box on page 1, the orchestrator
+    # unions it into signal_pages, text_layer corroborates, both are high in
+    # pre-publish -> safe_to_publish False; and no raw string crosses publish.
+    from scripts.redaction_check import check_redactions
+
+    rep = check_redactions(bad_redaction_pdf, mode="pre-publish")
+    checks = {f.check for f in rep.findings}
+    assert "box_over_text" in checks
+    assert "text_layer" in checks  # box_over_text page fed signal_pages
+    assert rep.safe_to_publish is False
+    assert "John Q Public" not in str(rep.publishable_view())

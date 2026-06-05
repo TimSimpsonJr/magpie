@@ -32,6 +32,7 @@ from tests.conftest_redaction import (  # noqa: F401
     embedded_file_pdf,
     incremental_save_pdf,
     metadata_pdf,
+    multi_finding_pdf,
     redact_annot_pdf,
     redact_annot_text_pdf,
 )

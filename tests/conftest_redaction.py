@@ -222,6 +222,45 @@ def annotation_text_pdf(tmp_path) -> Path:
 
 
 @pytest.fixture
+def multi_finding_pdf(tmp_path) -> Path:
+    """A single pikepdf document that trips SEVERAL offline checks at once, each
+    carrying a RAW leaked string in ``local_evidence``: XMP author (``Jane Author``)
+    + an unapplied ``/Redact`` annot + an embedded file (``hidden_notes.txt``) + an
+    AcroForm ``/V`` (``123-45-6789``) + a ``/FreeText`` comment (``suspect John Doe``).
+    The orchestrator end-to-end ``publishable_view()`` leak test asserts NONE of
+    these raw strings survive into the published view (the never-publish-raw
+    invariant across multiple findings)."""
+    import pikepdf
+    from pikepdf import Array, Dictionary, Name, String
+
+    pdf = _new_single_page_pdf()
+    page = pdf.pages[0]
+    # metadata leak (XMP -> docinfo on save).
+    with pdf.open_metadata() as m:
+        m["dc:creator"] = ["Jane Author"]
+    # embedded file (filename is a raw leak).
+    pdf.attachments["hidden_notes.txt"] = b"internal only"
+    # AcroForm field with a /V that should have been redacted.
+    field = Dictionary(FT=Name.Tx, T=String("ssn_field"), V=String("123-45-6789"))
+    pdf.Root.AcroForm = pdf.make_indirect(Dictionary(Fields=Array([pdf.make_indirect(field)])))
+    # an unapplied /Redact annot + a /FreeText comment carrying a reviewer note.
+    redact = Dictionary(Type=Name.Annot, Subtype=Name.Redact, Rect=Array([18, 40, 120, 55]))
+    # NOTE: the raw /Contents deliberately avoids the words the annotation_text
+    # SUMMARY uses ("reviewer note") so the leak test asserts on genuine PII
+    # tokens, not a phrase the publishable summary legitimately contains.
+    note = Dictionary(
+        Type=Name.Annot,
+        Subtype=Name.FreeText,
+        Rect=Array([10, 10, 100, 30]),
+        Contents=String("suspect John Doe DOB on file"),
+    )
+    page.Annots = Array([pdf.make_indirect(redact), pdf.make_indirect(note)])
+    path = tmp_path / "multi_finding.pdf"
+    pdf.save(str(path))
+    return path
+
+
+@pytest.fixture
 def clean_single_rev_pdf(tmp_path) -> Path:
     """A plain single-revision pikepdf save -- ``%%EOF`` count == 1 /
     ``startxref`` count == 1. The negative control for the incremental-save

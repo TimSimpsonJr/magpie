@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 
@@ -671,3 +671,200 @@ def _page_text_and_image(layout, LTChar, LTImage, LTTextContainer, LTFigure):
 
     _walk(layout)
     return char_count, has_image
+
+
+# --------------------------------------------------------------------------- #
+# Orchestrator (Task 3i / design 1.2, 1.6). Runs all available checks over ONE
+# PDF and assembles a RedactionReport. The safety-critical parts are (a) the
+# signal_pages wiring (box_over_text + unapplied_redact feed text_layer) and
+# (b) the FAIL-CLOSED pre-publish safe_to_publish gate.
+# --------------------------------------------------------------------------- #
+
+
+# PINNED pre-publish severity map (plan Task 3i). In ``pre-publish`` mode each
+# finding's severity is set from this map -- so the publish GATE cannot be
+# silently weakened without tripping the TDD severity test. Checks that expose
+# third-party CONTENT are HIGH (= blocking); document-property / revision leads
+# are MEDIUM.
+_PREPUBLISH_SEVERITY = {
+    "box_over_text":   "high",   # we drew a box over still-live text
+    "text_layer":      "high",   # extractable text under a redaction signal
+    "unapplied_redact":"high",   # marked but never applied -> text still present
+    "embedded_files":  "high",   # an attachment can carry un-redacted source
+    "acroform_values": "high",   # a form field holds data behind a flat-looking page
+    "annotation_text": "high",   # a comment can carry PII
+    "metadata":        "medium", # document properties (often our own author/tool)
+    "incremental_save":"medium", # prior revision exists -> a lead, not a leak proof
+}
+
+# The honesty footer (design 1.5) -- redaction-failure classes with no reliable
+# FOSS auto-detector, ALWAYS emitted so a clean report is NEVER read as "fully
+# redacted". OCG/optional-content layer analysis is deferred this phase.
+_CANNOT_CATCH = [
+    "glyph-position / off-page / white-on-white text (extractable but not under a box)",
+    "pixelation / blur / mosaic (mathematically reversible raster redaction)",
+    "cross-version reconstruction (content recoverable from a prior revision; we "
+    "flag that revisions exist, we do not diff or reconstruct)",
+    "proportional-font / kerning side-channel reconstruction",
+    "semantic reconstruction (inferring hidden content from surrounding context)",
+    "OCG / optional-content (layer) hidden content (deferred this phase)",
+]
+
+_SHA256_CHUNK = 1 << 20  # 1 MiB streamed read
+
+
+def _streamed_sha256(path) -> str:
+    """Chunked sha256 of a file's bytes (streamed, never loading the whole file).
+    Re-implemented INLINE here -- design 5 forbids Phase-7 code from importing
+    scripts.ingest / scripts.recipe, so this trivial helper is duplicated to keep
+    the modules decoupled (it is NOT imported from ingest)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(_SHA256_CHUNK), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _run_check(name, fn, *, findings, checks_run, checks_unavailable, warnings):
+    """Run ONE check ``fn`` (already a zero-arg callable), append its findings, and
+    record it. DEGRADE-DON'T-CRASH: a ``CheckUnavailable`` OR any other exception
+    -> a ``checks_unavailable`` entry + a warning; the check is NOT added to
+    ``checks_run`` and the OTHER checks still run. Returns the check's findings
+    (so the caller can derive signal_pages from box_over_text / unapplied_redact)."""
+    try:
+        got = fn()
+    except CheckUnavailable as exc:
+        checks_unavailable.append(str(exc))
+        warnings.append(f"{name} check could not run: {exc}")
+        return []
+    except Exception as exc:  # noqa: BLE001 - one failing check must not sink the rest
+        reason = f"{name}: {type(exc).__name__}: {exc}"
+        checks_unavailable.append(reason)
+        warnings.append(f"{name} check raised and was skipped ({reason})")
+        return []
+    checks_run.append(name)
+    findings.extend(got)
+    return got
+
+
+def check_redactions(pdf_path, *, mode, vault_roots=()) -> RedactionReport:
+    """Run all available checks over ONE PDF and assemble a ``RedactionReport``.
+
+    Run order (the ONLY cross-check dependency): ``box_over_text`` +
+    ``unapplied_redact`` run FIRST; the set of pages they flag becomes
+    ``signal_pages``; ``text_layer`` then runs with that set (page-level
+    co-occurrence, design 1.4); finally the remaining pikepdf / byte checks run.
+    Each check is wrapped (a failure -> ``checks_unavailable`` + a warning; the
+    others still run).
+
+    ``mode``: ``"pre-publish"`` (inspect OUR output before release; sets
+    ``safe_to_publish``) or ``"received"`` (inspect a response WE got;
+    ``safe_to_publish`` is None). In ``pre-publish`` each finding's severity is set
+    from the pinned ``_PREPUBLISH_SEVERITY`` map.
+
+    FAIL-CLOSED (design 1.2/1.6): ``safe_to_publish`` is True ONLY when NO finding
+    is ``"high"`` AND ``checks_unavailable`` is empty. ANY un-run check forces
+    False with a ``"cannot certify: <check> did not run"`` warning -- a check that
+    did not run never certifies the absence of what it checks for.
+
+    ``vault_roots`` is accepted for interface parity with redact-output (the
+    redaction-check report itself writes nothing here); reserved for callers that
+    route the LOCAL report.
+    """
+    path = Path(pdf_path)
+    findings: list[RedactionFinding] = []
+    checks_run: list[str] = []
+    checks_unavailable: list[str] = []
+    warnings: list[str] = []
+
+    # --- Phase 1: the signal-producing checks (box_over_text + unapplied_redact). ---
+    # Looked up via the module namespace (not a captured local) so tests can
+    # monkeypatch scripts.redaction_check.check_box_over_text.
+    box_findings = _run_check(
+        "box_over_text",
+        lambda: check_box_over_text(path),
+        findings=findings,
+        checks_run=checks_run,
+        checks_unavailable=checks_unavailable,
+        warnings=warnings,
+    )
+    redact_findings = _run_check(
+        "unapplied_redact",
+        lambda: check_unapplied_redact(path),
+        findings=findings,
+        checks_run=checks_run,
+        checks_unavailable=checks_unavailable,
+        warnings=warnings,
+    )
+    # signal_pages = the union of pages flagged by box_over_text OR unapplied_redact
+    # (page-level co-occurrence only; never cross-engine bbox math).
+    signal_pages = {
+        f.page
+        for f in (*box_findings, *redact_findings)
+        if f.page is not None
+    }
+
+    # --- Phase 2: text_layer, gated on the co-occurrence signal. ---
+    _run_check(
+        "text_layer",
+        lambda: check_text_layer(path, signal_pages=signal_pages),
+        findings=findings,
+        checks_run=checks_run,
+        checks_unavailable=checks_unavailable,
+        warnings=warnings,
+    )
+
+    # --- Phase 3: the remaining independent checks (order-insensitive). ---
+    for name, fn in (
+        ("metadata", lambda: check_metadata(path)),
+        ("incremental_save", lambda: check_incremental_save(path)),
+        ("embedded_files", lambda: check_embedded_files(path)),
+        ("acroform_values", lambda: check_acroform_values(path)),
+        ("annotation_text", lambda: check_annotation_text(path)),
+    ):
+        _run_check(
+            name,
+            fn,
+            findings=findings,
+            checks_run=checks_run,
+            checks_unavailable=checks_unavailable,
+            warnings=warnings,
+        )
+
+    # --- pre-publish: pin each finding's severity from the map. ---
+    if mode == "pre-publish":
+        findings = [
+            replace(f, severity=_PREPUBLISH_SEVERITY.get(f.check, f.severity))
+            for f in findings
+        ]
+
+    # --- safe_to_publish (pre-publish only) -- FAIL-CLOSED. ---
+    safe_to_publish: bool | None
+    if mode == "pre-publish":
+        any_high = any(f.severity == "high" for f in findings)
+        if checks_unavailable:
+            safe_to_publish = False
+            for entry in checks_unavailable:
+                # name the un-run check (entry is "<check>: <reason>").
+                check_name = entry.split(":", 1)[0].strip()
+                warnings.append(
+                    f"cannot certify: {check_name} did not run "
+                    f"(fail-closed; safe_to_publish forced False)"
+                )
+        else:
+            safe_to_publish = not any_high
+    else:
+        safe_to_publish = None  # received mode has no pass/fail disposition
+
+    return RedactionReport(
+        source_path=str(path),
+        source_sha256=_streamed_sha256(path),
+        mode=mode,
+        checks_run=checks_run,
+        checks_unavailable=checks_unavailable,
+        findings=findings,
+        n_findings=len(findings),
+        safe_to_publish=safe_to_publish,
+        warnings=warnings,
+        cannot_catch=list(_CANNOT_CATCH),
+    )
