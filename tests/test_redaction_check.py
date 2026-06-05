@@ -115,6 +115,35 @@ def test_publishable_view_raises_if_detail_carries_raw_evidence():
         rep.publishable_view()
 
 
+def test_publishable_view_raises_if_summary_carries_raw_evidence():
+    # The summary is ALSO a published field: a raw local_evidence string smuggled
+    # into the human-readable summary must be refused too (not just detail).
+    from scripts.redaction_check import RedactionFinding, RedactionReport
+
+    bad = RedactionFinding(
+        check="metadata",
+        severity="low",
+        page=None,
+        summary="author Jane Author present",  # raw value smuggled into summary
+        detail={"fields": ["/Author"]},
+        local_evidence={"Author": "Jane Author"},
+    )
+    rep = RedactionReport(
+        source_path="x.pdf",
+        source_sha256="ab",
+        mode="received",
+        checks_run=["metadata"],
+        checks_unavailable=[],
+        findings=[bad],
+        n_findings=1,
+        safe_to_publish=None,
+        warnings=[],
+        cannot_catch=[],
+    )
+    with pytest.raises(AssertionError):
+        rep.publishable_view()
+
+
 # --------------------------------------------------------------------------- #
 # 3b. incremental_save check (pure bytes).
 # --------------------------------------------------------------------------- #

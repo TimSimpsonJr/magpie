@@ -105,15 +105,21 @@ class RedactionReport:
         publish it."""
         out = copy.deepcopy(asdict(self))
         for finding_dict, finding in zip(out["findings"], self.findings):
-            # Defensive: no raw evidence string may also live in detail. We only
-            # know what "raw" means from local_evidence, so flag any local raw
-            # string that appears anywhere in the (publishable) detail blob.
+            # Defensive: no raw evidence string may live in ANY publishable field
+            # of the finding (summary OR detail). We only know what "raw" means from
+            # local_evidence, so flag any local raw string that appears in the
+            # publishable blob. summary is included (not just detail) so a future
+            # check author cannot slip a raw string through the human-readable lead.
             if finding.local_evidence:
-                detail_blob = str(finding_dict.get("detail"))
+                publishable_blob = (
+                    str(finding_dict.get("detail"))
+                    + " || "
+                    + str(finding_dict.get("summary", ""))
+                )
                 for raw in _iter_raw_strings(finding.local_evidence):
-                    assert raw not in detail_blob, (
-                        f"raw evidence leaked into publishable detail for check "
-                        f"{finding.check!r}: {raw!r}"
+                    assert raw not in publishable_blob, (
+                        f"raw evidence leaked into a publishable field "
+                        f"(summary/detail) for check {finding.check!r}: {raw!r}"
                     )
             finding_dict["local_evidence"] = None  # drop the raw carrier
         return out
