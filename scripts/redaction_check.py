@@ -597,15 +597,31 @@ def check_box_over_text(path) -> list[RedactionFinding]:
 # CO-OCCURRENCE with another redaction signal:
 #   (i)   the page is in ``signal_pages`` (pages the orchestrator flagged via
 #         box_over_text OR unapplied_redact) AND the page has extractable text, OR
-#   (iii) the page is image-bearing (scanned-looking) yet ALSO carries a text
-#         layer (an image-only page should have no selectable text -- a hidden
-#         text layer under a scan is itself the anomaly).
+#   (iii) the page is IMAGE-DOMINATED (a full-page image -- it LOOKS like a scan)
+#         yet ALSO carries a SUBSTANTIAL hidden text layer. A scan-looking page
+#         should have no selectable text, so a real text layer under it is the
+#         anomaly. This is NARROW on purpose: a normal page with a small logo or
+#         photo + a caption is NOT image-dominated and must NOT fire (firing on it
+#         would FALSE-BLOCK a legitimate release, since pre-publish maps text_layer
+#         to "high"). "Image-dominated" = the largest image covers
+#         >= ``_IMAGE_DOMINANT_FRACTION`` of the page; "substantial" =
+#         >= ``_MIN_HIDDEN_TEXT_CHARS`` extractable chars. Both thresholds use
+#         single-engine pdfminer geometry (page layout + LTImage bbox in pdfminer's
+#         OWN coordinate space) -- this is page-level, NOT cross-engine, so it does
+#         not touch the coordinate trap (1.4 forbids correlating bboxes ACROSS
+#         engines, not measuring one image against its own page in one engine).
 # (Trigger (ii), the box_over_text corroboration, is just case (i) with the
 # signal page coming from x-ray -- the orchestrator unions both signal sources.)
 # PAGE-LEVEL ONLY -- NO cross-engine bbox correlation (the coordinate trap, 1.4).
 # pdfminer text is raw -> if surfaced it goes in ``local_evidence``; ``detail``
-# carries page + char-count facts only.
+# carries page + char-count + image-fraction facts only.
 # --------------------------------------------------------------------------- #
+
+# Trigger-(iii) thresholds (design 1.1 check 2 trigger iii). A page fires (iii)
+# ONLY when it both LOOKS like a scan (image-dominated) and carries a real text
+# layer. Named so the narrowing cannot be silently widened back to "any image".
+_IMAGE_DOMINANT_FRACTION = 0.5  # largest image must cover >= this share of the page
+_MIN_HIDDEN_TEXT_CHARS = 20     # ...and the page must carry >= this many chars
 
 
 def check_text_layer(path, *, signal_pages) -> list[RedactionFinding]:
@@ -614,29 +630,40 @@ def check_text_layer(path, *, signal_pages) -> list[RedactionFinding]:
     orchestrator flagged via box_over_text / unapplied_redact (passed in -- this is
     the only cross-check ordering dependency). A finding fires for page ``p`` when
     either (i) ``p in signal_pages`` and the page has extractable text, OR (iii)
-    the page is image-bearing yet still carries a text layer. NEVER a standalone
-    "text exists => bad" alarm. Page-level co-occurrence ONLY (design 1.4): no
+    the page is IMAGE-DOMINATED (a full-page image, scan-looking) yet still carries
+    a SUBSTANTIAL text layer (>= ``_MIN_HIDDEN_TEXT_CHARS`` chars under an image
+    covering >= ``_IMAGE_DOMINANT_FRACTION`` of the page). Trigger (iii) is narrow
+    on purpose: a normal page with a small logo/photo + caption is NOT
+    image-dominated and does NOT fire (firing on it would FALSE-BLOCK a legitimate
+    release). NEVER a standalone "text exists => bad" alarm. Page-level
+    co-occurrence ONLY (design 1.4): single-engine pdfminer geometry, no
     cross-engine bbox math.
 
-    ``detail`` carries the page + char count + which trigger fired (publishable
-    facts); the extracted text itself is NOT surfaced (a normal page's full text is
-    not evidence -- the char count + co-occurrence is the lead). If a future
-    variant surfaces a snippet it MUST go in ``local_evidence``."""
+    ``detail`` carries the page + char count + max image fraction + which trigger
+    fired (publishable facts); the extracted text itself is NOT surfaced (a normal
+    page's full text is not evidence -- the char count + co-occurrence is the lead).
+    If a future variant surfaces a snippet it MUST go in ``local_evidence``."""
     from pdfminer.high_level import extract_pages
     from pdfminer.layout import LTChar, LTFigure, LTImage, LTTextContainer
 
     signal_pages = set(signal_pages or ())
     findings: list[RedactionFinding] = []
     for pageno, layout in enumerate(extract_pages(str(path)), start=1):
-        char_count, has_image = _page_text_and_image(
+        char_count, has_image, max_image_fraction = _page_text_and_image(
             layout, LTChar, LTImage, LTTextContainer, LTFigure
         )
         if char_count <= 0:
             continue  # nothing extractable on this page -> no text-layer lead
         on_signal_page = pageno in signal_pages
-        # (iii) image-bearing page that ALSO carries a hidden text layer.
-        image_only_with_text = has_image
-        if not (on_signal_page or image_only_with_text):
+        # (iii) IMAGE-DOMINATED (scan-looking) page that ALSO carries a SUBSTANTIAL
+        # hidden text layer. NARROW: a small logo/photo + caption is NOT scan-looking
+        # and must NOT fire (it would FALSE-BLOCK a legitimate release). Single-engine
+        # pdfminer geometry only -- page-level, never a cross-engine bbox correlation.
+        image_dominated_with_text = (
+            max_image_fraction >= _IMAGE_DOMINANT_FRACTION
+            and char_count >= _MIN_HIDDEN_TEXT_CHARS
+        )
+        if not (on_signal_page or image_dominated_with_text):
             continue  # extractable text but no co-occurrence -> not a lead
         trigger = "redaction_signal" if on_signal_page else "image_with_text_layer"
         findings.append(
@@ -653,6 +680,9 @@ def check_text_layer(path, *, signal_pages) -> list[RedactionFinding]:
                     "char_count": char_count,
                     "trigger": trigger,
                     "has_image": has_image,
+                    # largest image's share of the page (pdfminer's own coordinate
+                    # space) -- a publishable geometric fact, not raw content.
+                    "max_image_fraction": round(max_image_fraction, 4),
                 },
             )
         )
@@ -661,22 +691,35 @@ def check_text_layer(path, *, signal_pages) -> list[RedactionFinding]:
 
 def _page_text_and_image(layout, LTChar, LTImage, LTTextContainer, LTFigure):
     """Walk a pdfminer page ``layout`` (descending text containers + figures) and
-    return ``(extractable_char_count, has_image)``."""
+    return ``(extractable_char_count, has_image, max_image_fraction)``.
+
+    ``max_image_fraction`` is the LARGEST single image's area as a fraction of the
+    page area, both in pdfminer's OWN coordinate space (``LTImage`` and the page
+    ``layout`` both expose ``.width`` / ``.height`` via ``LTComponent``). It is the
+    single-engine, page-level signal trigger (iii) uses to tell a scan-looking
+    full-page image from a small logo/photo -- NO cross-engine bbox math (1.4).
+    ``0.0`` when the page has no image or a non-positive page area."""
     char_count = 0
     has_image = False
+    max_image_area = 0.0
+    page_area = float(layout.width) * float(layout.height)
 
     def _walk(obj) -> None:
-        nonlocal char_count, has_image
+        nonlocal char_count, has_image, max_image_area
         for el in obj:
             if isinstance(el, LTChar):
                 char_count += 1
             elif isinstance(el, LTImage):
                 has_image = True
+                area = float(el.width) * float(el.height)
+                if area > max_image_area:
+                    max_image_area = area
             if isinstance(el, (LTTextContainer, LTFigure)):
                 _walk(el)
 
     _walk(layout)
-    return char_count, has_image
+    max_image_fraction = (max_image_area / page_area) if page_area > 0 else 0.0
+    return char_count, has_image, max_image_fraction
 
 
 # --------------------------------------------------------------------------- #

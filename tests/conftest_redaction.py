@@ -77,6 +77,59 @@ def _new_single_page_pdf():
     return pdf
 
 
+def _solid_png(path: Path, size, color) -> Path:
+    """Write a solid-color PNG of ``size`` (w, h) at ``path`` -- the raster the
+    text_layer image-fraction fixtures embed. ASCII-only Pillow call."""
+    from PIL import Image
+
+    Image.new("RGB", size, color).save(str(path))
+    return path
+
+
+def _fpdf_small_image_caption_pdf(path: Path) -> Path:
+    """A NORMAL page: several lines of body/caption text plus a SMALL image (a
+    20x20 mm logo at the top-left of an A4 page -- a few tenths of a percent of the
+    page area). This is the trigger-(iii) FALSE-POSITIVE control: it has BOTH an
+    image and a text layer, but the image is nowhere near image-dominated, so the
+    narrowed text_layer check must NOT fire on it (the old ``has_image`` trigger
+    would have, FALSE-BLOCKING a legitimate release). Built fpdf2 + Pillow (no
+    fitz)."""
+    from fpdf import FPDF
+
+    png = _solid_png(path.with_suffix(".logo.png"), (40, 40), (200, 30, 30))
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    for i in range(8):
+        pdf.set_xy(20, 40 + i * 8)
+        pdf.cell(0, 8, "Normal caption and body text line number %d on this page." % i)
+    # a SMALL logo near the corner: 20mm x 20mm on a 210x297mm page.
+    pdf.image(str(png), x=10, y=10, w=20, h=20)
+    pdf.output(str(path))
+    return path
+
+
+def _fpdf_full_page_image_with_text_pdf(path: Path, line: str) -> Path:
+    """A SCAN-LOOKING page: a FULL-PAGE image covering the whole page, with a real
+    extractable text layer drawn ON TOP of it. This is the GENUINE trigger-(iii)
+    positive case -- an image-dominated page that nonetheless carries a hidden text
+    layer (what a scanned page with an OCR/under-text layer looks like). The image
+    fraction is ~1.0 and the text is well over ``_MIN_HIDDEN_TEXT_CHARS`` chars.
+    Built fpdf2 + Pillow (no fitz)."""
+    from fpdf import FPDF
+
+    png = _solid_png(path.with_suffix(".scan.png"), (800, 1000), (12, 12, 12))
+    pdf = FPDF()
+    pdf.add_page()
+    # cover the ENTIRE page with the image (A4 default: pdf.w x pdf.h in mm).
+    pdf.image(str(png), x=0, y=0, w=pdf.w, h=pdf.h)
+    pdf.set_font("Helvetica", size=12)
+    pdf.set_xy(20, 100)
+    pdf.cell(0, 8, line)
+    pdf.output(str(path))
+    return path
+
+
 # --------------------------------------------------------------------------- #
 # Fixtures (each builds its PDF into tmp_path and returns the Path).
 # --------------------------------------------------------------------------- #
@@ -163,6 +216,26 @@ def redact_annot_text_pdf(tmp_path) -> Path:
     page.Annots = Array([pdf.make_indirect(annot)])
     pdf.save(str(text_path))
     return text_path
+
+
+@pytest.fixture
+def small_image_caption_pdf(tmp_path) -> Path:
+    """A NORMAL page: body/caption text + a SMALL logo image (not image-dominated).
+    The trigger-(iii) FALSE-POSITIVE control -- the narrowed text_layer check must
+    return NO finding for it off a signal page (the old ``has_image`` trigger fired
+    here and could FALSE-BLOCK a legitimate release)."""
+    return _fpdf_small_image_caption_pdf(tmp_path / "small_image_caption.pdf")
+
+
+@pytest.fixture
+def full_page_image_text_pdf(tmp_path) -> Path:
+    """A SCAN-LOOKING page: a FULL-PAGE image with a real extractable text layer on
+    top -- the GENUINE trigger-(iii) positive (image-dominated AND a substantial
+    hidden text layer)."""
+    return _fpdf_full_page_image_with_text_pdf(
+        tmp_path / "full_page_image_text.pdf",
+        "hidden text under the scan layer that should be recoverable here",
+    )
 
 
 @pytest.fixture

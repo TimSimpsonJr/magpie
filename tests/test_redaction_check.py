@@ -386,6 +386,57 @@ def test_text_layer_no_finding_without_co_occurrence(clean_pdf):
     assert check_text_layer(clean_pdf, signal_pages=set()) == []
 
 
+def test_text_layer_no_finding_on_small_image_page(small_image_caption_pdf):
+    # THE trigger-(iii) false-positive guard (Codex impl-review). A NORMAL page has
+    # BOTH a small logo image AND a text layer, but it is NOT image-dominated and is
+    # NOT on a signal page -- so the narrowed check returns NO finding. The OLD
+    # ``image_only_with_text = has_image`` trigger fired here, and because pre-publish
+    # maps text_layer -> "high", it could FALSE-BLOCK a legitimate release. This pins
+    # that the narrowing holds.
+    from scripts.redaction_check import (
+        _IMAGE_DOMINANT_FRACTION,
+        _page_text_and_image,
+        check_text_layer,
+    )
+
+    assert check_text_layer(small_image_caption_pdf, signal_pages=set()) == []
+    # sanity-pin the fixture really IS image-bearing-with-text but sub-dominant
+    # (so the empty result is the NARROWING at work, not an image-less page).
+    from pdfminer.high_level import extract_pages
+    from pdfminer.layout import LTChar, LTFigure, LTImage, LTTextContainer
+
+    (layout,) = list(extract_pages(str(small_image_caption_pdf)))
+    char_count, has_image, max_frac = _page_text_and_image(
+        layout, LTChar, LTImage, LTTextContainer, LTFigure
+    )
+    assert has_image and char_count > 0  # it DOES carry both an image and text...
+    assert max_frac < _IMAGE_DOMINANT_FRACTION  # ...yet the image is sub-dominant
+
+
+def test_text_layer_fires_on_image_dominated_page_with_text(full_page_image_text_pdf):
+    # the GENUINE trigger-(iii) positive: a scan-looking page (a FULL-PAGE image)
+    # that nonetheless carries a substantial hidden text layer -> a finding, with
+    # the "image_with_text_layer" trigger, fired OFF any signal page (signal_pages
+    # empty). detail carries publishable geometry facts (char_count + image
+    # fraction), never the raw extracted text.
+    from scripts.redaction_check import (
+        _IMAGE_DOMINANT_FRACTION,
+        _MIN_HIDDEN_TEXT_CHARS,
+        check_text_layer,
+    )
+
+    findings = check_text_layer(full_page_image_text_pdf, signal_pages=set())
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.check == "text_layer"
+    assert f.page == 1
+    assert f.detail["trigger"] == "image_with_text_layer"
+    assert f.detail["char_count"] >= _MIN_HIDDEN_TEXT_CHARS
+    assert f.detail["max_image_fraction"] >= _IMAGE_DOMINANT_FRACTION
+    # the under-scan text is raw content -> it must NOT appear in published detail.
+    assert "hidden text under the scan" not in str(f.detail)
+
+
 def test_text_layer_no_finding_on_signal_page_without_text(redact_annot_pdf):
     # a /Redact-signalled page that has NO extractable text (blank page + annot)
     # -> NO text_layer finding (there is nothing in the text layer to recover).

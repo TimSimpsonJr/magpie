@@ -30,11 +30,13 @@ from tests.conftest_redaction import (  # noqa: F401
     clean_pdf,
     clean_single_rev_pdf,
     embedded_file_pdf,
+    full_page_image_text_pdf,
     incremental_save_pdf,
     metadata_pdf,
     multi_finding_pdf,
     redact_annot_pdf,
     redact_annot_text_pdf,
+    small_image_caption_pdf,
 )
 
 # A latin-1-safe garbled text-layer line the gate must diagnose as garbled_text:
