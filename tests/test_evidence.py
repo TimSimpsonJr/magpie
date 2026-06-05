@@ -274,3 +274,18 @@ def test_post_commit_custody_failure_on_malformed_existing_log_is_explicit(tmp_p
     manifest = out / (receipt + ".manifest.json")
     assert manifest.exists()                       # the manifest DID commit
     assert ei.value.manifest_path == manifest      # explicit + recoverable, not a bare raise
+
+
+# --- honest limit (CustodyAppendError docstring): on_exists='append_event' recovery
+# works only when the custody log is well-formed. A CORRUPT custody log makes the
+# recovery append fail the same way -- the log needs manual repair (out of scope v1).
+# This test PINS that documented limit so the docstring cannot quietly overclaim. ---
+def test_append_event_recovery_needs_wellformed_custody_log(tmp_path):
+    src = _write(tmp_path, "f.txt")
+    out = tmp_path / "o"
+    archive_evidence(src, timestamper=_verified_fake(), out_dir=out, now=T0)  # valid archive
+    receipt = sha256_file(src)
+    (out / (receipt + ".custody.jsonl")).write_text("{corrupt\n", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):  # recovery re-reads the corrupt log + fails
+        archive_evidence(src, timestamper=_verified_fake(), out_dir=out, now=T0,
+                         on_exists="append_event")

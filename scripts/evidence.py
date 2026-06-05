@@ -50,9 +50,15 @@ class ArchiveExistsError(Exception):
 class CustodyAppendError(OSError):
     """Raised when the manifest COMMITTED but the post-commit 'archived' custody
     append failed. The archive's authoritative record (the manifest) EXISTS at
-    `manifest_path`; only the custody event is missing. Recover WITHOUT re-archiving
-    by calling archive_evidence(..., on_exists='append_event'), which appends a
-    custody event to the already-committed manifest."""
+    `manifest_path`; only the custody event is missing.
+
+    Recovery (honest limit): if the failure was transient and the custody log is
+    WRITABLE and WELL-FORMED, recover WITHOUT re-archiving by calling
+    archive_evidence(..., on_exists='append_event'), which appends a custody event to
+    the already-committed manifest. If the failure was a CORRUPT existing custody log
+    (a malformed last line), on_exists='append_event' re-reads that same log and fails
+    the same way -- the log must be repaired manually first (a repair path is out of
+    scope for v1). The manifest itself is intact either way."""
     def __init__(self, manifest_path, original):
         super().__init__("manifest committed at %s but custody append failed: %s"
                          % (manifest_path, original))
