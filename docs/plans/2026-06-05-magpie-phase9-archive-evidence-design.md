@@ -100,6 +100,10 @@ always detected and flagged, never silently wrong.
   freeTSA and no matching root is supplied, do NOT opportunistically trust the reply
   -- store the token but set `verification.verified=false`,
   `reason="no_root_configured"`.
+- Empty artifact: an empty file cannot be RFC 3161 timestamped (the rfc3161-client
+  builder rejects empty input). v1 still archives it locally (the receipt hash of an
+  empty file is well-defined) with `timestamp.status="unavailable"`,
+  `reason="empty_file"` -- a degrade, never a crash.
 
 ## 5. Provenance manifest schema (the test target)
 
@@ -182,14 +186,20 @@ Two failure classes, deliberately asymmetric:
 - Local persistence failure (custody append, sidecar write, manifest write) -> HARD
   FAIL: raise. We cannot claim an archive we did not persist.
 
-Ordering in `archive_evidence`:
-1. `sha256_file` (unreadable file -> hard fail).
-2. mtime one-way alarm (append a warning; never fails).
-3. `timestamper.timestamp_path(path, expected_sha256=receipt_hash)` (soft degrade).
-4. Write the token sidecar if a token exists (write failure -> hard fail).
-5. Write `<sha256>.manifest.json` (write failure -> hard fail).
-6. Append the custody event recording the completed archive (append failure -> hard
-   fail).
+Ordering in `archive_evidence` (the manifest is the idempotency sentinel, so it is
+the ATOMIC FINAL commit point -- a mid-archive failure must never strand a sentinel
+that blocks a clean retry):
+1. Snapshot `src.stat()` AND `sha256_file` at receipt (unreadable -> hard fail). The
+   stat snapshot feeds size_bytes/source_mtime so they describe the hashed bytes
+   (the artifact-metadata half of the TOCTOU guard, not just the imprint).
+2. Idempotency check: if `<sha256>.manifest.json` exists -> the on_exists policy.
+3. mtime one-way alarm (append a warning; never fails).
+4. `timestamper.timestamp_path(path, expected_sha256=receipt_hash)` (soft degrade).
+5. Write the token sidecar if a token exists (write failure -> hard fail).
+6. Append the "archived" custody event (append failure -> hard fail).
+7. Write the manifest to a temp file and `os.replace` it into the final name -- the
+   ATOMIC FINAL commit point (write failure -> hard fail). Because the sentinel
+   appears only on success, a failed attempt leaves no manifest and a retry is clean.
 
 `status` vocabulary: `verified` (token obtained AND verification passed);
 `unverified` (token obtained, not verified or verification failed -- with reason);
