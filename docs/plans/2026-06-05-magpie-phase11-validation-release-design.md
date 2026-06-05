@@ -170,7 +170,8 @@ time and pinned with a comment tying it to the documented pilot figure.
 - truncation: loaded row count == 1048575 AND data_quality.check_truncation flags
   it at the 2^20-1 ceiling. EXACT.
 - out_of_state: pin the exact OOS row count (which rounds to the documented 89.7%),
-  via stats.category_pct over the derived geo. EXACT.
+  via stats.category_pct(df, df["geo"] == "OOS") -- a single FRACTION (mask.mean()),
+  NOT a label map. EXACT.
 - immigration: pin the exact de-duplicated criminal-OR-civil count (documented
   ~770), via derive_immigration / the Flock category match. EXACT.
 - pretext: pin the exact recipe.check_pretext count (cat_col=reason_cat,

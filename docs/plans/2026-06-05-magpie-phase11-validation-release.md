@@ -350,8 +350,13 @@ Inline APIs the subagent needs (do NOT open the source files):
    `df["reason_cat"] = df["Reason"].map(reason_category)` BEFORE derive_columns.)
 - `scripts.data_quality.check_truncation(rows_or_df)` -> dict with a `truncated`
   bool + the ceiling 1048575.
-- `scripts.stats.gini(seq)`, `scripts.stats.category_pct(series)` -> {label: pct},
-  `scripts.stats.median_by_category(df, value_col, category_col)` -> {cat: median}.
+- `scripts.stats.gini(seq) -> float`. `scripts.stats.category_pct(df, mask) -> float`
+  -- the FRACTION `pd.Series(mask).mean()` (NOT a label map); call it as
+  `category_pct(df, df["geo"] == "OOS")`.
+  `scripts.stats.median_by_category(df, value_col, category_col) -> pandas.Series`
+  sorted DESCENDING by median, indexed by category (NOT a dict); access via
+  `s.loc["<category>"]`. `scripts.stats.top_k_share(counts, k_frac=0.01) -> float`;
+  `scripts.stats.bottom_half_share(counts) -> float`.
 - `scripts.recipe.check_pretext(df, {"cat_col": "reason_cat", "pretext_cats": [...]})`
   -> dict with a `pretext` int.
 - `scripts.pii_sweep.sweep(series, official_names=..., collect_local_texts=False)`
@@ -413,15 +418,38 @@ def test_out_of_state_share():
                 "out_label": "OOS", "unknown_label": "UNK"}})
     oos = int((df["geo"] == "OOS").sum())
     assert oos == EXPECTED_OOS_COUNT
-    assert round(category_pct(df["geo"])["OOS"] * 100, 1) == 89.7
+    assert round(category_pct(df, df["geo"] == "OOS") * 100, 1) == 89.7
 
-# ... (immigration, pretext, gini, blast_radius -- same shape, pin each constant)
+def test_blast_radius_traffic_over_homicide():
+    from scripts.derive import derive_columns
+    from scripts.stats import median_by_category
+    df = derive_columns(_network_frame(), {
+        "nets": {"source_col": "Total Networks Searched"}})
+    med = median_by_category(df, "nets", "reason_cat")  # pandas.Series, DESC by median
+    assert med.loc["Traffic Infraction"] > med.loc["Homicide/Death Investigation"]
+    assert int(med.loc["Traffic Infraction"]) == EXPECTED_TRAFFIC_MEDIAN
+    assert int(med.loc["Homicide/Death Investigation"]) == EXPECTED_HOMICIDE_MEDIAN
+
+# immigration / pretext / gini: same shape -- use derive_columns + the stats/recipe
+# APIs from the block above; pin each constant MAIN-THREAD. gini:
+# stats.gini(df["Org Name"].value_counts().values) -> round(.,3)==0.805. pretext:
+# recipe.check_pretext(df, {"cat_col": "reason_cat", "pretext_cats": PRETEXT_CATS})
+# ["pretext"] >= EXPECTED_PRETEXT_MIN.
 
 @pytest.mark.spacy
 def test_pii_exposure_and_agency_count():
-    # distinct-then-weight pii_sweep over the reason text; agency count EXACT, the
-    # exposure tally within an explicit band (spaCy model-version tolerance).
-    ...
+    from scripts.pii_sweep import sweep
+    df = _network_frame()
+    # COMPATIBILITY PROFILE: broad_only_names=frozenset() folds the broad-only
+    # patterns (possible_birthdate/race_sex) INTO the headline, reproducing the
+    # documented pilot figure. The headline metric is exposure.strict.weighted
+    # (row-weighted: NER runs over distinct texts, then weights by row counts).
+    res = sweep(df["Reason"], broad_only_names=frozenset(), collect_local_texts=False)
+    weighted = res["exposure"]["strict"]["weighted"]
+    assert EXPECTED_PII_LOW <= weighted <= EXPECTED_PII_HIGH   # documented ~11,900 (band)
+    # MAIN-THREAD-PIN: confirm whether 747 is total distinct agencies or PII-bearing.
+    agencies = df["Org Name"].str.strip().nunique()
+    assert agencies == EXPECTED_PII_AGENCIES                   # documented 747
 
 @pytest.mark.docling
 def test_citation_anchor_revalidation_issue_6():
@@ -493,12 +521,16 @@ Run offline -> 3 passed. Commit
 
 ### C2: tests/test_mcp_sqlite_smoke.py (served-DB start smoke) + pyproject marker
 
-The one test that proves the served-DB path end-to-end. Needs uvx; SKIP if absent so
-it is safe locally + runs in CI (uv installed). Build a tiny DB with
-`scripts.build_dataset_db.build_dataset_db`, launch `uvx mcp-sqlite==0.3.2 <db>
---metadata <yml> --prefix ds_`, confirm the process serves (probe stdin/stdout per
-the mcp-sqlite stdio protocol OR, simpler + robust, assert the process starts and
-stays up ~2s then terminate it cleanly). Mark `@pytest.mark.mcp` and add `mcp` to
+The one test that proves the served-DB path end-to-end. Pin ONE strategy (no subagent
+choice): build a tiny DB with `scripts.build_dataset_db.build_dataset_db`, spawn
+`uvx mcp-sqlite==0.3.2 <db> --metadata <yml> --prefix ds_` as a subprocess speaking
+MCP over stdio, perform the MCP `initialize` handshake, then call `tools/list` and
+assert the response advertises the `ds_`-prefixed canned-query tools (and, if
+straightforward, call ONE canned-query tool and assert a row). This proves the server
+STARTS, LOADS the metadata, and SERVES -- not merely that a process stayed up. SKIP
+via `pytest.mark.skipif(shutil.which("uvx") is None, ...)` so it is safe locally and
+runs in CI (setup-uv puts uvx on PATH). Consult the MCP stdio + mcp-sqlite docs
+(Context7) for the exact JSON-RPC frames. Mark `@pytest.mark.mcp` and add `mcp` to
 pyproject.toml `[tool.pytest.ini_options] markers` (inline the exact addition):
 
 ```toml
@@ -518,6 +550,31 @@ rely on the skipif (so the offline command needs no change); document it.
 ---
 
 ## Task D -- 11.3 CI + release docs  [SUBAGENT 4]
+
+### D0: requirements-offline.txt (trimmed offline dependency set)
+
+**Files:** Create `requirements-offline.txt`. A STRICT SUBSET of requirements-dev.txt
+with ONLY the offline deps, so the default CI job does NOT pull the ~2 GB
+spacy/docling/torch stack or the 400 MB en_core_web_lg model. Every magpie module
+imports its heavy deps LAZILY, so the offline subset collects + runs with just these:
+
+```
+pytest==9.0.3
+pandas==3.0.3
+duckdb==1.5.3
+pyarrow==24.0.0
+numpy==2.4.6
+openpyxl==3.1.5
+charset-normalizer==3.4.3
+sqlite-utils==3.39
+PyYAML==6.0.2
+```
+
+requirements-dev.txt stays the full-venv source of truth; requirements-offline.txt is
+the fast-CI subset. Verify locally that the offline subset still COLLECTS + passes
+with only these installed (a non-lazy heavy import breaking collection is a bug to
+fix -- but per the lazy-import design it should not). Commit
+`git commit -m "ci(phase11): trimmed offline requirements for fast CI"`.
 
 ### D1: .github/workflows/ci.yml
 
@@ -543,17 +600,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install uv (for the mcp-sqlite smoke)
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-      - name: Create venv + install offline deps
+      - uses: astral-sh/setup-uv@v5      # puts uv + uvx on PATH for the mcp-sqlite smoke
+      - name: Create venv + install OFFLINE deps only (NO 2 GB stack)
         run: |
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install -U pip
-          python -m pip install -r requirements-dev.txt
-      - name: detect_tier pre-flight
-        run: . .venv/bin/activate && python scripts/detect_tier.py --json > tier.json && cat tier.json
-      - name: Offline suite + smoke
+          python -m pip install -r requirements-offline.txt
+      - name: detect_tier capability report (informational; never fails the job)
+        run: . .venv/bin/activate && python scripts/detect_tier.py --json || true
+      - name: Offline suite + smoke (mcp-sqlite smoke runs -- uvx is on PATH)
         run: |
           . .venv/bin/activate
           python -m pytest -m "not docling and not spacy and not xray and not tsa" -q
@@ -569,8 +625,7 @@ jobs:
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install -U pip
-          python -m pip install -r requirements-dev.txt
-          python -m spacy download en_core_web_lg || true
+          python -m pip install -r requirements-dev.txt  # full stack incl. en_core_web_lg (pinned by URL)
       - name: Heavy suite (docling/spacy/xray)
         run: |
           . .venv/bin/activate
