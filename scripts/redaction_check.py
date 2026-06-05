@@ -378,3 +378,60 @@ def _filespec_size(spec) -> int:
         return len(stream.read_bytes())
     except Exception:  # noqa: BLE001 - size is best-effort; a lead stands regardless
         return -1
+
+
+def check_acroform_values(path) -> list[RedactionFinding]:
+    """LEAD: ``Root/AcroForm/Fields`` carry ``/V`` values -- a form field can hold
+    un-redacted data behind a flattened-looking page.
+
+    Walks the AcroForm field tree (including ``/Kids``). For each field with a
+    non-empty ``/V``: the field NAME (``/T``) is a publishable fact -> ``detail``;
+    the ``/V`` VALUE is a raw leak that should already have been redacted ->
+    ``local_evidence`` keyed by field name."""
+    import pikepdf
+
+    fields: list[str] = []
+    local: dict = {}
+    with pikepdf.open(str(path)) as pdf:
+        acroform = pdf.Root.get("/AcroForm")
+        if acroform is None:
+            return []
+        roots = acroform.get("/Fields")
+        if roots is None:
+            return []
+        for field_obj in _walk_acroform_fields(roots):
+            value = field_obj.get("/V")
+            if value is None:
+                continue
+            rendered = str(value).strip()
+            if not rendered:
+                continue
+            name = field_obj.get("/T")
+            name_str = str(name) if name is not None else "<unnamed>"
+            fields.append(name_str)
+            local[name_str] = rendered
+    if not fields:
+        return []
+    return [
+        RedactionFinding(
+            check="acroform_values",
+            severity="medium",
+            page=None,
+            summary=(
+                f"{len(fields)} AcroForm field value(s) present -- a form field can "
+                f"hold data behind a flat-looking page (a lead)"
+            ),
+            detail={"fields": fields},
+            local_evidence=local,
+        )
+    ]
+
+
+def _walk_acroform_fields(fields_array):
+    """Yield every terminal AcroForm field dict, descending ``/Kids`` subtrees."""
+    for field_obj in fields_array:
+        kids = field_obj.get("/Kids")
+        if kids is not None:
+            yield from _walk_acroform_fields(kids)
+        else:
+            yield field_obj

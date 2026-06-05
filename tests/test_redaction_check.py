@@ -227,3 +227,28 @@ def test_check_embedded_files_clean_pdf_no_finding(clean_pdf):
     from scripts.redaction_check import check_embedded_files
 
     assert check_embedded_files(clean_pdf) == []
+
+
+# --------------------------------------------------------------------------- #
+# 3f. acroform_values check (pikepdf Root/AcroForm/Fields /V).
+# --------------------------------------------------------------------------- #
+
+
+def test_check_acroform_values_value_local_name_detail(acroform_pdf):
+    from scripts.redaction_check import check_acroform_values
+
+    findings = check_acroform_values(acroform_pdf)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.check == "acroform_values"
+    # the /V value should have been redacted -> it is a raw leak -> local_evidence.
+    assert "123-45-6789" in str(f.local_evidence)
+    # detail carries the field NAME only -- never the value.
+    assert "123-45-6789" not in str(f.detail)
+    assert "ssn_field" in str(f.detail["fields"])
+
+
+def test_check_acroform_values_clean_pdf_no_finding(clean_pdf):
+    from scripts.redaction_check import check_acroform_values
+
+    assert check_acroform_values(clean_pdf) == []
