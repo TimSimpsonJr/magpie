@@ -203,7 +203,7 @@ def corrupt_pdf(tmp_path) -> Path:
     """A file with a ``.pdf`` name whose bytes are NOT a valid PDF (a ``%PDF``
     header followed by garbage). Docling's pdfium backend fails to load it ->
     ``ConversionStatus.FAILURE`` (with ``raises_on_error=False``), exercising the
-    ugly-PDF skip-and-flag failure contract (design §2.6): ``ingest`` must return
+    ugly-PDF skip-and-flag failure contract (design sec 2.6): ``ingest`` must return
     a flagged ``IngestResult`` rather than crash or dereference a bad document.
     Not threshold-fragile: any non-PDF byte stream drives the same FAILURE."""
     path = tmp_path / "corrupt.pdf"
