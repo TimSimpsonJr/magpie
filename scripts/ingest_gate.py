@@ -237,3 +237,48 @@ def diagnose_page(
     if parse_score is not None and parse_score <= _MIN_PARSE_SCORE:
         return PageDiagnosis.uncertain_review
     return PageDiagnosis.native_ok
+
+
+# --------------------------------------------------------------------------- #
+# Conservative doc-wide rollup
+# --------------------------------------------------------------------------- #
+
+
+def decide_doc(diagnoses: list[PageDiagnosis]) -> DocDecision:
+    """Roll a list of per-page diagnoses up into ONE conservative doc action.
+
+    Conservative by construction: a doc-wide re-OCR is expensive and a minority
+    of bad pages is flagged (not re-OCR'd) rather than flipping a 200-page native
+    brief to full OCR. Ordered, FIRST-MATCH rule over each diagnosis' share of the
+    page count (every fraction is a NAMED module constant):
+
+    - empty list -> ``review`` (nothing to trust).
+    1. ``uncertain`` share >= ``_REVIEW_FRACTION`` -> ``review`` (too much of the
+       doc is un-judgeable for unattended extraction).
+    2. ``garbled`` share >= ``_ESCALATE_FRACTION`` OR (``garbled`` present AND the
+       combined ``image_only + garbled`` share >= ``_ESCALATE_FRACTION``) ->
+       ``force_full_doc_ocr``. A present-but-bad text layer must be overridden
+       doc-wide; this is also the safe superset when image+garbled are jointly
+       high but neither alone dominates.
+    3. ``image_only`` share >= ``_ESCALATE_FRACTION`` (no significant garbled) ->
+       ``ocr_images`` (OCR the blank-layer pages only).
+    4. otherwise (mostly native, minority bad) -> ``native`` -- the minority bad
+       pages are flagged later by ``ingest.py``, NOT re-OCR'd doc-wide.
+    """
+    n = len(diagnoses)
+    if n == 0:
+        return DocDecision.review
+
+    uncertain = sum(d is PageDiagnosis.uncertain_review for d in diagnoses)
+    garbled = sum(d is PageDiagnosis.garbled_text for d in diagnoses)
+    image_only = sum(d is PageDiagnosis.image_only for d in diagnoses)
+
+    if uncertain / n >= _REVIEW_FRACTION:
+        return DocDecision.review
+    if garbled / n >= _ESCALATE_FRACTION or (
+        garbled > 0 and (image_only + garbled) / n >= _ESCALATE_FRACTION
+    ):
+        return DocDecision.force_full_doc_ocr
+    if image_only / n >= _ESCALATE_FRACTION:
+        return DocDecision.ocr_images
+    return DocDecision.native

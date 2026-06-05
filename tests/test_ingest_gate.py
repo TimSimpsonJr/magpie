@@ -97,3 +97,35 @@ def test_low_parse_score_downgrades_otherwise_native_to_uncertain():
     text = "the police department search reason record vehicle officer"
     assert D(text) == PD.native_ok
     assert D(text, parse_score=0.02) == PD.uncertain_review
+
+
+# --------------------------------------------------------------------------- #
+# Task 3: decide_doc -- conservative doc rollup.
+# --------------------------------------------------------------------------- #
+
+from scripts.ingest_gate import decide_doc, DocDecision as DD
+
+def test_all_native_is_native():
+    assert decide_doc([PD.native_ok]*5) == DD.native
+
+def test_all_image_only_is_ocr_images():
+    assert decide_doc([PD.image_only]*5) == DD.ocr_images
+
+def test_substantial_garbled_escalates_force_full_doc_ocr():
+    assert decide_doc([PD.garbled_text]*4 + [PD.native_ok]) == DD.force_full_doc_ocr
+
+def test_mostly_native_few_bad_stays_native_and_flags():
+    # 200-page brief with 2 bad pages must NOT flip to full OCR (the load-bearing rule)
+    diag = [PD.native_ok]*198 + [PD.garbled_text, PD.image_only]
+    assert decide_doc(diag) == DD.native
+
+def test_uncertain_dominant_is_review():
+    assert decide_doc([PD.uncertain_review]*4 + [PD.native_ok]) == DD.review
+
+def test_empty_pagelist_is_review():
+    assert decide_doc([]) == DD.review
+
+def test_combined_image_and_garbled_escalates_to_force_full_doc_ocr():
+    # neither share alone dominant, but combined bad is high with garbled present
+    # => force_full_doc_ocr (the safe superset; pins the prose rule)
+    assert decide_doc([PD.image_only]*2 + [PD.garbled_text]*2 + [PD.native_ok]) == DD.force_full_doc_ocr
