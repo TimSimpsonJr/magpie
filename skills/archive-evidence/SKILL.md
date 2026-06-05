@@ -18,7 +18,7 @@ The degrade vocabulary is always a status plus a specific reason, never a silent
 
 - verified -- a token was obtained AND verification passed.
 - unverified -- a token was obtained but not verified or verification failed (reason: no_root_configured, verify_failed, imprint_mismatch).
-- unavailable -- no token (reason: offline, http_error, bad_pki_status, timeout, empty_file).
+- unavailable -- no token (reason: one of offline, http_error, bad_pki_status, timeout, empty_file, decode_error, dependency_unavailable, read_error).
 
 reason is mandatory whenever status is not verified. The engine never fakes a gen_time and never crashes on a timestamp failure.
 
