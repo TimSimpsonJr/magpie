@@ -5,7 +5,7 @@ phase: 8
 status: approved
 design_review: APPROVE (Codex, round 2, 2026-06-05) + post-approval single-prov hardening from early Greenville validation (to confirm at plan-review)
 codex_design_review_status: approved
-codex_design_review_approved_hash: 51140629b63f632d9066b2149613ecc2fabbfa9639d55b8725b795762c040dff
+codex_design_review_approved_hash: 9125420fe816413100e1b1233b5ff20c66ed258629101755a2ac3910ff550489
 codex_thread_id: 019e95ea-d5d9-72f0-87db-e1bbd50a4c42
 supersedes:
 ---
@@ -169,7 +169,11 @@ from `prov[0]`, and a quote whose block has `n_prov > 1` is REJECTED (the
 citation-checker flags it, like a cross-block quote -- 2.4). This keeps `page_no`
 a faithful scalar and the bbox unambiguous, and it sidesteps the `prov.charspan`
 coordinate question entirely: the anchor's own `[char_start, char_end)` are
-computed into `.text`, and resolution never reads `prov.charspan` (2.1/2.2).
+computed into `.text`, and resolution never reads `prov.charspan` (2.1/2.2). The
+same single-prov rule applies at RESOLVE time: if a matched target block is
+multi-prov (a re-ingest split it across pages), the result DEGRADES (geometry
+dropped, `is_clean_citation` False) rather than reporting a faux-precise `prov[0]`
+page/bbox.
 
 ### 2.4 The v1 quote contract (what `build_anchor` accepts)
 

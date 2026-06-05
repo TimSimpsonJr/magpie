@@ -119,15 +119,18 @@ def test_to_dict_is_json_able_and_round_trips():
     assert json.loads(json.dumps(d))["text_hash"] == sha256_text("482 searches")
     assert d["schema_name"] == SCHEMA_NAME and d["schema_version"] == SCHEMA_VERSION
 
-def test_public_anchor_drops_every_raw_field():
+def test_public_anchor_is_exactly_the_approved_minimal_surface():
     pub = _record().public_anchor()
+    # raw fields dropped
     for raw in ("claim_text", "verbatim_quote", "context_prefix", "context_suffix"):
         assert raw not in pub
-    # keeps the non-raw anchor + status
-    for keep in ("doc_id", "page_no", "block_index", "block_self_ref", "char_start",
-                 "char_end", "text_hash", "bbox", "n_prov", "checker_level",
-                 "verifier_result", "schema_name", "schema_version", "timestamp"):
-        assert keep in pub
+    # EXACTLY the approved design's public set (design section 3) -- set-equality so
+    # the test catches BOTH a dropped key AND any silent widening (e.g. char_start,
+    # n_prov, timestamp must NOT leak onto the published surface).
+    assert set(pub) == {
+        "doc_id", "page_no", "block_index", "block_self_ref", "text_hash", "bbox",
+        "checker_level", "verifier_result", "schema_name", "schema_version",
+    }
 ```
 
 **Step 2:** `mise run test -- tests/test_citation.py -v` -> FAIL (ImportError).
@@ -136,9 +139,10 @@ def test_public_anchor_drops_every_raw_field():
 that order), `SCHEMA_NAME = "magpie-citation"`, `SCHEMA_VERSION = "1"`,
 `sha256_text(s) -> hashlib.sha256(s.encode("utf-8")).hexdigest()` (no strip),
 `block_index_of(self_ref) -> int(self_ref.rsplit("/", 1)[1])`, `to_dict()` via
-`dataclasses.asdict`, and `public_anchor()` returning ONLY the non-raw keys listed
-in the test (explicit allowlist -- never a denylist, so a future raw field is
-absent by default).
+`dataclasses.asdict`, and `public_anchor()` returning EXACTLY the 10-key approved
+set (design section 3) via an explicit allowlist literal -- never a denylist, so a
+future raw field is absent by default, and `char_start`/`char_end`/`n_prov`/
+`timestamp` stay in `to_dict()` but NOT on the published surface.
 
 **Step 4:** `mise run test -- tests/test_citation.py -v` -> PASS.
 
@@ -316,36 +320,74 @@ def test_relocated_rejects_interior_substring_via_word_boundary():
     doc2 = make_doc([make_block(0, "the police came")])  # "ice" only inside "police"
     r = resolve_anchor(rec, doc2)
     assert r.level in ("block", "page", "unresolved") and r.level != "relocated"
+
+def test_relocated_uses_context_to_break_a_tie():
+    # quote unique in the BUILD block but appears TWICE in the target (offsets
+    # shifted). Only one occurrence carries the stored context -> unique relocated.
+    # A context-IGNORING resolver would see two matches and wrongly return ambiguous.
+    blk = make_block(0, "alpha 482 searches beta")
+    rec = _anchor_in(None, blk, "482 searches")
+    doc2 = make_doc([
+        make_block(0, "HEADER LINE"),
+        make_block(1, "gamma 482 searches delta"),   # wrong context
+        make_block(2, "alpha 482 searches beta"),     # the stored context
+    ])
+    r = resolve_anchor(rec, doc2)
+    assert r.level == "relocated" and r.block_index == 2 and is_clean_citation(r)
+
+def test_multi_prov_target_block_degrades_geometry_not_exact():
+    # build on a single-prov block; the SAME block_index in the target is now
+    # multi-prov (a re-ingest split it across pages). Text still matches at the
+    # stored offsets, but faithful geometry is impossible -> degrade to block.
+    blk = make_block(0, "Officer Ramirez ran 482 searches in March.")
+    rec = _anchor_in(None, blk, "482 searches")
+    bb = {"l": 1.0, "t": 2.0, "r": 3.0, "b": 4.0, "coord_origin": "BOTTOMLEFT"}
+    split = make_block(0, "Officer Ramirez ran 482 searches in March.", prov=[
+        {"page_no": 1, "bbox": bb, "charspan": [0, 25]},
+        {"page_no": 2, "bbox": bb, "charspan": [25, 43]}])
+    r = resolve_anchor(rec, make_doc([split]))
+    assert r.level == "block" and r.bbox is None and r.page_no is None
+    assert is_clean_citation(r) is False
 ```
 
 **Step 2:** run -> FAIL.
 
 **Step 3: Implement** `resolve_anchor(record, docling_json) -> ResolvedAnchor` and
-`is_clean_citation(resolved) -> bool`. Algorithm (ordered; STOP at first hit):
+`is_clean_citation(resolved) -> bool`. **Single-prov geometry guard at resolve
+(design 2.3):** a matched TARGET block yields faithful geometry ONLY when it is
+single-prov; helper `_geom(blk) = (prov[0]["page_no"], prov[0]["bbox"])` if
+`len(blk.get("prov", [])) == 1` else `(None, None)`, and a multi-prov matched
+block also DEGRADES the level to `block` (never a faux-precise `prov[0]`).
+Algorithm (ordered; STOP at first hit):
 - `texts = docling_json.get("texts", [])`.
 - **exact:** if `0 <= record.block_index < len(texts)` and
   `texts[record.block_index]["text"][record.char_start:record.char_end]` hashes
-  (`sha256_text`) to `record.text_hash` -> `level="exact"`, carry block_index +
-  offsets + `bbox` from that block's `prov[0]`, `matched_text` = the slice.
-- **relocated/ambiguous:** else collect candidates across ALL blocks: for each
-  block, find every word-boundary-aligned occurrence of `record.verbatim_quote`
-  in `.text` whose preceding `context_window` chars end with
-  `record.context_prefix` (suffix-match) AND following chars start with
-  `record.context_suffix` (prefix-match), confirmed by `sha256_text`. If exactly
-  ONE candidate -> `level="relocated"` (new block_index + offsets + bbox);
-  `n_matches=1`. If >1 -> `level="ambiguous"`, `n_matches=len`, offsets/bbox None.
-- **block:** else if `0 <= record.block_index < len(texts)` and that block's
-  `prov[0]["page_no"] == record.page_no` -> `level="block"` (block_index +
-  page_no + bbox; offsets None).
-- **page:** else if `record.page_no` is a key in `docling_json["pages"]` (string
-  or int) -> `level="page"` (page_no only).
+  (`sha256_text`) to `record.text_hash`: let `blk = texts[record.block_index]`. If
+  `blk` is single-prov -> `level="exact"` (block_index + offsets + `_geom(blk)` +
+  `matched_text`=slice). If `blk` is MULTI-prov -> `level="block"` (block_index
+  only; offsets/page/bbox None).
+- **relocated/ambiguous:** else collect candidates across ALL blocks: every
+  word-boundary-aligned occurrence of `record.verbatim_quote` in a block's `.text`
+  whose preceding chars END WITH `record.context_prefix` AND following chars BEGIN
+  WITH `record.context_suffix`, confirmed by `sha256_text`. If exactly ONE
+  candidate: if its block is single-prov -> `level="relocated"` (new block_index +
+  offsets + `_geom`, `n_matches=1`); if MULTI-prov -> `level="block"` (block_index
+  only; geometry None). If >1 candidate -> `level="ambiguous"` (`n_matches=len`;
+  offsets/page/bbox None).
+- **block:** else if `0 <= record.block_index < len(texts)` and that block is
+  single-prov with `prov[0]["page_no"] == record.page_no` -> `level="block"`
+  (block_index + `_geom`; offsets None). (A multi-prov stored block does not
+  satisfy this and falls to `page`/`unresolved`.)
+- **page:** else if `record.page_no` is a key in `docling_json["pages"]` (compare
+  as BOTH str and int) -> `level="page"` (page_no only).
 - **unresolved:** else `level="unresolved"` (all None).
-- `is_clean_citation(r)` -> `r.level in ("exact", "relocated")` (a `relocated` only
-  reaches the function when unique, so this is the unique-relocated gate).
+- `is_clean_citation(r)` -> `r.level in ("exact", "relocated")` (only the
+  single-prov, text-matched, UNIQUE cases reach those levels).
 
 NOTE the context match is what makes `relocated` safe: store the prefix/suffix at
 build time, require them at relocation. Word-boundary + context together defeat
-the interior-substring + duplicate traps.
+the interior-substring + duplicate traps; the single-prov guard defeats
+faux-precise geometry on a re-split target block.
 
 **Step 4:** run -> PASS (all levels + round-trip green).
 
@@ -448,57 +490,99 @@ commit `feat(investigate): orchestration skill + prior-art`.
 ## Task 6: real-pipeline validation tests (Tier 2 + Tier 2b)
 
 **Files:**
+- Modify: `tests/conftest.py` (add a paired native/scan fixture built from ONE
+  shared text, reusing the existing Phase-6 fpdf2 / Pillow builders)
 - Test: `tests/test_citation_docling.py` (`@pytest.mark.docling`)
 
-**Tier 2 (generated source, docling-marked):** reuse the Phase-6 `native_pdf` +
-`scan_pdf` conftest fixtures. Ingest the SAME content twice (native vs a scanned/
-re-OCR variant), build anchors over the native-ingest JSON, resolve against the
-OCR-ingest JSON; assert clean spans resolve `exact`/`relocated` and mangled spans
-degrade (`block`/`page`) -- never a false `exact`. Select with `-k docling`;
-excluded from the offline suite (`-k "not docling and not spacy and not xray"`).
+**Tier 2 (generated source, docling-marked) -- a DEDICATED paired fixture.** The
+Phase-6 `native_pdf` and `scan_pdf` fixtures are DIFFERENT documents, so they
+cannot validate native-vs-OCR of the SAME text. Add a `paired_native_scan` fixture
+that renders ONE shared ASCII text BOTH ways (a native text-layer PDF via fpdf2
+AND an image-only PDF via Pillow), reusing the same builder helpers the Phase-6
+`native_pdf` / `scan_pdf` fixtures use (factor them to module-level helpers if
+inline). The Tier-2 test ingests BOTH, builds anchors on the NATIVE-ingest JSON
+over distinctive tokens, resolves them against the SCAN's OCR-ingest JSON, and
+asserts: clean tokens resolve `exact`/`relocated` (survive OCR), no result is a
+FALSE `exact` (a slice that does not equal the quote), and mismatches degrade to
+`block`/`page`. Select with `-k docling`; excluded from the offline suite
+(`-k "not docling and not spacy and not xray"`).
 
-**Tier 2b (real-world PDF, env-var-gated):** skip unless
-`os.environ.get("MAGPIE_PHASE8_REAL_PDF")` is set and exists.
+**Tier 2b (real-world PDF, env-var-gated)** -- two checks on the real Greenville
+RFP: (a) same-doc exactness over real-world fragmentation, and (b) the design's
+"across a re-ingest pass" drift, modeled by re-ingesting a SHIFTED page range so
+real block indices move. Skip unless `MAGPIE_PHASE8_REAL_PDF` is set + exists.
 
 ```python
-import os, pytest
+import os, json, pytest
 pytestmark = pytest.mark.docling
 REAL = os.environ.get("MAGPIE_PHASE8_REAL_PDF")
+_skip = pytest.mark.skipif(not (REAL and os.path.exists(REAL)),
+                           reason="set MAGPIE_PHASE8_REAL_PDF to the local Greenville RFP")
 
-@pytest.mark.skipif(not (REAL and os.path.exists(REAL)),
-                    reason="set MAGPIE_PHASE8_REAL_PDF to the local Greenville RFP")
-def test_anchor_round_trips_on_real_world_pdf(tmp_path):
-    from scripts.ingest import ingest
-    from scripts.citation import build_anchor, resolve_anchor, is_clean_citation
-    res = ingest(REAL, out_dir=str(tmp_path), page_range=(1, 12))
-    assert res.trustworthy_for_extraction  # native, trustworthy (validated 2026-06-05)
-    import json
-    doc = json.load(open(res.docling_json_path, encoding="utf-8"))
-    # pick several single-prov blocks with a clear word-boundary token, anchor + resolve exact
-    anchored = 0
+def _anchors_over(doc, res, *, limit=20):
+    from scripts.citation import build_anchor
+    out = []
     for blk in doc["texts"]:
         if len(blk.get("prov", [])) != 1:
             continue
         words = [w for w in blk["text"].split() if len(w) >= 6 and blk["text"].count(w) == 1]
         if not words:
             continue
-        rec = build_anchor(blk, verbatim_quote=words[0], claim_text="c", doc_id=res.source_sha256,
-                           doc_schema_name=res.schema_name, doc_schema_version=res.schema_version,
-                           extractor_model="m", prompt_version="v1", timestamp="t")
+        out.append(build_anchor(blk, verbatim_quote=words[0], claim_text="c",
+                                doc_id=res.source_sha256, doc_schema_name=res.schema_name,
+                                doc_schema_version=res.schema_version, extractor_model="m",
+                                prompt_version="v1", timestamp="t"))
+        if len(out) >= limit:
+            break
+    return out
+
+@_skip
+def test_real_world_same_doc_exact(tmp_path):
+    from scripts.ingest import ingest
+    from scripts.citation import resolve_anchor, is_clean_citation
+    res = ingest(REAL, out_dir=str(tmp_path), page_range=(1, 12))
+    assert res.trustworthy_for_extraction  # native + trustworthy (validated 2026-06-05)
+    doc = json.load(open(res.docling_json_path, encoding="utf-8"))
+    anchors = _anchors_over(doc, res)
+    assert len(anchors) >= 5
+    for rec in anchors:
         r = resolve_anchor(rec, doc)
         assert r.level == "exact" and is_clean_citation(r)
-        anchored += 1
-        if anchored >= 20:
-            break
-    assert anchored >= 5  # exercised real-world fragmentation
+
+@_skip
+def test_real_world_reingest_drift(tmp_path):
+    # Build anchors on pages 1-12; resolve against an ingest of pages 2-12. Page-1
+    # blocks vanish and every remaining block_index shifts, so EXACT (keyed on the
+    # stored block_index) fails and the fallback chain must take over: shared blocks
+    # relocate by unique text+context; dropped-page blocks degrade. No item may
+    # return a FALSE exact, and a meaningful share must still resolve clean.
+    from scripts.ingest import ingest
+    from scripts.citation import resolve_anchor, is_clean_citation
+    res_a = ingest(REAL, out_dir=str(tmp_path / "a"), page_range=(1, 12))
+    res_b = ingest(REAL, out_dir=str(tmp_path / "b"), page_range=(2, 12))
+    doc_a = json.load(open(res_a.docling_json_path, encoding="utf-8"))
+    doc_b = json.load(open(res_b.docling_json_path, encoding="utf-8"))
+    anchors = _anchors_over(doc_a, res_a)
+    assert len(anchors) >= 5
+    clean = 0
+    for rec in anchors:
+        r = resolve_anchor(rec, doc_b)
+        if r.level == "exact":  # a surviving exact must be a TRUE slice match
+            assert doc_b["texts"][r.block_index]["text"][r.char_start:r.char_end] == rec.verbatim_quote
+        if is_clean_citation(r):
+            clean += 1
+    assert clean >= 1  # some shared-page anchors survive real re-ingest block-index drift
 ```
 
-Run once during implementation with `MAGPIE_PHASE8_REAL_PDF` set to
-`C:\Users\tim\Downloads\Responsive records (1).pdf`; record the result in the PR.
-The PDF is NEVER committed; the test SKIPS in CI.
+Run both once during implementation with `MAGPIE_PHASE8_REAL_PDF` set to
+`C:\Users\tim\Downloads\Responsive records (1).pdf`; record the results in the PR.
+The PDF is NEVER committed; both tests SKIP in CI. (If `clean >= 1` proves flaky on
+the real layout, prefer doc-wide-unique tokens in `_anchors_over` -- tune during
+the run-once, do not weaken the no-false-exact assertion.)
 
-**Steps:** write the tests -> run Tier 2 (`-k docling`) green -> run Tier 2b with
-the env var green -> commit `test(citation): real-pipeline Tier-2 + Tier-2b validation`.
+**Steps:** add the paired fixture -> write the tests -> run Tier 2 (`-k docling`)
+green -> run Tier 2b with the env var (record results) -> commit
+`test(citation): real-pipeline Tier-2 paired + Tier-2b real-world re-ingest`.
 
 ---
 
