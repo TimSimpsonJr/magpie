@@ -3,7 +3,7 @@ import pytest
 
 from scripts.citation import (
     CitationRecord, sha256_text, block_index_of, SCHEMA_NAME, SCHEMA_VERSION,
-    build_anchor, QuoteContractError,
+    build_anchor, QuoteContractError, resolve_anchor, is_clean_citation,
 )
 from tests.conftest_citation import make_block, make_doc
 
@@ -120,3 +120,146 @@ def test_rejects_quote_occurring_twice_in_block():
     blk = make_block(0, "482 searches and 482 searches")
     with pytest.raises(QuoteContractError):
         build_anchor(blk, verbatim_quote="482 searches", **_kw())
+
+
+# --------------------------------------------------------------------------- #
+# Task 3: resolve_anchor fallback chain + clean-citation gate (design 2.2/2.3).
+# --------------------------------------------------------------------------- #
+
+
+def _anchor_in(doc, block, quote):
+    return build_anchor(block, verbatim_quote=quote, **_kw())
+
+
+def test_exact_level_when_offsets_intact():
+    blk = make_block(0, "Officer Ramirez ran 482 searches in March.")
+    rec = _anchor_in(None, blk, "482 searches")
+    r = resolve_anchor(rec, make_doc([blk]))
+    assert r.level == "exact" and r.matched_text == "482 searches"
+    assert is_clean_citation(r) is True
+
+
+def test_exact_disambiguates_duplicate_via_offsets():
+    # same quote twice in the DOC (different blocks); stored offsets+block_index pick one
+    b0 = make_block(0, "alpha 482 searches alpha")
+    rec = _anchor_in(None, b0, "482 searches")
+    b1 = make_block(1, "beta 482 searches beta")
+    r = resolve_anchor(rec, make_doc([b0, b1]))
+    assert r.level == "exact" and r.block_index == 0
+
+
+def test_relocated_when_offsets_shift_but_quote_unique():
+    blk = make_block(0, "Officer Ramirez ran 482 searches in March.")
+    rec = _anchor_in(None, blk, "482 searches")
+    # OCR re-run: PREPEND a header to the block (shifts offsets) + insert an earlier block
+    shifted = make_block(1, "PAGE 1 HEADER. Officer Ramirez ran 482 searches in March.")
+    doc2 = make_doc([make_block(0, "INSERTED EARLIER BLOCK"), shifted])
+    r = resolve_anchor(rec, doc2)
+    assert r.level == "relocated" and r.matched_text == "482 searches"
+    assert is_clean_citation(r) is True
+
+
+def test_ambiguous_when_quote_repeats_and_context_cannot_disambiguate():
+    blk = make_block(0, "x 482 searches y")
+    rec = _anchor_in(None, blk, "482 searches")
+    # two identical-context occurrences after an offset shift
+    doc2 = make_doc([make_block(0, "HDR x 482 searches y ... x 482 searches y")])
+    r = resolve_anchor(rec, doc2)
+    assert r.level == "ambiguous" and r.n_matches >= 2
+    assert is_clean_citation(r) is False
+
+
+def test_block_level_when_characters_changed_but_block_valid():
+    blk = make_block(0, "Officer Ramirez ran 482 searches in March.", page_no=2)
+    rec = _anchor_in(None, blk, "482 searches")
+    # OCR mangled the chars (rn->m etc.); the quote no longer appears, block still on page 2
+    doc2 = make_doc([make_block(0, "Officer Rarnirez ran 4B2 searches in March.", page_no=2)],
+                    pages={"2": {"size": {"width": 1.0, "height": 1.0}, "page_no": 2}})
+    r = resolve_anchor(rec, doc2)
+    assert r.level == "block" and is_clean_citation(r) is False
+
+
+def test_page_level_when_block_index_gone_but_page_exists():
+    blk = make_block(5, "482 searches", page_no=3)
+    rec = _anchor_in(None, blk, "482 searches")
+    doc2 = make_doc([make_block(0, "unrelated mangled text", page_no=3)],
+                    pages={"3": {"size": {"width": 1.0, "height": 1.0}, "page_no": 3}})
+    r = resolve_anchor(rec, doc2)
+    assert r.level == "page" and is_clean_citation(r) is False
+
+
+def test_unresolved_when_nothing_matches():
+    blk = make_block(9, "482 searches", page_no=8)
+    rec = _anchor_in(None, blk, "482 searches")
+    r = resolve_anchor(rec, make_doc([make_block(0, "x", page_no=1)]))
+    assert r.level == "unresolved" and is_clean_citation(r) is False
+
+
+def test_relocated_rejects_interior_substring_via_word_boundary():
+    # quote "ice" stored; OCR doc has it only inside "police" -> must NOT relocate
+    blk = make_block(0, "the ice cream truck")  # valid build (word-boundary "ice")
+    rec = _anchor_in(None, blk, "ice")
+    doc2 = make_doc([make_block(0, "the police came")])  # "ice" only inside "police"
+    r = resolve_anchor(rec, doc2)
+    assert r.level in ("block", "page", "unresolved") and r.level != "relocated"
+
+
+def test_relocated_uses_context_to_break_a_tie():
+    # quote unique in the BUILD block but appears TWICE in the target (offsets
+    # shifted). Only one occurrence carries the stored context -> unique relocated.
+    # A context-IGNORING resolver would see two matches and wrongly return ambiguous.
+    blk = make_block(0, "alpha 482 searches beta")
+    rec = _anchor_in(None, blk, "482 searches")
+    doc2 = make_doc([
+        make_block(0, "HEADER LINE"),
+        make_block(1, "gamma 482 searches delta"),   # wrong context
+        make_block(2, "alpha 482 searches beta"),     # the stored context
+    ])
+    r = resolve_anchor(rec, doc2)
+    assert r.level == "relocated" and r.block_index == 2 and is_clean_citation(r)
+
+
+def test_multi_prov_target_block_degrades_geometry_not_exact():
+    # build on a single-prov block; the SAME block_index in the target is now
+    # multi-prov (a re-ingest split it across pages). Text still matches at the
+    # stored offsets, but faithful geometry is impossible -> degrade to block.
+    blk = make_block(0, "Officer Ramirez ran 482 searches in March.")
+    rec = _anchor_in(None, blk, "482 searches")
+    bb = {"l": 1.0, "t": 2.0, "r": 3.0, "b": 4.0, "coord_origin": "BOTTOMLEFT"}
+    split = make_block(0, "Officer Ramirez ran 482 searches in March.", prov=[
+        {"page_no": 1, "bbox": bb, "charspan": [0, 25]},
+        {"page_no": 2, "bbox": bb, "charspan": [25, 43]}])
+    r = resolve_anchor(rec, make_doc([split]))
+    assert r.level == "block" and r.bbox is None and r.page_no is None
+    assert is_clean_citation(r) is False
+
+
+def test_relocated_rejects_single_candidate_with_wrong_context():
+    # exact fails (offsets shifted); the target has exactly ONE boundary-aligned
+    # occurrence of the quote, but its context does NOT match the stored
+    # prefix/suffix -> must NOT relocate. Pins that context is checked even for a
+    # LONE candidate (a resolver that only checks context to break ties would
+    # wrongly relocate here).
+    blk = make_block(0, "alpha 482 searches beta")
+    rec = _anchor_in(None, blk, "482 searches")
+    doc2 = make_doc([make_block(0, "HEADER gamma 482 searches delta")])  # wrong context, shifted
+    r = resolve_anchor(rec, doc2)
+    assert r.level != "relocated" and r.level in ("block", "page", "unresolved")
+    assert is_clean_citation(r) is False
+
+
+def test_relocated_into_multi_prov_target_degrades_to_block():
+    # exact fails (block_index shifted); the UNIQUE relocated candidate (text +
+    # context match) lives in a MULTI-prov target block -> degrade to block with
+    # page_no/bbox None. Pins the single-prov guard on the RELOCATED branch too
+    # (not just the exact branch).
+    blk = make_block(0, "alpha 482 searches beta")
+    rec = _anchor_in(None, blk, "482 searches")
+    bb = {"l": 1.0, "t": 2.0, "r": 3.0, "b": 4.0, "coord_origin": "BOTTOMLEFT"}
+    target = make_block(1, "alpha 482 searches beta", prov=[
+        {"page_no": 1, "bbox": bb, "charspan": [0, 11]},
+        {"page_no": 2, "bbox": bb, "charspan": [11, 23]}])
+    doc2 = make_doc([make_block(0, "INSERTED EARLIER"), target])
+    r = resolve_anchor(rec, doc2)
+    assert r.level == "block" and r.page_no is None and r.bbox is None
+    assert is_clean_citation(r) is False

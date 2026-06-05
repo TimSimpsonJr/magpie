@@ -218,3 +218,151 @@ class CitationRecord:
         does NOT widen to char_start/char_end/n_prov/timestamp."""
         full = self.to_dict()
         return {k: full[k] for k in _PUBLIC_ANCHOR_KEYS}
+
+
+@dataclass
+class ResolvedAnchor:
+    """The outcome of resolving a ``CitationRecord`` against a (possibly
+    re-ingested) DoclingDocument dict. ``level`` is the resolution tier; each tier
+    DEGRADES precision (design 2.2). Geometry/offsets are populated only at the
+    tier that can faithfully supply them, else ``None``."""
+
+    level: str
+    page_no: Optional[int]
+    block_index: Optional[int]
+    char_start: Optional[int]
+    char_end: Optional[int]
+    matched_text: Optional[str]
+    bbox: Optional[Dict[str, Any]]
+    n_matches: int = 0
+
+
+def _geom(blk: Dict[str, Any]):
+    """Single-prov geometry guard (design 2.3). Faithful ``(page_no, bbox)`` ONLY
+    when the matched block is single-prov; a multi-prov block yields ``(None,
+    None)`` (and its caller degrades the level) rather than a faux-precise
+    ``prov[0]``."""
+    prov = blk.get("prov") or []
+    if len(prov) == 1:
+        return prov[0].get("page_no"), prov[0].get("bbox")
+    return None, None
+
+
+def _is_single_prov(blk: Dict[str, Any]) -> bool:
+    return len(blk.get("prov") or []) == 1
+
+
+def _context_matches(text: str, start: int, end: int,
+                     context_prefix: str, context_suffix: str) -> bool:
+    """The stored windowed context must bound the candidate: the chars preceding
+    the match END WITH ``context_prefix`` and the chars following it BEGIN WITH
+    ``context_suffix`` (W3C TextQuoteSelector). An empty stored window matches
+    trivially (str.endswith('')/startswith('') are True)."""
+    return text[:start].endswith(context_prefix) and text[end:].startswith(context_suffix)
+
+
+def resolve_anchor(record: CitationRecord, docling_json: Dict[str, Any]) -> ResolvedAnchor:
+    """Resolve ``record`` against ``docling_json`` via the ordered fallback chain
+    (design 2.2), STOPPING at the first hit:
+    exact -> relocated/ambiguous -> block -> page -> unresolved.
+
+    The single-prov geometry guard (design 2.3) applies on BOTH the exact and the
+    relocated branches: a matched target block that is multi-prov degrades the
+    level to ``block`` with page/bbox ``None`` rather than reporting a faux-precise
+    ``prov[0]``. The relocated branch requires the stored context to match even
+    for a LONE candidate.
+    """
+    texts: List[Dict[str, Any]] = docling_json.get("texts", [])
+    bi = record.block_index
+
+    # --- exact: stored block_index + offsets still slice the stored quote. ------
+    if 0 <= bi < len(texts):
+        blk = texts[bi]
+        slice_ = blk.get("text", "")[record.char_start:record.char_end]
+        if sha256_text(slice_) == record.text_hash:
+            if _is_single_prov(blk):
+                page_no, bbox = _geom(blk)
+                return ResolvedAnchor(
+                    level="exact", page_no=page_no, block_index=bi,
+                    char_start=record.char_start, char_end=record.char_end,
+                    matched_text=slice_, bbox=bbox, n_matches=1,
+                )
+            # multi-prov target: text matches but faithful geometry is impossible.
+            return ResolvedAnchor(
+                level="block", page_no=None, block_index=bi,
+                char_start=None, char_end=None, matched_text=None,
+                bbox=None, n_matches=1,
+            )
+
+    # --- relocated / ambiguous: search every block for a boundary-aligned, ------
+    #     context-confirmed occurrence of the stored quote.
+    quote = record.verbatim_quote
+    candidates = []  # (block_index, start, end, block)
+    for idx, blk in enumerate(texts):
+        btext = blk.get("text", "")
+        for start in _find_all(btext, quote):
+            end = start + len(quote)
+            if not _word_boundary_aligned(btext, quote, start, end):
+                continue
+            if not _context_matches(btext, start, end,
+                                    record.context_prefix, record.context_suffix):
+                continue
+            if sha256_text(btext[start:end]) != record.text_hash:
+                continue
+            candidates.append((idx, start, end, blk))
+
+    if len(candidates) == 1:
+        idx, start, end, blk = candidates[0]
+        if _is_single_prov(blk):
+            page_no, bbox = _geom(blk)
+            return ResolvedAnchor(
+                level="relocated", page_no=page_no, block_index=idx,
+                char_start=start, char_end=end,
+                matched_text=blk.get("text", "")[start:end], bbox=bbox, n_matches=1,
+            )
+        # the unique relocated target is multi-prov: degrade, drop geometry.
+        return ResolvedAnchor(
+            level="block", page_no=None, block_index=idx,
+            char_start=None, char_end=None, matched_text=None,
+            bbox=None, n_matches=1,
+        )
+    if len(candidates) > 1:
+        return ResolvedAnchor(
+            level="ambiguous", page_no=None, block_index=None,
+            char_start=None, char_end=None, matched_text=None,
+            bbox=None, n_matches=len(candidates),
+        )
+
+    # --- block: stored block_index still in range, single-prov, page agrees. ----
+    if 0 <= bi < len(texts):
+        blk = texts[bi]
+        if _is_single_prov(blk) and (blk.get("prov") or [])[0].get("page_no") == record.page_no:
+            page_no, bbox = _geom(blk)
+            return ResolvedAnchor(
+                level="block", page_no=page_no, block_index=bi,
+                char_start=None, char_end=None, matched_text=None,
+                bbox=bbox, n_matches=0,
+            )
+
+    # --- page: the page_no still exists in the doc (compare as str AND int). -----
+    pages = docling_json.get("pages", {}) or {}
+    if record.page_no in pages or str(record.page_no) in pages:
+        return ResolvedAnchor(
+            level="page", page_no=record.page_no, block_index=None,
+            char_start=None, char_end=None, matched_text=None,
+            bbox=None, n_matches=0,
+        )
+
+    # --- unresolved: nothing localizes. -----------------------------------------
+    return ResolvedAnchor(
+        level="unresolved", page_no=None, block_index=None,
+        char_start=None, char_end=None, matched_text=None,
+        bbox=None, n_matches=0,
+    )
+
+
+def is_clean_citation(resolved: ResolvedAnchor) -> bool:
+    """The clean-citation gate (design 2.2/4): passes ONLY at ``exact`` or unique
+    ``relocated`` (single-prov, text-matched, UNIQUE). ``ambiguous`` / ``block`` /
+    ``page`` / ``unresolved`` are degraded anchors -- never an auto-pass."""
+    return resolved.level in ("exact", "relocated")
