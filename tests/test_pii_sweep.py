@@ -325,3 +325,57 @@ def test_sweep_lazy_default_accepts_pandas_numpy_official_names(spacy_classifier
     assert isinstance(names, np.ndarray)        # guard: this IS the ndarray path
     r_ndarray = sweep(text, official_names=names)
     assert r_ndarray["categories"]["person_official"]["distinct"] == 1
+
+
+from scripts.pii_sweep import person_role_in_span, OFFICIAL_TITLES
+
+def test_person_role_official_by_lexicon():
+    officials = frozenset({frozenset({"dana", "wheeler"})})
+    assert person_role_in_span("Dana Wheeler", [], officials=officials) == "official"
+
+def test_person_role_official_by_title_prefix():
+    assert person_role_in_span("Ramirez", ["officer"], officials=frozenset()) == "official"
+
+def test_person_role_involved_keep_list():
+    involved = frozenset({frozenset({"john", "doe"})})
+    assert person_role_in_span("John Doe", [], officials=frozenset(),
+                               involved=involved) == "involved"
+
+def test_person_role_uninvolved_default():
+    assert person_role_in_span("Some Bystander", [], officials=frozenset()) == "uninvolved"
+
+def test_person_role_official_beats_involved():
+    toks = frozenset({frozenset({"pat", "lee"})})
+    assert person_role_in_span("Pat Lee", [], officials=toks, involved=toks) == "official"
+
+# --- Boundary DRIFT guards: pin the CLASSIFIER semantics the refactor must keep.
+# Model-free (a fake nlp/doc), so they run offline. They PASS both BEFORE and AFTER
+# the refactor; if the refactor widens/narrows the <=2 lookback window or drops the
+# caller-side len<=2 skip, they fail.
+class _FakeTok:
+    def __init__(self, text): self.text = text
+class _FakeEnt:
+    def __init__(self, text, start, label="PERSON"):
+        self.text, self.start, self.label_ = text, start, label
+class _FakeDoc:
+    def __init__(self, toks, ents):
+        self._toks = [_FakeTok(t) for t in toks]; self.ents = ents
+    def __getitem__(self, i): return self._toks[i]
+
+def _flags_for(doc):
+    from scripts.pii_sweep import SpacyPersonClassifier
+    c = SpacyPersonClassifier(official_names=())
+    c._nlp = type("N", (), {"pipe": lambda self, t, batch_size=256: [doc]})()  # bypass _load
+    return c([" "])[0]
+
+def test_title_lookback_window_is_at_most_two_tokens():
+    from scripts.pii_sweep import PersonFlags
+    ok = _FakeDoc(["the", "sgt", "x", "Ramirez"], [_FakeEnt("Ramirez", 3)])
+    assert _flags_for(ok) == PersonFlags(official=True, unknown_role=False)
+    far = _FakeDoc(["sgt", "on", "duty", "Ramirez"], [_FakeEnt("Ramirez", 3)])
+    assert _flags_for(far) == PersonFlags(official=False, unknown_role=True)
+
+def test_caller_side_len_le_2_person_is_skipped():
+    from scripts.pii_sweep import PersonFlags
+    doc = _FakeDoc(["Li", "ran"], [_FakeEnt("Li", 0)])     # 2-char PERSON ent
+    assert _flags_for(doc) == PersonFlags(official=False, unknown_role=False)

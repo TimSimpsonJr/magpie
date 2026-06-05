@@ -84,3 +84,14 @@ rapidocr==3.8.1
 onnxruntime==1.26.0
 torch==2.12.0
 ocrmypdf==17.5.0
+
+# Phase 7 redaction-check (scripts/redaction_check.py) — Free Law `x-ray` (BSD-2),
+# the box-over-live-text bad-redaction detector. Verified at the Phase 7 research
+# gate (skills/redaction-check/references/prior-art.md) to install clean without
+# moving the pinned numpy/pandas/torch stack. x-ray pins `PyMuPDF==1.24.14` (fitz)
+# as its own hard dep — PyMuPDF is AGPL-3.0, but as a DECLARED pip dependency the
+# user installs (never vendored, never bundled as a binary) it does NOT infect
+# Magpie's MIT license (prior-art §5). PyMuPDF does not depend on numpy/pandas, so
+# the pins stay put. The other layered checks use pikepdf + pdfminer.six (already
+# present via ocrmypdf); only box-over-text needs x-ray, lazily imported.
+x-ray==0.3.6

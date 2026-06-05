@@ -216,6 +216,29 @@ def _norm_name_tokens(text: str) -> frozenset[str]:
     return frozenset(out)
 
 
+def person_role_in_span(
+    span_text: str,
+    preceding_token_texts: Sequence[str],
+    *,
+    officials: frozenset,                 # frozenset[frozenset[str]] normalized name-token sets
+    involved: frozenset = frozenset(),    # same shape; keep-named non-officials
+    titles: frozenset[str] = OFFICIAL_TITLES,
+) -> str:
+    """Role of a PERSON span: 'official' | 'involved' | 'uninvolved'. PURE (no spaCy).
+    Order: officials lexicon-subset -> title-prefix -> involved lexicon-subset ->
+    uninvolved. Officials win ties. Mirrors SpacyPersonClassifier._is_official so both
+    consumers share ONE rule."""
+    span_tokens = _norm_name_tokens(span_text)
+    if officials and any(name <= span_tokens for name in officials):
+        return "official"
+    titles_l = frozenset(t.lower() for t in titles)
+    if any(p.strip(".").lower() in titles_l for p in preceding_token_texts):
+        return "official"
+    if involved and any(name <= span_tokens for name in involved):
+        return "involved"
+    return "uninvolved"
+
+
 class SpacyPersonClassifier:
     """Production PersonClassifier: spaCy PERSON NER + official/unknown split.
 
@@ -267,13 +290,11 @@ class SpacyPersonClassifier:
         return out
 
     def _is_official(self, doc, ent) -> bool:
-        # (b) lexicon: some official's normalized name-token-set is contained in
-        # the span (span over-extension is safe -- extra tokens don't block it).
-        span_tokens = _norm_name_tokens(ent.text)
-        if self._lexicon and any(name <= span_tokens for name in self._lexicon):
-            return True
-        # (a) title/rank token immediately preceding the span (<=2 tokens back)
-        for j in range(max(0, ent.start - 2), ent.start):
-            if doc[j].text.strip(".").lower() in self._titles:
-                return True
-        return False
+        # Delegate to the PURE person_role_in_span so this classifier and the
+        # Phase-7 module share ONE rule. (a) title/rank token immediately
+        # preceding the span (<=2 tokens back); (b) lexicon subset match (span
+        # over-extension is safe -- extra tokens don't block it).
+        preceding = [doc[j].text for j in range(max(0, ent.start - 2), ent.start)]
+        return person_role_in_span(
+            ent.text, preceding, officials=self._lexicon, titles=self._titles
+        ) == "official"
