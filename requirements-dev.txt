@@ -95,3 +95,13 @@ ocrmypdf==17.5.0
 # the pins stay put. The other layered checks use pikepdf + pdfminer.six (already
 # present via ocrmypdf); only box-over-text needs x-ray, lazily imported.
 x-ray==0.3.6
+
+# Phase 9 archive-evidence (scripts/evidence.py) -- RFC 3161 trusted timestamping.
+#   rfc3161-client -- Apache-2.0; builds/parses/verifies a TimeStampReq/Resp. Its ONLY
+#                     runtime dep is `cryptography` (already pulled + pinned by the
+#                     stack above); ships a prebuilt cp39-abi3 win_amd64 wheel (no Rust
+#                     toolchain) and does NO network -- transport is our job via
+#                     `requests` (already present). Verified at the Phase 9 research
+#                     gate (skills/archive-evidence/references/prior-art.md), incl. a
+#                     live freeTSA round-trip + an `openssl ts -verify` cross-check.
+rfc3161-client==1.0.6

@@ -7,4 +7,5 @@ markers = [
     "spacy: model-gated pii_sweep integration tests that load en_core_web_lg (select with -k spacy)",
     "docling: model-gated docling integration; select with -k docling",
     "xray: tests that import x-ray / PyMuPDF (box-over-text detection); select with -k xray",
+    "tsa: tests that hit a live RFC 3161 Time-Stamp Authority over the network (select with -m tsa)",
 ]
