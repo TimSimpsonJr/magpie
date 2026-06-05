@@ -163,6 +163,13 @@ def test_multi_column_runon_stays_native_ok_when_density_normal():
 def test_repeated_boilerplate_does_not_force_or_avoid_ocr_spuriously():
     # a Bates/letterhead-only page is sparse text => uncertain_review (flag), not native_ok-trusted nor garbled
     assert D("SVPD-000123") == PD.uncertain_review
+
+def test_low_parse_score_downgrades_otherwise_native_to_uncertain():
+    # parse_score MUST be consumed: Docling's own low-confidence parse contradicts
+    # otherwise-acceptable text -> uncertain_review (the contradictory-signal hook).
+    text = "the police department search reason record vehicle officer"
+    assert D(text) == PD.native_ok
+    assert D(text, parse_score=0.02) == PD.uncertain_review
 ```
 
 **Step 2 — run, expect FAIL.** **Step 3 — implement** `diagnose_page(native_text, *, parse_score=None, lang="en", wordlist=None, min_chars=..., min_tokens=..., garbled_hit_rate=...) -> PageDiagnosis`:
@@ -174,8 +181,9 @@ def test_repeated_boilerplate_does_not_force_or_avoid_ocr_spuriously():
 - **garbled requires co-occurrence:** `hit is not None and hit < garbled_hit_rate
   AND not density` → `garbled_text`. (Low hit-rate ALONE never garbles → tables /
   all-caps / multi-column stay native.)
-- handwriting/contradictory cue hook (e.g. very low `parse_score` when provided
-  with otherwise-thin text) → `uncertain_review`.
+- contradictory-signal / handwriting hook: a very low `parse_score` (Docling
+  itself flags an unreliable parse) on text that would otherwise pass →
+  `uncertain_review` (consumed by the test above — the impl must read parse_score).
 - else → `native_ok`. All thresholds are named module constants.
 
 **Step 4 — PASS.** **Step 5 — commit** `Phase 6.1: diagnose_page per-page diagnosis (false-positive guards)`.
@@ -210,19 +218,28 @@ def test_uncertain_dominant_is_review():
 
 def test_empty_pagelist_is_review():
     assert decide_doc([]) == DD.review
+
+def test_combined_image_and_garbled_escalates_to_force_full_doc_ocr():
+    # neither share alone dominant, but combined bad is high with garbled present
+    # => force_full_doc_ocr (the safe superset; pins the prose rule)
+    assert decide_doc([PD.image_only]*2 + [PD.garbled_text]*2 + [PD.native_ok]) == DD.force_full_doc_ocr
 ```
 
-**Step 2 — run, expect FAIL.** **Step 3 — implement** `decide_doc(diagnoses) -> DocDecision`:
-- empty → `review`.
-- fractions of each diagnosis over `n`.
-- `uncertain` share ≥ `_REVIEW_FRACTION` → `review`.
-- `garbled` share ≥ `_ESCALATE_FRACTION` → `force_full_doc_ocr`.
-- `image_only` share ≥ `_ESCALATE_FRACTION` → `ocr_images`.
-- (combined image+garbled high but neither alone dominant → `force_full_doc_ocr`,
-  the safe superset.)
-- otherwise (mostly native, minority bad) → `native` (the minority bad pages are
-  flagged later by `ingest.py`, not re-OCR'd doc-wide). Conservative by
-  construction — fractions are named constants tuned here.
+**Step 2 — run, expect FAIL.** **Step 3 — implement** `decide_doc(diagnoses) -> DocDecision`.
+Compute each diagnosis share over `n`, then evaluate **IN THIS ORDER (first match
+wins)** so every Task-3 test pins a single deterministic decision:
+- empty list → `review`.
+1. `uncertain` share ≥ `_REVIEW_FRACTION` → `review`.
+2. `garbled` share ≥ `_ESCALATE_FRACTION`, **OR** (`garbled` > 0 AND
+   `(image_only + garbled)` share ≥ `_ESCALATE_FRACTION`) → `force_full_doc_ocr`
+   (a present-but-bad text layer must be overridden doc-wide; this is also the
+   safe superset when image+garbled are jointly high but neither alone dominates).
+3. `image_only` share ≥ `_ESCALATE_FRACTION` (no significant garbled) → `ocr_images`.
+4. otherwise (mostly native, minority bad) → `native` — the minority bad pages are
+   flagged later by `ingest.py`, NOT re-OCR'd doc-wide.
+
+Conservative by construction; `_REVIEW_FRACTION` / `_ESCALATE_FRACTION` are named
+module constants (default ≈ 0.5) tuned so the Task-3 golden tests pass.
 
 **Step 4 — PASS.** **Step 5 — commit** `Phase 6.1: decide_doc conservative rollup`.
 
@@ -288,10 +305,20 @@ def test_clean_digital_pdf_decides_native(tmp_path, native_pdf):
 **Step 2 — FAIL.** **Step 3 — implement:**
 - `pyproject.toml`: add `docling` to `[tool.pytest.ini_options] markers` (mirror
   `spacy`), description "model-gated docling integration; select with -k docling".
-- `tests/conftest.py`: `native_pdf` (fpdf2), `scan_pdf` (Pillow image-only),
-  `garbled_pdf` (image rasterized then a *bad* text layer overlaid OR an fpdf2 doc
-  whose text is mojibake), `mixed_pdf`, `bates_pdf`, `degraded_pdf` fixtures —
-  all synthetic, built into `tmp_path`.
+- `tests/conftest.py` fixtures (all synthetic, built into `tmp_path`):
+  - `native_pdf` — fpdf2 text PDF (clean English).
+  - `scan_pdf` — Pillow image-only PDF (no text layer).
+  - `garbled_pdf` — **ONE concrete recipe:** an fpdf2 PDF whose text is a
+    DETERMINISTIC latin-1-safe garbage string (random consonant clusters + ASCII
+    symbols, e.g. `"Xqzklm zzz qwxz lkjh bvcx ### @@@ %%% kjhg vbnm "` repeated to
+    fill the page) — a PRESENT native text layer Docling would otherwise TRUST,
+    which the gate must diagnose as `garbled_text` (low wordlist-hit-rate AND fails
+    `char_density_ok`) → `force_full_doc_ocr`. Latin-1-safe so fpdf2's Helvetica
+    renders it (no exotic glyphs to fail rendering).
+  - `mixed_pdf` — multi-page fpdf2 doc: mostly clean native pages + 1–2
+    garbage/blank pages (→ `native` with those pages flagged).
+  - `bates_pdf` — native page(s) stamped with a `SVPD-000123`-style Bates number.
+  - `degraded_pdf` — a faint/noisy Pillow scan → low OCR confidence → flagged.
 - `ingest(pdf_path, *, out_dir, lang="en", max_num_pages=..., max_file_size=...,
   page_range=None) -> IngestResult`: lazily import docling; `sha256_file`; run a
   Docling `do_ocr=False` pass (default `DoclingParseDocumentBackend`,
@@ -311,23 +338,35 @@ def test_clean_digital_pdf_decides_native(tmp_path, native_pdf):
 **Step 1 — failing tests** (docling-marked + a mocked-seam unit test):
 
 ```python
-def test_image_only_scan_engages_rapidocr_with_provenance(tmp_path, scan_pdf):
+def test_image_only_scan_engages_rapidocr_with_full_provenance(tmp_path, scan_pdf):
     r = ingest(scan_pdf, out_dir=tmp_path)
-    assert r.doc_decision in ("ocr_images","force_full_doc_ocr")
+    assert r.doc_decision == "ocr_images"          # image-only != garbled (tight, no OR)
     assert r.ocr_engine_used == "rapidocr"
-    # an OCR'd text item carries page_no+bbox+charspan
-    ... assert at least one item.prov has page_no and bbox ...
+    import json
+    doc = json.loads(Path(r.docling_json_path).read_text(encoding="utf-8"))
+    provs = [p for t in doc["texts"] for p in t.get("prov", [])]
+    assert provs, "no provenance on OCR'd items"
+    for p in provs:                                # FULL contract {page_no, bbox, charspan}
+        assert "page_no" in p and "charspan" in p
+        assert {"l","t","r","b","coord_origin"} <= set(p["bbox"])
+    assert len({p["bbox"]["coord_origin"] for p in provs}) == 1, "bbox origins not normalized"
+
+def test_garbled_text_layer_forces_full_doc_ocr(tmp_path, garbled_pdf):
+    r = ingest(garbled_pdf, out_dir=tmp_path)
+    assert r.doc_decision == "force_full_doc_ocr"  # present-but-bad layer overridden doc-wide
+    assert r.ocr_engine_used == "rapidocr"
 
 def test_mostly_native_with_two_bad_pages_stays_native_and_flags(tmp_path, mixed_pdf):
     r = ingest(mixed_pdf, out_dir=tmp_path)
-    assert r.doc_decision == "native"
-    assert any(p["flagged"] for p in r.per_page)   # bad pages flagged, doc not full-OCR'd
+    assert r.doc_decision == "native"              # NOT flipped to full OCR (conservative rule)
+    assert any(p["flagged"] for p in r.per_page)   # the bad pages ARE flagged
 
-def test_ocrmypdf_seam_skips_and_warns_when_tesseract_absent(monkeypatch, tmp_path, scan_pdf):
-    # force the seam's detect to report "absent" (or raise MissingDependencyError)
+def test_ocrmypdf_seam_skips_warns_and_flags_when_tesseract_absent(monkeypatch, tmp_path, scan_pdf):
+    # force the seam's detect to report Tesseract absent (the Phase-6 reality)
     monkeypatch.setattr("scripts.ingest._tesseract_available", lambda: False)
     r = ingest(scan_pdf, out_dir=tmp_path, deskew=True)
     assert any("OCRmyPDF" in w and "Tesseract" in w for w in r.warnings)
+    assert any(p["flagged"] for p in r.per_page)   # requested-but-unavailable preprocess -> flag
 ```
 
 **Step 2 — FAIL.** **Step 3 — implement:** the `ocr_images` (`do_ocr=True,
@@ -357,12 +396,20 @@ def test_degraded_page_is_flagged(tmp_path, degraded_pdf):
     r = ingest(degraded_pdf, out_dir=tmp_path)
     assert any(p["flagged"] and p["flag_reason"] for p in r.per_page)
 
-def test_review_doc_is_not_trustworthy_but_json_still_written(tmp_path, degraded_pdf):
-    r = ingest(degraded_pdf, out_dir=tmp_path)
-    if r.doc_decision == "review":
-        assert r.trustworthy_for_extraction is False
-        assert Path(r.docling_json_path).exists()   # written for human inspection
+def test_review_doc_contract_pinned_deterministically(tmp_path, native_pdf, monkeypatch):
+    from scripts.ingest_gate import DocDecision
+    # FORCE the rollup to review so the safety contract is ALWAYS exercised
+    # (the old `if doc_decision == review` guard was green-on-broken).
+    monkeypatch.setattr("scripts.ingest.decide_doc", lambda diags: DocDecision.review)
+    r = ingest(native_pdf, out_dir=tmp_path)
+    assert r.doc_decision == "review"
+    assert r.trustworthy_for_extraction is False      # downstream (Phase 8) MUST refuse extraction
+    assert Path(r.docling_json_path).exists()         # JSON still written for human inspection
+    assert all(p["flagged"] for p in r.per_page)      # every page flagged on review
 ```
+
+(Impl note: `ingest.py` must `from scripts.ingest_gate import decide_doc` — i.e.
+reference it as `scripts.ingest.decide_doc` — so the monkeypatch target resolves.)
 
 **Step 2 — FAIL.** **Step 3 — implement:**
 - Bates post-pass: a word-boundary regex (`\b[A-Z][A-Z0-9]{1,}[-_ ]?\d{3,}\b`
