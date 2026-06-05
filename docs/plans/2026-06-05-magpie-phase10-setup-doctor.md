@@ -105,7 +105,7 @@ the pure half first (TDD), then the edge.
 
 ```python
 {
-    "dists": {                      # keyed by DISTRIBUTION name (matches requirements-dev.txt)
+    "dists": {                      # keyed by DISTRIBUTION name (installed in the bootstrapped venv)
         "pandas": {"present": True, "version": "3.0.3"},
         # ... every dist in _ALL_DISTS ...
     },
@@ -195,7 +195,8 @@ def test_all_absent_required_caps_unavailable():
     for name, cap in cm.items():
         assert cap["status"] == dt.UNAVAILABLE, name
     s = dt.summarize(cm)
-    assert s["core_structured_data"] == dt.UNAVAILABLE
+    assert s["core_structured_data"] == "NOT READY"
+    assert s["core_ready"] is False
     assert s["document_workflows"] == "UNAVAILABLE"
 
 
@@ -228,6 +229,42 @@ def test_uvx_absent_analyze_datasets_degraded_not_unavailable():
     probes["mcp"]["uvx_path"] = None
     cm = dt.build_capability_map(probes)
     assert cm["analyze datasets"]["status"] == dt.DEGRADED
+
+
+def test_core_headline_is_binary_when_only_uvx_missing():
+    """The core HEADLINE stays READY when only an optional (uvx) is missing; the
+    reduction lives in the capability map, not the headline (design 3.1 binary)."""
+    probes = all_present_probes()
+    probes["mcp"]["uvx_present"] = False
+    s = dt.summarize(dt.build_capability_map(probes))
+    assert s["core_structured_data"] == "READY"
+    assert s["core_ready"] is True
+
+
+def test_mcp_json_missing_or_undeclared_degrades_analyze_datasets():
+    """uvx present but .mcp.json missing or not declaring mcp-sqlite -> DEGRADED,
+    never a false READY for the conversational query surface."""
+    for bad in ({"mcp_json_present": False}, {"declares_mcp_sqlite": False}):
+        probes = all_present_probes()
+        probes["mcp"].update(bad)
+        cm = dt.build_capability_map(probes)
+        assert cm["analyze datasets"]["status"] == dt.DEGRADED
+
+
+def test_optional_fix_for_system_binaries_is_not_bootstrap():
+    """A missing SYSTEM binary (uvx, openssl ts) must NOT be told to run bootstrap
+    -- bootstrap is pip and cannot install a system binary."""
+    probes = all_present_probes()
+    probes["mcp"]["uvx_present"] = False
+    probes["openssl_ts"]["ts_subcommand"] = False
+    cm = dt.build_capability_map(probes)
+    assert "bootstrap" not in cm["analyze datasets"]["fix"].lower()
+    assert "bootstrap" not in cm["evidence timestamp"]["fix"].lower()
+    # a missing REQUIRED pip dep still points at bootstrap
+    probes2 = all_present_probes()
+    probes2["dists"]["docling"] = {"present": False, "version": None}
+    cm2 = dt.build_capability_map(probes2)
+    assert "bootstrap" in cm2["ingest native PDFs"]["fix"].lower()
 
 
 def test_openssl_ts_absent_evidence_degraded():
@@ -298,11 +335,14 @@ READY = "READY"
 DEGRADED = "DEGRADED"
 UNAVAILABLE = "UNAVAILABLE"
 
-# Probe by DISTRIBUTION name (matches requirements-dev.txt). dist name != import
-# name (x-ray->xray, PyMuPDF->fitz, pdfminer.six->pdfminer, rfc3161-client->
-# rfc3161_client, sqlite-utils->sqlite_utils, charset-normalizer->
-# charset_normalizer), so metadata.version on the dist name is the unambiguous
-# probe and never imports the package.
+# Probe by DISTRIBUTION name (the names installed into the venv that
+# requirements-dev.txt bootstraps -- some, like pikepdf / pdfminer.six / requests /
+# cryptography, arrive as TRANSITIVE deps, not top-level pins, but are resolvable
+# distributions all the same). dist name != import name (x-ray->xray,
+# PyMuPDF->fitz, pdfminer.six->pdfminer, rfc3161-client->rfc3161_client,
+# sqlite-utils->sqlite_utils, charset-normalizer->charset_normalizer), so
+# metadata.version on the dist name is the unambiguous probe and never imports
+# the package.
 _CORE_DISTS = ["pandas", "numpy", "duckdb", "pyarrow", "openpyxl",
                "charset-normalizer", "sqlite-utils"]
 _INGEST_DISTS = ["docling", "rapidocr", "onnxruntime", "torch"]
@@ -326,21 +366,25 @@ def _missing(dists, names):
     return [n for n in names if not dists.get(n, {}).get("present")]
 
 
-def _cap(requires, missing, optional_missing, blocks, fix,
+def _cap(requires, missing, optional_missing, blocks, fix, optional_fix=None,
          degraded_note=None, unavailable_note=None):
+    # fix is for the UNAVAILABLE (required-missing) case; optional_fix is for the
+    # DEGRADED (optional-missing) case -- a system binary that pip/bootstrap
+    # cannot install must NOT be told to "run bootstrap".
     if missing:
-        status = UNAVAILABLE
+        status, the_fix = UNAVAILABLE, fix
     elif optional_missing:
         status = DEGRADED
+        the_fix = optional_fix if optional_fix is not None else fix
     else:
-        status = READY
+        status, the_fix = READY, None
     entry = {
         "status": status,
         "requires": list(requires),
         "missing": list(missing),
         "optional_missing": list(optional_missing),
         "blocks": blocks,
-        "fix": fix if (missing or optional_missing) else None,
+        "fix": the_fix,
     }
     if status == DEGRADED and degraded_note:
         entry["note"] = degraded_note
@@ -360,14 +404,19 @@ def build_capability_map(probes):
 
     caps = {}
 
+    # The conversational query surface needs BOTH uvx (to launch the server) AND
+    # a .mcp.json that declares mcp-sqlite -- all three, or it is unavailable.
+    mcp_ok = (mcp.get("uvx_present") and mcp.get("mcp_json_present")
+              and mcp.get("declares_mcp_sqlite"))
     caps["analyze datasets"] = _cap(
         requires=_CORE_DISTS,
         missing=_missing(dists, _CORE_DISTS),
-        optional_missing=([] if mcp.get("uvx_present")
-                          else ["uvx (conversational mcp-sqlite query surface)"]),
+        optional_missing=([] if mcp_ok
+                          else ["the conversational mcp-sqlite query surface (uvx + .mcp.json wiring)"]),
         blocks="Quantitative analysis of FOIA CSV/XLSX releases (stats, recipes, rollups).",
         degraded_note="analysis runs, but the conversational SQL query surface (mcp-sqlite) is unavailable",
         fix="run setup (mise run bootstrap)",
+        optional_fix="install uv (provides uvx) and ensure .mcp.json declares the mcp-sqlite server; see OPERATOR_GUIDE.md",
     )
 
     caps["ingest native PDFs"] = _cap(
@@ -425,18 +474,23 @@ def build_capability_map(probes):
         requires=_EVIDENCE_DISTS,
         missing=_missing(dists, _EVIDENCE_DISTS),
         optional_missing=([] if ossl.get("ts_subcommand")
-                          else ["openssl `ts` (cross-tool verify)"]),
+                          else ["openssl 'ts' subcommand (cross-tool verify)"]),
         blocks="Hash-on-receipt + RFC 3161 trusted timestamp + chain-of-custody for FOIA evidence.",
         degraded_note="timestamping and verify-on-store work; the openssl second-tool cross-check is unavailable",
         fix="run setup (mise run bootstrap)",
+        optional_fix="install OpenSSL providing the 'ts' subcommand; see OPERATOR_GUIDE.md",
     )
 
     return caps
 
 
 def summarize(capability_map):
-    """PURE. The two-line subordinate headline. NO 1/2/3 score."""
-    core = capability_map.get("analyze datasets", {}).get("status")
+    """PURE. The two-line subordinate headline. Core is BINARY READY/NOT READY
+    (required deps only -- an optional reduction like a missing uvx lives in the
+    capability map, NOT the headline); the document rollup is
+    READY/PARTIAL/UNAVAILABLE. NO 1/2/3 tier score is ever produced."""
+    core_status = capability_map.get("analyze datasets", {}).get("status")
+    core_ready = core_status != UNAVAILABLE  # DEGRADED (e.g. no uvx) still READY in the headline
     doc_statuses = {c: capability_map.get(c, {}).get("status") for c in _DOC_CAPS}
     vals = list(doc_statuses.values())
     if vals and all(v == READY for v in vals):
@@ -447,8 +501,8 @@ def summarize(capability_map):
         doc = "PARTIAL"
     reduced = [c for c, st in doc_statuses.items() if st != READY]
     return {
-        "core_structured_data": core,
-        "core_ready": core != UNAVAILABLE,
+        "core_structured_data": "READY" if core_ready else "NOT READY",
+        "core_ready": core_ready,
         "document_workflows": doc,
         "document_reduced": reduced,
     }
@@ -650,10 +704,8 @@ def render_text(report):
     """Plain-text rendering of the capability map + the subordinate headline."""
     s = report["summary"]
     lines = ["Magpie health check", "=" * 40]
-    core = s["core_structured_data"]
-    core_label = ("READY" if core == READY
-                  else ("DEGRADED" if core == DEGRADED else "NOT READY"))
-    lines.append("core structured-data analysis: " + core_label)
+    # core headline is binary (READY / NOT READY); optional reductions show in the map
+    lines.append("core structured-data analysis: " + s["core_structured_data"])
     doc_line = "document workflows: " + s["document_workflows"]
     if s["document_workflows"] == "PARTIAL" and s["document_reduced"]:
         doc_line += " (reduced: " + ", ".join(s["document_reduced"]) + ")"
@@ -855,8 +907,42 @@ Commit subject: `feat(setup-doctor): operator setup + journalist doctor skills (
 **Files:**
 - Create: `docs/OPERATOR_GUIDE.md`
 - Create: `docs/JOURNALIST_START.md`
-- Modify: `README.md` (the Getting started / dual-onramp section)
 - Test: `tests/test_onramp_docs.py`
+- (Modify `README.md` is a MAIN-THREAD step, NOT this subagent's -- see the note
+  below: README.md carries non-ASCII em-dashes that would block a subagent Read.)
+
+> **SUBAGENT SCOPE:** create the two new docs + the test ONLY. Do NOT edit
+> README.md. The orchestrator (main thread) applies the README polish (inlined in
+> Step 3.0 below) BEFORE this task runs, so the README assertions in the guard
+> test are already satisfiable when you run it.
+
+### Step 3.0: (MAIN THREAD, not the subagent) polish README.md
+
+README.md is non-ASCII (em-dashes), so the orchestrator edits it directly. Replace
+the existing "## Getting started" section with this exact block (em-dashes are fine
+here -- README is not subagent-read):
+
+```markdown
+## Getting started
+
+Magpie has **two onramps**, one per person who touches it:
+
+- **Operators** set it up once -- install dependencies, download the spaCy model,
+  verify the toolchain: [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md). Run the
+  **`setup`** skill, or `& .venv\Scripts\python.exe scripts\detect_tier.py` to
+  install-and-verify outside Claude Code.
+- **Investigators** use it every day, conversationally, with no infrastructure to
+  manage: [`docs/JOURNALIST_START.md`](docs/JOURNALIST_START.md). Run the
+  **`doctor`** skill anytime for a read-only health check of what is ready.
+
+Layer 0-1 runs on a laptop with no heavy infrastructure: pandas + DuckDB, spaCy,
+Docling, and Free Law `x-ray`, queried through a pinned read-only `mcp-sqlite`.
+```
+
+(Use real em-dashes in the prose if you prefer; the guard test only checks the
+lowercased tokens "two onramps", "setup", "doctor", "detect_tier",
+"operator_guide.md", "journalist_start.md".) After this main-thread edit, the
+subagent's guard test README assertions pass.
 
 ### Step 3.1: Write the failing guard test
 
@@ -901,6 +987,12 @@ def test_journalist_guide_is_conversational_not_infra():
 def test_readme_routes_both_personas():
     low = README.read_text(encoding="utf-8").lower()
     assert "operator_guide.md" in low and "journalist_start.md" in low
+    # the polished dual-onramp routes by SKILL (setup / doctor), not just by file,
+    # and mentions the health check -- pins the main-thread README polish so the
+    # test is not vacuously green against the pre-existing README
+    assert "two onramps" in low
+    assert "setup" in low and "doctor" in low
+    assert "detect_tier" in low
 ```
 
 ### Step 3.2: Run -> FAIL. Author the docs.
@@ -925,11 +1017,9 @@ Code and ask in plain language; one or two example asks); If something looks off
 (run doctor; if it says something is missing, ask whoever set this up to run
 setup). Keep it short and welcoming.
 
-`README.md` -- update the Getting started section so the two onramps are explicit
-and each persona is routed in one glance: Operators -> docs/OPERATOR_GUIDE.md
-(one-time setup) and Investigators -> docs/JOURNALIST_START.md (daily use), plus
-a one-line "run the doctor skill (or python scripts/detect_tier.py) to see what
-is ready." Do not introduce Docker.
+`README.md` -- already handled by the orchestrator in Step 3.0 (main thread). The
+subagent does NOT touch README.md. Just author the two docs above and the guard
+test; the README assertions are already green from Step 3.0.
 
 ### Step 3.3: Run the guard test + full offline suite -> PASS. Commit.
 

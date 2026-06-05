@@ -294,6 +294,8 @@ doctor is safe to run a hundred times a day. It changes nothing.
   install (a corrupt wheel, a torch that imports but cannot run) reads as READY;
   the deep-verify is out of scope. The map says what is INSTALLED, which is the
   health signal an operator/journalist needs, not a guarantee every code path runs.
-- A version mismatch against requirements-dev.txt is reported (present + the actual
-  version) but is not by itself a failure -- the pinned versions are the source of
-  truth and setup installs them; doctor surfaces drift as a note, not a block.
+- detect_tier reports the INSTALLED version (from importlib.metadata), not a
+  comparison against the requirements-dev.txt pins. It does not parse the pins or
+  flag version drift -- the pinned versions are the source of truth and setup
+  installs them; the operator can eyeball the reported version. (A pin-comparison
+  mode is a possible future, not Phase 10.)
