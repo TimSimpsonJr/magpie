@@ -117,6 +117,14 @@ Engine choices below reflect the Tier-1 prior-art scan (§10). Each skill's buil
 | `archive-evidence` | Provenance & chain-of-custody | hash-on-receipt (SHA-256) + **RFC 3161** timestamp + manifest + append-only custody log; wrap **Bellingcat Auto Archiver** (WACZ) for web; writes via Librarian | 1→3 | MIT |
 | `setup` | Onboarding wizard | `magpie setup` (operator, once) / `magpie doctor` (journalist, health-check); Docker `healthcheck`+`service_healthy`+`start_period`; Compose **profiles → `.env`**; MCP wiring (creds in local scope); tier-detect → capability map (à la research-workflow `detect_tier`) | 0-1 | MIT |
 
+*Implementation-factoring note (Phases 3 & 6):* the **structured-data (CSV/XLSX)**
+half of `ingest` above was implemented inside **`dataset-analyze`** (Phase 3 —
+`load_table.py` encoding/TEXT-whitelist + `data_quality.py` truncation/quality
+gate), so Phase-6 `ingest` is the **document/PDF** half only and does not
+duplicate that loader. The two share the provenance-preserving, gate-before-trust
+stance but are separate code paths. (Recorded so the §5.1 "docs + structured data"
+phrasing is read as the original conception, not a contradiction with the build.)
+
 ### 5.2 Track A — Dataset analysis (flagship)
 
 | Skill | Purpose | Engine / key heuristics | Layer |

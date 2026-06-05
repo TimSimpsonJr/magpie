@@ -15,12 +15,20 @@
 
 ## 1. Goal & scope
 
-`ingest` is the **document/PDF path** of the suite (the structured-data path is
-`dataset-analyze`). It turns a PDF into a **`DoclingDocument` JSON kept
-internally** — never Markdown — so every extracted element keeps its
-`{page_no, bbox, charspan}` provenance for the Phase-8 citation anchor. Before
-OCRing, a **text-layer quality gate** decides native-vs-re-OCR; **degraded /
-handwriting pages are flagged for humans**, never silently OCR'd as fact.
+`ingest` (Phase 6) is the **document/PDF path** of the suite. It turns a PDF into
+a **`DoclingDocument` JSON kept internally** — never Markdown — so every extracted
+element keeps its `{page_no, bbox, charspan}` provenance for the Phase-8 citation
+anchor. Before OCRing, a **text-layer quality gate** decides native-vs-re-OCR;
+**degraded / handwriting pages are flagged for humans**, never silently OCR'd as
+fact.
+
+**Boundary reconciliation (vs master design §5.1).** The master design folds
+"docs + structured data" into `ingest`. In the shipped architecture the
+**structured-data (CSV/XLSX) path was implemented in `dataset-analyze`** (Phase 3:
+`load_table.py` encoding/TEXT-whitelist + `data_quality.py` truncation/quality
+gate). Phase-6 `ingest` is therefore the **document/PDF half only** and does not
+duplicate that loader — this is a real factoring decision already made in Phase 3,
+not a silent Phase-6 narrowing; the master-design §5.1 note is updated to match.
 
 **In scope (Tasks 6.1–6.3):** the pure quality gate (`ingest_gate.py`), the
 Docling wrapper preserving provenance + Bates post-pass + degraded-page flagging
@@ -172,11 +180,12 @@ Both functions are deterministic, JSON-able, and take no IO/clock/network.
 IngestResult = {
   source_path: str,
   source_sha256: str,                  # artifact identity (Codex)
-  docling_json_path: str,
+  docling_json_path: str,              # ALWAYS written, incl. on `review` (see below)
   schema_name: str, schema_version: str,   # "DoclingDocument", "1.10.0"
   n_pages: int,
   doc_decision: "native"|"ocr_images"|"force_full_doc_ocr"|"review",
-  ocr_engine_used: "none"|"rapidocr"|"ocrmypdf+rapidocr",
+  trustworthy_for_extraction: bool,    # FALSE iff doc_decision == review (Codex)
+  ocr_engine_used: "none"|"rapidocr",  # Phase-6 scope; ocrmypdf values reserved (§2.5/§8)
   per_page: [ {page_no, native_chars, hit_rate, diagnosis,
                ocr_applied: bool, confidence_grade, flagged: bool, flag_reason} ],
   bates: [ {value, page_no, bbox} ],   # captured SEPARATELY, keeps provenance
@@ -184,6 +193,20 @@ IngestResult = {
 }
 ```
 
+- **The `review` artifact contract (Codex — safety-critical).** On
+  `doc_decision == review`, ingest STILL writes the `DoclingDocument` JSON from
+  pass #1 (so a human can inspect the page text), but sets
+  `trustworthy_for_extraction = false` and flags the pages. **Downstream
+  consumers (Phase-8 `investigate` / citation) MUST refuse to auto-extract claims
+  or citations from a doc with `trustworthy_for_extraction == false`** — it routes
+  to the human gate first. A `review` doc is evidence-for-inspection, never an
+  automated-extraction source. `ocr_engine_used` reflects what actually ran
+  ("none" when review skips OCR).
+- **`ocr_engine_used` is Phase-6-scoped.** Only `"none"` / `"rapidocr"` occur in
+  this phase — the OCRmyPDF seam detects/skips/flags but does not itself OCR
+  (Tesseract absent). The `"ocrmypdf"` / `"ocrmypdf+rapidocr"` values are
+  **reserved** for when the seam grows into a real preprocess (§8), so adding them
+  later is non-breaking.
 - **Bates post-pass:** a word-boundary-anchored regex over the `DoclingDocument`
   text items captures Bates stamps **separately** with each one's `{page_no, bbox}`
   (from `item.prov`). Leads-not-verdicts: capture + tag, never rewrite the text.
@@ -236,6 +259,10 @@ like the `spacy` marker; selected with `-k docling`):
   (tables/multi-column/all-caps are native).
 - **Flag, don't fake** — handwriting / degraded / `uncertain` pages go to a human;
   nothing degraded is emitted as fact (leads-not-verdicts).
+- **`review` docs are not auto-extractable** — a `review` decision sets
+  `trustworthy_for_extraction=false`; Phase-8 extraction MUST refuse such a doc (a
+  garbled / handwriting artifact is for human inspection, never a silent citation
+  source).
 - **Preserve, don't fix** — live text under redaction boxes is kept for Phase 7.
 - **Artifact identity** — `source_sha256` ties geometry to the source file.
 - **Pins untouched** — numpy 2.4.6 / pandas 3.0.3 unchanged by the heavy stack
@@ -250,7 +277,8 @@ like the `spacy` marker; selected with `-k docling`):
 - **Per-page selective force-OCR** (re-OCR only the bad pages of a mostly-native
   doc) — a future enhancement; v1 flags them.
 - **OCRmyPDF deskew/redo decision engine** — when Tesseract is a supported
-  dependency (setup-doctor, Phase 10), grow the seam into the two real modes.
+  dependency (setup-doctor, Phase 10), grow the seam into the two real modes and
+  activate the reserved `ocr_engine_used` values (`ocrmypdf`, `ocrmypdf+rapidocr`).
 - **`docling-slim` footprint trim** — drop the unused chunking/transformers stack;
   measure + adopt later (not while it risks the OCR path).
 - **Offline model prefetch** (`artifacts_path` + `docling-tools models download`)
