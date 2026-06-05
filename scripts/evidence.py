@@ -159,14 +159,18 @@ def verify_custody_chain(log_path) -> bool:
     if not p.exists():
         return False
     prev = _GENESIS_PREV
-    for i, ln in enumerate(x for x in p.read_text(encoding="utf-8").splitlines() if x.strip()):
-        d = json.loads(ln)
-        claimed = d.pop("entry_sha256", None)
-        if hashlib.sha256(_canonical(d).encode("utf-8")).hexdigest() != claimed:
-            return False
-        if d.get("seq") != i or d.get("prev_entry_sha256") != prev:
-            return False
-        prev = claimed
+    try:
+        for i, ln in enumerate(x for x in p.read_text(encoding="utf-8").splitlines() if x.strip()):
+            d = json.loads(ln)
+            claimed = d.pop("entry_sha256", None)
+            if hashlib.sha256(_canonical(d).encode("utf-8")).hexdigest() != claimed:
+                return False
+            if d.get("seq") != i or d.get("prev_entry_sha256") != prev:
+                return False
+            prev = claimed
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        # malformed/truncated/tampered line -> fails verification (never crashes)
+        return False
     return True
 
 
@@ -264,12 +268,12 @@ def archive_evidence(path, *, timestamper: Timestamper, out_dir, now: datetime,
         timestamp=_timestamp_block(tr, token_path, token_sha256),
         custody_log_path=custody_name, warnings=warnings)
 
-    append_custody_event(out / custody_name, "archived", now=now,  # 6. custody (hard fail)
-                         artifact_sha256=receipt, actor=actor)
-    tmp_manifest = out / (receipt + ".manifest.json.tmp")  # 7. manifest LAST = atomic commit
+    tmp_manifest = out / (receipt + ".manifest.json.tmp")  # 6. manifest = atomic commit point
     tmp_manifest.write_text(json.dumps(manifest.to_dict(), indent=2, ensure_ascii=True),
                             encoding="utf-8")
-    os.replace(tmp_manifest, manifest_path)          # atomic promote (hard fail)
+    os.replace(tmp_manifest, manifest_path)          # atomic promote (hard fail) == THE commit
+    append_custody_event(out / custody_name, "archived", now=now,  # 7. custody ONLY AFTER commit
+                         artifact_sha256=receipt, actor=actor)      #    (never claim a non-commit)
     return manifest
 
 

@@ -202,3 +202,30 @@ def test_fake_timestamper_records_expected_sha256(tmp_path):
     fake = _verified_fake()
     archive_evidence(src, timestamper=fake, out_dir=tmp_path / "o", now=T0)
     assert fake.calls and fake.calls[0][1] == sha256_file(src)  # (path, expected_sha256)
+
+
+# --- regression: custody "archived" must NOT be recorded if the manifest
+# atomic commit (os.replace) fails. The custody log must never claim a
+# completion that did not happen. ---
+def test_archive_evidence_no_false_archived_on_manifest_failure(tmp_path, monkeypatch):
+    src = _write(tmp_path, "f.txt")
+    out = tmp_path / "o"
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(evidence.os, "replace", _boom)
+    with pytest.raises(OSError):
+        archive_evidence(src, timestamper=_verified_fake(), out_dir=out, now=T0)
+    custody = out / (sha256_file(src) + ".custody.jsonl")
+    assert (not custody.exists()) or ("archived" not in custody.read_text(encoding="utf-8"))
+
+
+# --- regression: a malformed/truncated custody line must make verification
+# return False, not raise. ---
+def test_custody_chain_rejects_malformed_line(tmp_path):
+    log = tmp_path / "c.jsonl"
+    append_custody_event(log, "received", now=T0, artifact_sha256="aa")
+    with open(log, "a", encoding="utf-8") as f:
+        f.write('{"seq": 1, "event": "arch')  # truncated JSON
+    assert verify_custody_chain(log) is False
