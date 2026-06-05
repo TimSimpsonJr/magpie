@@ -3,9 +3,9 @@ title: Magpie Phase 8 -- investigate (verification gate + citation anchor) (desi
 date: 2026-06-05
 phase: 8
 status: approved
-design_review: APPROVE (Codex, round 2, 2026-06-05)
+design_review: APPROVE (Codex, round 2, 2026-06-05) + post-approval single-prov hardening from early Greenville validation (to confirm at plan-review)
 codex_design_review_status: approved
-codex_design_review_approved_hash: 27dda6cb7c1eadb16fb72cbfff03fd16b19b33b4b7a6c12c1cd917f69db5d11a
+codex_design_review_approved_hash: 51140629b63f632d9066b2149613ecc2fabbfa9639d55b8725b795762c040dff
 codex_thread_id: 019e95ea-d5d9-72f0-87db-e1bbd50a4c42
 supersedes:
 ---
@@ -105,13 +105,18 @@ A dataclass; native-typed and JSON-able. Fields:
 - `block_index` (int) + `block_self_ref` (`"#/texts/{i}"`) -- which `texts[]`
   item; the two agree and are cross-checked.
 - `char_start` / `char_end` -- **half-open `[start, end)`** offsets into the
-  block's `.text` (Python-slice semantics; pinned, never fuzzy).
+  block's `.text` (Python-slice semantics; pinned, never fuzzy). `build_anchor`
+  computes these itself (locating `verbatim_quote` in `.text`); they are NOT
+  docling's `prov.charspan`, which the early real-world validation showed is NOT
+  reliably a `.text` offset (section 7). `resolve_anchor` slices `.text` with
+  these, so resolution never depends on docling's charspan.
 - `text_hash` -- **full** `sha256(verbatim_quote)` hex (exact span, no strip): a
   content-integrity + relocation hash. **Deliberately different** from
   `pii_sweep.text_id` (stripped + `[:16]`, a local *join* key) -- this is an
   *integrity* hash, untruncated and unstripped.
-- `bbox` (`{l,t,r,b,coord_origin}`) + `prov_index` + `n_prov` -- the human card's
-  geometry (see 2.3).
+- `bbox` (`{l,t,r,b,coord_origin}`) + `n_prov` -- the human card's geometry, taken
+  straight from the (single-prov) block's `prov[0]` (see 2.3); `n_prov` is stored
+  so a multi-prov block can be rejected.
 - `verifier_result` (`supported|contradicted|indeterminate`) +
   `verifier_confidence` -- ADVISORY (see section 4); `indeterminate` default.
 - `checker_level` -- the mechanical anchor-resolution level (2.2).
@@ -152,31 +157,30 @@ gate (section 4) passes ONLY at `exact` or unique `relocated`; `ambiguous` /
 `block` / `page` / `unresolved` are degraded anchors flagged for the human, never
 an auto-pass.
 
-### 2.3 Multi-`prov` blocks -- charspan-containment, never naive `prov[0]`
+### 2.3 Block geometry -- single-prov in v1, `prov[0]` directly
 
-A block's `prov` is a LIST (an item split across a page boundary has one prov
-per fragment, each with its own bbox + charspan). The record stores `n_prov`
-locally; the human card's `page_no`/`bbox` come from the prov entry whose
-`charspan` **contains** the quoted `[char_start, char_end)` (`prov_index`) -- its
-`page_no` is the card's page, its `bbox` the card's box. **v1 requires the quoted
-span to be contained within a SINGLE prov fragment:** if it straddles two prov
-fragments (a block wrapping across a page boundary), `build_anchor` REJECTS it
-(the citation-checker flags it), exactly like a cross-block quote (2.4). This
-keeps `page_no` a faithful scalar -- a lone page number never misstates where
-multi-fragment evidence lives. For the common single-prov block the containing
-prov is `prov[0]` with `charspan == [0, len(text))`, so this reduces to the
-simple case.
+A block's `prov` is a LIST (an item split across a page boundary has one prov per
+fragment). The early real-world validation (section 7) found that a single-prov
+block's `prov.charspan` is NOT reliably `[0, len(text))` -- 6 of 189 blocks
+differed -- so `prov.charspan` cannot be trusted to map a sub-span's
+`.text`-offset onto a fragment. So **v1 requires the quoted block to be
+single-prov (`n_prov == 1`)**: the human card's `page_no`/`bbox` come straight
+from `prov[0]`, and a quote whose block has `n_prov > 1` is REJECTED (the
+citation-checker flags it, like a cross-block quote -- 2.4). This keeps `page_no`
+a faithful scalar and the bbox unambiguous, and it sidesteps the `prov.charspan`
+coordinate question entirely: the anchor's own `[char_start, char_end)` are
+computed into `.text`, and resolution never reads `prov.charspan` (2.1/2.2).
 
 ### 2.4 The v1 quote contract (what `build_anchor` accepts)
 
 A valid v1 `verbatim_quote` is: **non-empty and not whitespace-only**; an **exact
-substring of ONE block's `.text`** (never `.orig`, never spanning two blocks);
-**contained within a single `prov` fragment** of that block (2.3); and
-**word-boundary-aligned** at both edges. `build_anchor` REJECTS anything else
-(empty/blank, cross-block, cross-prov-fragment, or a bare mid-token sub-span); the
-extractor is instructed to honor it and the citation-checker enforces it. This is
-the contract that makes `text_hash` stable and `relocated` safe -- without it a
-short quote could relocate into the interior of a larger token (2.2).
+substring of ONE `.text`** that belongs to a **single-prov block** (`n_prov == 1`,
+2.3) -- never `.orig`, never spanning two blocks; and **word-boundary-aligned** at
+both edges. `build_anchor` REJECTS anything else (empty/blank, cross-block, a
+quote whose block is multi-prov, or a bare mid-token sub-span); the extractor is
+instructed to honor it and the citation-checker enforces it. This is the contract
+that makes `text_hash` stable and `relocated` safe -- without it a short quote
+could relocate into the interior of a larger token (2.2).
 
 ## 3. Never-publish-raw -- three local-only leak surfaces
 
@@ -313,8 +317,9 @@ Three tiers, escalating realism:
   {page_no,bbox,charspan}}`, `pages`, `schema_name`/`version`). Tests
   `build_anchor` + `resolve_anchor` at EVERY level (`exact`, unique `relocated`,
   `ambiguous`, `block`, `page`, `unresolved`), the half-open offsets, the
-  multi-prov charspan-containment selection, `.text`-only anchoring, the
-  `public_anchor` raw/public split, and the clean-citation gate (only `exact` /
+  single-prov-block geometry (`prov[0]`) + multi-prov-block rejection,
+  `.text`-only anchoring, the `public_anchor` raw/public split, and the
+  clean-citation gate (only `exact` /
   unique `relocated` pass). **The required round-trip test:** build an anchor over
   a fixture, simulate an OCR re-run that PREPENDS a header (shifts char offsets)
   and inserts an earlier block (shifts `block_index`), assert level-1 `exact`
@@ -340,8 +345,12 @@ Three tiers, escalating realism:
   LOCALLY only and is NEVER committed** (it is a public SC-FOIA record, but the
   same env-var discipline as the Simpsonville corpus keeps the repo binary-free
   and PII-free; the test SKIPS when the env var is unset, so CI stays hermetic).
-  This is run once during implementation and the empirical result recorded in the
-  plan / PR (the early real-world validation the invented format requires).
+  **Already run (2026-06-05)** on the first 12 (native) pages:
+  `doc_decision=native`, `trustworthy_for_extraction=True`, 189 single-prov text
+  blocks, 0 multi-prov, and **6/189 blocks with `prov.charspan != [0,
+  len(text))`** -- the finding that drove the section-2.3 hardening (own-`.text`
+  offsets; single-prov-block requirement; never trust `prov.charspan`). This is
+  the early real-world validation the invented format requires.
 - **Tier 3 (Task 11.2, deferred).** The real Simpsonville ingested PDFs behind a
   local env var (never committed). Filed as an `autonomous-safe` follow-up so the
   anchor is re-validated against the flagship corpus before release. The
