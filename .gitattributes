@@ -1,0 +1,6 @@
+# Binary assets -- never apply line-ending conversion (CRLF would corrupt the
+# bytes and break certificate fingerprint / RFC 3161 token round-trip checks).
+*.pem binary
+*.crt binary
+*.der binary
+*.tsr binary
