@@ -279,3 +279,147 @@ def _load_manifest(manifest_path) -> EvidenceManifest:
         schema_name=d["schema_name"], schema_version=d["schema_version"],
         tool=d["tool"], artifact=d["artifact"], timestamp=d["timestamp"],
         custody_log_path=d["custody_log_path"], warnings=d["warnings"])
+
+
+# --------------------------------------------------------------------------- #
+# TSA EDGE -- the real RFC 3161 timestamper (lazy: imports rfc3161-client +
+# requests INSIDE its methods so importing this module stays network/ML-free).
+# The NETWORK + library decode lives in a thin, monkeypatchable _tsa_roundtrip;
+# the TimestampResult assembly (imprint guard, verify-on-store, fail-closed,
+# degrade) is pure logic the offline tests drive by monkeypatching it.
+# --------------------------------------------------------------------------- #
+@dataclass
+class _RoundtripResult:
+    http_status: Optional[int]
+    token_der: Optional[bytes]
+    gen_time_iso: Optional[str]
+    serial: Optional[int]
+    imprint_hex: Optional[str]
+    decoded: Any  # the rfc3161_client TimeStampResponse (for verify); None in fakes
+
+
+class _TsaError(Exception):
+    """A TSA round-trip failure carrying a SPECIFIC degrade reason (design 8
+    vocabulary), so timestamp_path never collapses bad_pki_status / decode into a
+    generic http_error."""
+    def __init__(self, reason: str, *, http_status: Optional[int] = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.http_status = http_status
+
+
+def _classify_network_error(exc: Exception) -> str:
+    """Map a requests/transport exception to the design 8 unavailable-reason vocab."""
+    name = type(exc).__name__
+    if "Timeout" in name:
+        return "timeout"
+    if "ConnectionError" in name or "ConnectTimeout" in name or "NameResolution" in name:
+        return "offline"
+    return "http_error:%s" % name
+
+
+# _full_verification lives in the PURE CORE (above); the edge reuses it.
+
+
+def _tsa_roundtrip(tsa_url: str, req_der: bytes, timeout: int) -> "_RoundtripResult":
+    """The ONLY network + rfc3161-client-decode touch-point (lazy imports). Raises a
+    _TsaError with a SPECIFIC reason on bad status / decode / non-GRANTED PKIStatus;
+    lets requests' own ConnectionError/Timeout propagate (mapped by the caller)."""
+    import requests  # lazy: imported here, never at module top (import-purity)
+    from rfc3161_client import decode_timestamp_response
+    resp = requests.post(tsa_url, data=req_der,
+                         headers={"Content-Type": "application/timestamp-query"},
+                         timeout=timeout)
+    if resp.status_code != 200:
+        raise _TsaError("http_error:%d" % resp.status_code, http_status=resp.status_code)
+    try:
+        tsr = decode_timestamp_response(resp.content)
+    except Exception:
+        raise _TsaError("decode_error", http_status=200)
+    if int(tsr.status) != 0:                 # PKIStatus GRANTED == 0
+        raise _TsaError("bad_pki_status:%s" % tsr.status, http_status=200)
+    info = tsr.tst_info
+    return _RoundtripResult(
+        http_status=200, token_der=tsr.time_stamp_token(),
+        gen_time_iso=info.gen_time.astimezone(timezone.utc).isoformat(),
+        serial=int(info.serial_number), imprint_hex=info.message_imprint.message.hex(),
+        decoded=tsr)
+
+
+class Rfc3161Timestamper:
+    """RFC 3161 Option-A timestamper. tsa_url configurable (freeTSA default). Verifies
+    against root_cert_pem, or the bundled freeTSA root when tsa_url is freeTSA. A
+    non-freeTSA URL with no supplied root FAILS CLOSED to unverified/no_root_configured.
+    """
+    def __init__(self, tsa_url: str = FREETSA_URL, *, root_cert_pem: Optional[bytes] = None,
+                 timeout: int = 30):
+        self.tsa_url = tsa_url
+        self._root_cert_pem = root_cert_pem
+        self.timeout = timeout
+
+    def _resolve_root(self) -> Optional[bytes]:
+        if self._root_cert_pem is not None:
+            return self._root_cert_pem
+        if self.tsa_url == FREETSA_URL:
+            return load_default_root_cert_pem()
+        return None  # fail closed
+
+    def timestamp_path(self, path: str, *, expected_sha256: str) -> TimestampResult:
+        scheme = "https" if self.tsa_url.lower().startswith("https") else "http"
+        no_transport = {"scheme": scheme, "http_status": None}
+        try:
+            from rfc3161_client import HashAlgorithm, TimestampRequestBuilder
+        except Exception as exc:
+            return TimestampResult(status="unavailable",
+                                   reason="dependency_unavailable:%s" % type(exc).__name__,
+                                   tsa_url=self.tsa_url, transport=no_transport)
+        try:
+            data = Path(path).read_bytes()
+        except OSError as exc:
+            return TimestampResult(status="unavailable", reason="read_error:%s" % type(exc).__name__,
+                                   tsa_url=self.tsa_url, transport=no_transport)
+        if not data:                              # empty artifact cannot be timestamped
+            return TimestampResult(status="unavailable", reason="empty_file",
+                                   tsa_url=self.tsa_url, transport=no_transport)
+        req = (TimestampRequestBuilder().data(data).hash_algorithm(HashAlgorithm.SHA256)
+               .nonce(nonce=True).cert_request(cert_request=True).build())
+        try:
+            rr = _tsa_roundtrip(self.tsa_url, req.as_bytes(), self.timeout)
+        except _TsaError as exc:
+            return TimestampResult(status="unavailable", reason=exc.reason, tsa_url=self.tsa_url,
+                                   transport={"scheme": scheme, "http_status": exc.http_status})
+        except Exception as exc:                  # transport-level (ConnectionError/Timeout/...)
+            return TimestampResult(status="unavailable", reason=_classify_network_error(exc),
+                                   tsa_url=self.tsa_url, transport=no_transport)
+        transport = {"scheme": scheme, "http_status": rr.http_status}
+        # TOCTOU guard: the echoed imprint MUST equal the receipt hash.
+        if rr.imprint_hex != expected_sha256:
+            return TimestampResult(status="unverified", reason="imprint_mismatch",
+                                   tsa_url=self.tsa_url, transport=transport, gen_time=rr.gen_time_iso,
+                                   serial=rr.serial, token_der=rr.token_der,
+                                   verification=_full_verification(granted=True))
+        root_pem = self._resolve_root()
+        if root_pem is None:                      # fail closed (non-freeTSA, no root)
+            return TimestampResult(status="unverified", reason="no_root_configured",
+                                   tsa_url=self.tsa_url, transport=transport, gen_time=rr.gen_time_iso,
+                                   serial=rr.serial, token_der=rr.token_der,
+                                   verification=_full_verification(granted=True, imprint_match=True))
+        try:                                      # verify-on-store (needs decoded + request)
+            from cryptography import x509
+            from rfc3161_client import VerifierBuilder
+            roots = x509.load_pem_x509_certificates(root_pem)
+            vb = VerifierBuilder.from_request(req)
+            for c in roots:
+                vb = vb.add_root_certificate(c)
+            vb.build().verify(rr.decoded, hashed_message=bytes.fromhex(expected_sha256))
+        except Exception as exc:                  # VerificationError or any verify-path failure
+            return TimestampResult(status="unverified", reason="verify_failed:%s" % type(exc).__name__,
+                                   tsa_url=self.tsa_url, transport=transport, gen_time=rr.gen_time_iso,
+                                   serial=rr.serial, token_der=rr.token_der,
+                                   verification=_full_verification(granted=True, imprint_match=True))
+        return TimestampResult(status="verified", reason=None, tsa_url=self.tsa_url,
+                               transport=transport, gen_time=rr.gen_time_iso, serial=rr.serial,
+                               token_der=rr.token_der,
+                               verification=_full_verification(granted=True, chain_ok=True,
+                                   nonce_ok=True, eku_timestamping=True, imprint_match=True,
+                                   verified=True))
