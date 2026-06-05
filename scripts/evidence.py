@@ -47,6 +47,19 @@ class ArchiveExistsError(Exception):
     and on_exists == 'error' (never silently overwrite a provenance record)."""
 
 
+class CustodyAppendError(OSError):
+    """Raised when the manifest COMMITTED but the post-commit 'archived' custody
+    append failed. The archive's authoritative record (the manifest) EXISTS at
+    `manifest_path`; only the custody event is missing. Recover WITHOUT re-archiving
+    by calling archive_evidence(..., on_exists='append_event'), which appends a
+    custody event to the already-committed manifest."""
+    def __init__(self, manifest_path, original):
+        super().__init__("manifest committed at %s but custody append failed: %s"
+                         % (manifest_path, original))
+        self.manifest_path = manifest_path
+        self.original = original
+
+
 def load_default_root_cert_pem() -> bytes:
     """The bundled freeTSA Root CA PEM bytes (read once, cached)."""
     global _DEFAULT_ROOT_CACHE
@@ -162,13 +175,15 @@ def verify_custody_chain(log_path) -> bool:
     try:
         for i, ln in enumerate(x for x in p.read_text(encoding="utf-8").splitlines() if x.strip()):
             d = json.loads(ln)
+            if not isinstance(d, dict):              # valid JSON but not an object -> reject
+                return False
             claimed = d.pop("entry_sha256", None)
             if hashlib.sha256(_canonical(d).encode("utf-8")).hexdigest() != claimed:
                 return False
             if d.get("seq") != i or d.get("prev_entry_sha256") != prev:
                 return False
             prev = claimed
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError):
         # malformed/truncated/tampered line -> fails verification (never crashes)
         return False
     return True
@@ -272,8 +287,11 @@ def archive_evidence(path, *, timestamper: Timestamper, out_dir, now: datetime,
     tmp_manifest.write_text(json.dumps(manifest.to_dict(), indent=2, ensure_ascii=True),
                             encoding="utf-8")
     os.replace(tmp_manifest, manifest_path)          # atomic promote (hard fail) == THE commit
-    append_custody_event(out / custody_name, "archived", now=now,  # 7. custody ONLY AFTER commit
-                         artifact_sha256=receipt, actor=actor)      #    (never claim a non-commit)
+    try:
+        append_custody_event(out / custody_name, "archived", now=now,  # 7. custody ONLY AFTER commit
+                             artifact_sha256=receipt, actor=actor)      #    (never claim a non-commit)
+    except OSError as exc:                            # manifest IS committed; surface the stranded
+        raise CustodyAppendError(manifest_path, exc) from exc          # state EXPLICITLY (recoverable)
     return manifest
 
 

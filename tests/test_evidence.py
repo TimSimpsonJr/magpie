@@ -229,3 +229,29 @@ def test_custody_chain_rejects_malformed_line(tmp_path):
     with open(log, "a", encoding="utf-8") as f:
         f.write('{"seq": 1, "event": "arch')  # truncated JSON
     assert verify_custody_chain(log) is False
+
+
+# --- regression: a post-commit custody-append failure (manifest ALREADY
+# committed) must raise an EXPLICIT, recoverable CustodyAppendError that
+# carries the committed manifest path -- not a bare OSError. ---
+def test_archive_evidence_post_commit_custody_failure_is_explicit(tmp_path, monkeypatch):
+    src = _write(tmp_path, "f.txt")
+    out = tmp_path / "o"
+    def _boom(*a, **k):
+        raise OSError("custody log unwritable")
+    monkeypatch.setattr(evidence, "append_custody_event", _boom)
+    with pytest.raises(evidence.CustodyAppendError) as ei:
+        archive_evidence(src, timestamper=_verified_fake(), out_dir=out, now=T0)
+    manifest = out / (sha256_file(src) + ".manifest.json")
+    assert manifest.exists()                       # the manifest DID commit
+    assert ei.value.manifest_path == manifest      # exception carries the committed path
+
+
+# --- regression: a custody line that is valid JSON but NOT an object (e.g. an
+# int or a string) must make verification return False, not crash. ---
+def test_custody_chain_rejects_nondict_line(tmp_path):
+    log = tmp_path / "c.jsonl"
+    append_custody_event(log, "received", now=T0, artifact_sha256="aa")
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("1\n")  # valid JSON, but not an object -> must fail, not crash
+    assert verify_custody_chain(log) is False
