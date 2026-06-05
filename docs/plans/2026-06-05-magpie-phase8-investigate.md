@@ -348,6 +348,35 @@ def test_multi_prov_target_block_degrades_geometry_not_exact():
     r = resolve_anchor(rec, make_doc([split]))
     assert r.level == "block" and r.bbox is None and r.page_no is None
     assert is_clean_citation(r) is False
+
+def test_relocated_rejects_single_candidate_with_wrong_context():
+    # exact fails (offsets shifted); the target has exactly ONE boundary-aligned
+    # occurrence of the quote, but its context does NOT match the stored
+    # prefix/suffix -> must NOT relocate. Pins that context is checked even for a
+    # LONE candidate (a resolver that only checks context to break ties would
+    # wrongly relocate here).
+    blk = make_block(0, "alpha 482 searches beta")
+    rec = _anchor_in(None, blk, "482 searches")
+    doc2 = make_doc([make_block(0, "HEADER gamma 482 searches delta")])  # wrong context, shifted
+    r = resolve_anchor(rec, doc2)
+    assert r.level != "relocated" and r.level in ("block", "page", "unresolved")
+    assert is_clean_citation(r) is False
+
+def test_relocated_into_multi_prov_target_degrades_to_block():
+    # exact fails (block_index shifted); the UNIQUE relocated candidate (text +
+    # context match) lives in a MULTI-prov target block -> degrade to block with
+    # page_no/bbox None. Pins the single-prov guard on the RELOCATED branch too
+    # (not just the exact branch).
+    blk = make_block(0, "alpha 482 searches beta")
+    rec = _anchor_in(None, blk, "482 searches")
+    bb = {"l": 1.0, "t": 2.0, "r": 3.0, "b": 4.0, "coord_origin": "BOTTOMLEFT"}
+    target = make_block(1, "alpha 482 searches beta", prov=[
+        {"page_no": 1, "bbox": bb, "charspan": [0, 11]},
+        {"page_no": 2, "bbox": bb, "charspan": [11, 23]}])
+    doc2 = make_doc([make_block(0, "INSERTED EARLIER"), target])
+    r = resolve_anchor(rec, doc2)
+    assert r.level == "block" and r.page_no is None and r.bbox is None
+    assert is_clean_citation(r) is False
 ```
 
 **Step 2:** run -> FAIL.
