@@ -39,6 +39,11 @@ from tests.conftest_redaction import (  # noqa: F401
     small_image_caption_pdf,
 )
 
+# Phase 8 citation-anchor fixtures (synthetic DoclingDocument-shaped dicts; no
+# docling import). Star-imported here so the make_block/make_doc builders are
+# importable from tests/test_citation.py the same way conftest_redaction is.
+from tests.conftest_citation import *  # noqa: F401,F403
+
 # A latin-1-safe garbled text-layer line the gate must diagnose as garbled_text:
 # gibberish non-dictionary LETTER tokens (so the page clears the alphabetic-token
 # floor with a ~0 wordlist hit-rate -- a present text layer Docling would TRUST)
