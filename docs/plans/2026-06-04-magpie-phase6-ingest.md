@@ -86,14 +86,14 @@ def test_wordlist_hit_rate_fraction_in_list():
 def test_wordlist_hit_rate_none_when_no_tokens():
     assert wordlist_hit_rate("123 456 !!!", SMALL_WL) is None  # no alpha tokens
 
-def test_char_density_flags_garbage_glyph_runs():
+def test_char_density_flags_symbol_garbage():
     assert char_density_ok("Normal readable sentence with words.") is True
-    # mojibake-like (exotic glyphs): high non-letter ratio / long non-space runs
-    assert char_density_ok("∎˚¬∆ﬁ�����⁂⁂⁂⁂⁂⁂⁂⁂⁂⁂⁂⁂") is False
-    # the EXACT latin-1 garbled_pdf fixture text MUST also fail (ties the density
-    # constants to the fixture so Task-6's garbled e2e is deterministic, not fragile)
+    # guard 1 (letter-ratio floor): the EXACT latin-1 garbled_pdf fixture text --
+    # a wall of symbols/digits with essentially no letters -- MUST fail (ties the
+    # density constants to the Task-6 fixture so the garbled e2e is deterministic).
     assert char_density_ok(";;;;;;;;;;;;;;;; ################ %%%%%%%%%%%% 8492037184920371 @@@@@@@@@@@@ ") is False
-
+    # guard 2 (run-length): good letters but one absurd non-letter run
+    assert char_density_ok("the police ;;;;;;;;;;;;;;;;;;;;;;;;;;;; department record") is False
 def test_enums_have_the_documented_members():
     assert {d.value for d in PageDiagnosis} == {
         "native_ok","image_only","garbled_text","uncertain_review"}
@@ -147,7 +147,7 @@ def test_empty_or_near_empty_is_image_only():
 
 def test_present_but_garbled_is_garbled_text():
     # enough tokens, low hit-rate, AND density anomaly => garbled
-    assert D("xqzklm ﬁﬁﬁ ∎∎∎ qwzx ⁂⁂ lkjhg zzzz vvvv bbbb nnnn") == PD.garbled_text
+    assert D("xqzklm zzzz vvvv bbbb ;;;;;;;;;;;;;;;; ############ qwzx lkjhg nnnn") == PD.garbled_text
 
 def test_sparse_below_token_floor_is_uncertain_not_garbled():
     # too few alpha tokens to judge a hit-rate => uncertain_review (NOT garbled)
