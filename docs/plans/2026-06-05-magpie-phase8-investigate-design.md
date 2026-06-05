@@ -2,8 +2,10 @@
 title: Magpie Phase 8 -- investigate (verification gate + citation anchor) (design)
 date: 2026-06-05
 phase: 8
-status: draft
-design_review: PENDING
+status: approved
+design_review: APPROVE (Codex, round 2, 2026-06-05)
+codex_design_review_status: approved
+codex_design_review_approved_hash: 27dda6cb7c1eadb16fb72cbfff03fd16b19b33b4b7a6c12c1cd917f69db5d11a
 codex_thread_id: 019e95ea-d5d9-72f0-87db-e1bbd50a4c42
 supersedes:
 ---
