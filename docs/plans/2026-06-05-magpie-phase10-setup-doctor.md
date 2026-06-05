@@ -1039,10 +1039,13 @@ Commit subject: `docs(phase10): operator + journalist onramps + dual-onramp READ
    (expect: core READY, document workflows PARTIAL -- OCR preprocessing for scans
    UNAVAILABLE because Tesseract/Ghostscript are absent here).
    `& .venv\Scripts\python.exe scripts\detect_tier.py --json` (valid JSON).
-3. ASCII check every new/edited file:
+3. ASCII check every SUBAGENT-CREATED file (NOT README.md -- README is
+   intentionally non-ASCII, main-thread-authored, and never subagent-read):
    no matches for `[^\x00-\x7F]` in scripts/detect_tier.py, tests/test_detect_tier.py,
-   the two SKILL.md, the two docs, README.md, tests/test_*_skill.py,
-   tests/test_onramp_docs.py.
+   the two SKILL.md, docs/OPERATOR_GUIDE.md, docs/JOURNALIST_START.md,
+   tests/test_setup_skill.py, tests/test_doctor_skill.py, tests/test_onramp_docs.py.
+   (README.md already carries non-ASCII outside the Getting started block; it is
+   deliberately excluded from this gate.)
 4. Confirm no new dependency was added (requirements-dev.txt unchanged).
 
 ## Non-goals (do NOT build)
