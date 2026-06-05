@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from scripts.pii_sweep import (
+    BROAD_ONLY_PATTERN_NAMES,
     DEFAULT_PII_PATTERNS,
     OFFICIAL_TITLES,
     _norm_name_tokens,
@@ -47,10 +48,12 @@ PersonSpan = "tuple[str, int, int, Sequence[str]]"
 PersonSpans = Callable[[str], "list[PersonSpan]"]
 
 
-# Typed placeholders per structured-PII category (design 2.3): typed, not a
-# blanket [REDACTED], so the published artifact still conveys WHAT kind of PII
-# was present. Keys are pii_sweep's DEFAULT_PII_PATTERNS category names; the two
-# broad-only categories (race_sex, possible_birthdate) get sensible types too.
+# Typed placeholders for the SIX high-precision structured-PII categories
+# (design 2.3): typed, not a blanket [REDACTED], so the published artifact still
+# conveys WHAT kind of PII was present. Keys are pii_sweep's DEFAULT_PII_PATTERNS
+# category names. The two broad-only leads (race_sex, possible_birthdate) are
+# deliberately ABSENT: redact_text does not mask them (see _pii_spans), so they
+# need no placeholder.
 _PII_PLACEHOLDERS: dict[str, str] = {
     "phone": "[PHONE]",
     "ssn": "[SSN]",
@@ -58,8 +61,6 @@ _PII_PLACEHOLDERS: dict[str, str] = {
     "dob_kw": "[DOB]",
     "alien_num": "[A-NUMBER]",
     "driver_lic": "[DL]",
-    "race_sex": "[DEMOGRAPHIC]",
-    "possible_birthdate": "[DATE]",
 }
 
 
@@ -115,10 +116,19 @@ def _person_spans(
 def _pii_spans(
     text: str, patterns: Mapping[str, re.Pattern[str]]
 ) -> "list[tuple[int, int, str]]":
-    """Replacement spans for every structured-PII regex match: each becomes
-    ``(start, end, typed_placeholder)``."""
+    """Replacement spans for each HIGH-PRECISION structured-PII match: each
+    becomes ``(start, end, typed_placeholder)``.
+
+    Masks ONLY the six high-precision categories (ssn, dob_kw, phone, email,
+    alien_num, driver_lic). The two BROAD-ONLY leads in
+    ``BROAD_ONLY_PATTERN_NAMES`` (race_sex, possible_birthdate) are SKIPPED: a
+    bare possible_birthdate also matches an ordinary INCIDENT date, so masking it
+    would over-redact. The exclusion follows pii_sweep's canonical broad-only
+    set so the two modules stay in lock-step."""
     spans: list[tuple[int, int, str]] = []
     for category, pattern in patterns.items():
+        if category in BROAD_ONLY_PATTERN_NAMES:
+            continue
         placeholder = _placeholder_for(category)
         for m in pattern.finditer(text):
             spans.append((m.start(), m.end(), placeholder))
@@ -126,34 +136,49 @@ def _pii_spans(
 
 
 def _apply_spans(text: str, spans: "Sequence[tuple[int, int, str]]") -> str:
-    """Apply ``(start, end, replacement)`` spans to ``text`` with overlap
-    resolution + right-to-left application (design 2.3).
+    """Apply ``(start, end, replacement)`` spans to ``text`` by MERGING every
+    overlapping cluster into a single UNION span + applying RIGHT-TO-LEFT
+    (design 2.3).
 
-    Overlap rule: when two spans overlap, the LONGER span wins and the contained
-    (or merely overlapping shorter) span is DROPPED -- a PII match inside a PERSON
-    span (or vice versa) is covered by the outer replacement, never
-    double-redacted. PERSON-before-PII on equal-length ties (the caller passes
-    PERSON spans first, so a stable sort preserves that order for ties).
+    Overlap rule (merge-to-union): overlapping spans are coalesced into ONE span
+    spanning the UNION of their character ranges, and the LONGEST contributing
+    span's replacement covers the whole cluster. This is leak-safe for BOTH a
+    contained overlap (a PII match inside a PERSON span -- the outer replacement
+    covers it) AND a PARTIAL overlap (a PERSON span half-overlapping an SSN/phone
+    -- the union still covers every sensitive char, so NO raw prefix/suffix of the
+    shorter span can survive). Over-redacting the union of two overlapping
+    sensitive spans is the SAFE choice: it is never a leak. PERSON-before-PII on
+    equal-length ties (the caller appends PERSON spans before PII spans, and a
+    stable sort preserves that order so PERSON wins an equal-length tie).
 
     Application is RIGHT-TO-LEFT (descending start offset) so an earlier
-    replacement never shifts a later span's offsets. BOTH ``redact_text`` and
+    replacement never shifts a later cluster's offsets. BOTH ``redact_text`` and
     ``redact_note`` use this ONE helper -- one code path, one set of overlap tests.
     """
-    # Keep insertion order for equal-length ties (PERSON-before-PII): a stable
-    # sort by DESCENDING length keeps the longer span first; among equal lengths
-    # the original order (PERSON spans were appended before PII spans) survives.
-    ordered = sorted(spans, key=lambda s: (s[1] - s[0]), reverse=True)
+    if not spans:
+        return text
 
-    chosen: list[tuple[int, int, str]] = []
+    # Sort by start, then LONGEST-first so the first span in a start-tie is the
+    # longest -> its replacement wins the cluster; PERSON spans were appended
+    # before PII spans, so equal-length ties keep PERSON via the stable sort.
+    ordered = sorted(spans, key=lambda s: (s[0], -(s[1] - s[0])))
+
+    # Each cluster: [start, end, replacement, winning_len].
+    clusters: list[list] = []
     for start, end, replacement in ordered:
-        # Drop this span if it overlaps an already-chosen (longer-or-equal) span.
-        if any(start < c_end and c_start < end for c_start, c_end, _ in chosen):
-            continue
-        chosen.append((start, end, replacement))
+        if clusters and start < clusters[-1][1]:  # overlaps the current cluster
+            cluster = clusters[-1]
+            cluster[1] = max(cluster[1], end)  # extend to the UNION
+            if (end - start) > cluster[3]:  # a strictly longer span wins the repl
+                cluster[2], cluster[3] = replacement, end - start
+        else:
+            clusters.append([start, end, replacement, end - start])
 
     # Apply right-to-left so offsets never shift.
     result = text
-    for start, end, replacement in sorted(chosen, key=lambda s: s[0], reverse=True):
+    for start, end, replacement, _ in sorted(
+        clusters, key=lambda c: c[0], reverse=True
+    ):
         result = result[:start] + replacement + result[end:]
     return result
 

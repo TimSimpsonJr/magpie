@@ -113,6 +113,17 @@ def test_right_to_left_offset_stability_multi_span():
     assert out == "J.P. at [PHONE] today"
 
 
+def test_partial_overlap_redacts_union_no_raw_leak():
+    # PERSON span "Doe 123" (0..7) PARTIALLY overlaps the SSN "123-45-6789" (4..15)
+    # -- neither contains the other. The UNION must be fully redacted: NO raw "Doe"
+    # and NO raw SSN digits survive.
+    ents = [("Doe 123", 0, 7, [])]
+    out = redact_text("Doe 123-45-6789 end", person_spans=FakeSpans(ents))
+    assert "Doe" not in out
+    assert "123-45-6789" not in out
+    assert out.endswith(" end")
+
+
 def test_typed_placeholders_cover_each_kind():
     # Each structured-PII kind gets a TYPED placeholder (not a blanket [REDACTED]).
     cases = {
@@ -132,6 +143,13 @@ def test_multiple_uninvolved_names_all_initialed():
     ents = [("Anne Marie", 0, 10, []), ("Bob Cobb", 15, 23, [])]
     out = redact_text("Anne Marie and Bob Cobb left", person_spans=FakeSpans(ents))
     assert out == "A.M. and B.C. left"
+
+
+def test_bare_incident_date_not_masked():
+    # a bare MM/DD/YYYY is a broad-only lead (also an incident date) -- NOT masked
+    # by redact_text (only the 6 high-precision categories are). No false [DATE].
+    out = redact_text("stop on 01/02/1990 logged", person_spans=FakeSpans([]))
+    assert "01/02/1990" in out  # left intact (not over-redacted)
 
 
 # --------------------------------------------------------------------------- #
