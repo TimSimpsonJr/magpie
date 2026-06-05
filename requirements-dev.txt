@@ -48,3 +48,39 @@ PyYAML==6.0.2
 #                     `mise run bootstrap` now downloads ~400 MB for this model.
 spacy==3.8.14
 en_core_web_lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
+
+# Phase 6 ingest (scripts/ingest_gate.py, scripts/ingest.py) — the document/PDF
+# path. HEAVIER than spaCy: `docling` pulls torch (CPU) + the layout/TableFormer
+# model stack + RapidOCR (ONNX). Verified at the Phase 6 research gate
+# (skills/ingest/references/prior-art.md) to install against the pinned
+# numpy==2.4.6 + pandas==3.0.3 WITHOUT moving them, on Python 3.12.10. NOTE:
+# `mise run bootstrap` now also fetches ~1.5-2 GB of wheels + first-run model
+# weights (HuggingFace layout/TableFormer + the RapidOCR ONNX models), cached
+# locally on first OCR.
+#   docling      — DoclingDocument PDF understanding; the JSON is kept INTERNALLY
+#                  (never Markdown) so page+bbox+charspan provenance survives for
+#                  the Phase 8 citation anchor. `docling` is the convenience
+#                  metapackage (== docling-slim[standard], which also pulls a
+#                  chunking/transformers stack ingest does not use — a tracked
+#                  footprint-reduction option, see prior-art §9).
+#   rapidocr     — the OCR engine Docling 2.97 ACTUALLY uses (rapidocr>=3.8,<4);
+#                  pure-Python + ONNX, NO system binaries. The legacy
+#                  `rapidocr-onnxruntime` is a DIFFERENT distribution Docling 2.97
+#                  does not import — deliberately NOT pinned.
+#   onnxruntime  — CPU inference backend for RapidOCR.
+#   torch        — pinned to the CPU build so a venv rebuild can't drift onto a
+#                  CUDA wheel (docling-ibm-models layout/TableFormer runtime).
+#   ocrmypdf     — deskew / --redo-ocr PREPROCESSING only. REQUIRES system
+#                  binaries (Tesseract + Ghostscript) that pip does NOT manage;
+#                  ingest detect-and-skips OCRmyPDF when they are absent
+#                  (setup-doctor, Phase 10, installs them). The Python package is
+#                  pinned so the seam + its MissingDependencyError stay
+#                  importable/testable. Transitive deps (docling-core/-parse/
+#                  -ibm-models, pikepdf, pdfminer.six, pypdfium2, fpdf2, img2pdf,
+#                  onnx, opencv) are constrained by these top-level pins, not
+#                  pinned individually (same policy as the spaCy thinc/blis stack).
+docling==2.97.0
+rapidocr==3.8.1
+onnxruntime==1.26.0
+torch==2.12.0
+ocrmypdf==17.5.0
