@@ -34,7 +34,9 @@ Read it before implementing. Research facts:
   `python`):
   `& .venv\Scripts\python.exe -m pytest tests/test_evidence.py -q`
   Offline-only run of the whole suite:
-  `& .venv\Scripts\python.exe -m pytest -k "not docling and not spacy and not xray and not tsa" -q`
+  `& .venv\Scripts\python.exe -m pytest -m "not docling and not spacy and not xray and not tsa" -q`
+  (use `-m` MARKER exclusion, NOT `-k` name matching: `-k "not tsa"` also drops the
+  whole `test_evidence_tsa.py` file because the FILENAME contains "tsa")
 - House style (from citation.py / ingest_gate.py): module docstring states PURE vs
   EDGE and that the clock is injected; `from __future__ import annotations`; named
   module CONSTANTS with a rationale comment; dataclasses for records; thorough
@@ -58,7 +60,7 @@ rfc3161-client==1.0.6
 **Step 2:** In `pyproject.toml`, find the `[tool.pytest.ini_options]` `markers` list
 (it has spacy/docling/xray) and add:
 ```
-    "tsa: tests that hit a live RFC 3161 Time-Stamp Authority over the network (select with -k tsa)",
+    "tsa: tests that hit a live RFC 3161 Time-Stamp Authority over the network (select with -m tsa)",
 ```
 
 **Step 3:** Confirm the dep is importable (it was installed at the research gate):
@@ -728,8 +730,10 @@ def _fake_roundtrip(imprint_hex):
 ```
 
 **Step 2: Run to verify they fail**
-Run: `& .venv\Scripts\python.exe -m pytest tests/test_evidence_tsa.py -q -k "not tsa"`
+Run: `& .venv\Scripts\python.exe -m pytest tests/test_evidence_tsa.py -q -m "not tsa"`
 Expected: FAIL (Rfc3161Timestamper / _tsa_roundtrip not defined).
+(NOTE: use `-m "not tsa"`, NOT `-k "not tsa"` -- the filename contains "tsa" so a
+`-k` name filter would deselect every test in this file.)
 
 **Step 3: Implement the edge** (append to `scripts/evidence.py`).
 
@@ -881,11 +885,11 @@ block (so decoded=None is never dereferenced). Do not add a verify path that nee
 `decoded` before those early returns.
 
 **Step 4: Run the offline tests**
-Run: `& .venv\Scripts\python.exe -m pytest tests/test_evidence_tsa.py -q -k "not tsa"`
+Run: `& .venv\Scripts\python.exe -m pytest tests/test_evidence_tsa.py -q -m "not tsa"`
 Expected: PASS (the 4 offline tests).
 
 **Step 5: Run the live test once to confirm the real path (optional, needs network)**
-Run: `& .venv\Scripts\python.exe -m pytest tests/test_evidence_tsa.py -q -k tsa`
+Run: `& .venv\Scripts\python.exe -m pytest tests/test_evidence_tsa.py -q -m tsa`
 Expected: PASS (a real freeTSA round-trip verifies).
 
 **Step 6: Commit**
@@ -988,7 +992,7 @@ git commit -m "feat(archive-evidence): orchestration SKILL.md + smoke test"
 **Files:** none (verification only).
 
 **Step 1:** Run the whole offline suite:
-`& .venv\Scripts\python.exe -m pytest -k "not docling and not spacy and not xray and not tsa" -q`
+`& .venv\Scripts\python.exe -m pytest -m "not docling and not spacy and not xray and not tsa" -q`
 Expected: all prior tests still pass + the new evidence/skill tests pass (no
 regressions; the baseline was 431 passed / 1 skipped).
 
