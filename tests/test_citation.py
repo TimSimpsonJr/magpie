@@ -1,7 +1,11 @@
 # tests/test_citation.py -- ASCII only
+import pytest
+
 from scripts.citation import (
     CitationRecord, sha256_text, block_index_of, SCHEMA_NAME, SCHEMA_VERSION,
+    build_anchor, QuoteContractError,
 )
+from tests.conftest_citation import make_block, make_doc
 
 
 def _record(**kw):
@@ -51,3 +55,68 @@ def test_public_anchor_is_exactly_the_approved_minimal_surface():
         "doc_id", "page_no", "block_index", "block_self_ref", "text_hash", "bbox",
         "checker_level", "verifier_result", "schema_name", "schema_version",
     }
+
+
+# --------------------------------------------------------------------------- #
+# Task 2: build_anchor + the v1 quote contract (design 2.4).
+# --------------------------------------------------------------------------- #
+
+
+def _kw(**kw):
+    base = dict(claim_text="c", doc_id="d", doc_schema_name="DoclingDocument",
+                doc_schema_version="1.10.0", extractor_model="m", prompt_version="v1",
+                timestamp="t")
+    base.update(kw)
+    return base
+
+
+def test_build_anchor_happy_path_single_prov():
+    blk = make_block(3, "Officer Ramirez ran 482 searches in March 2026.", page_no=2)
+    rec = build_anchor(blk, verbatim_quote="482 searches", **_kw())
+    assert rec.block_index == 3 and rec.block_self_ref == "#/texts/3"
+    assert rec.page_no == 2 and rec.n_prov == 1
+    txt = "Officer Ramirez ran 482 searches in March 2026."
+    assert txt[rec.char_start:rec.char_end] == "482 searches"   # half-open
+    assert rec.context_prefix.endswith("ran ") and rec.context_suffix.startswith(" in")
+    assert rec.bbox == blk["prov"][0]["bbox"]
+
+
+def test_build_anchor_offsets_independent_of_docling_charspan():
+    # 6/189 real blocks had prov.charspan != [0,len). build_anchor must NOT use it.
+    blk = make_block(0, "alpha 482 searches beta", charspan=[100, 123])
+    rec = build_anchor(blk, verbatim_quote="482 searches", **_kw())
+    assert "alpha 482 searches beta"[rec.char_start:rec.char_end] == "482 searches"
+
+
+def test_rejects_empty_or_whitespace_quote():
+    blk = make_block(0, "some text here")
+    for bad in ("", "   ", "\t"):
+        with pytest.raises(QuoteContractError):
+            build_anchor(blk, verbatim_quote=bad, **_kw())
+
+
+def test_rejects_quote_not_in_block():
+    blk = make_block(0, "some text here")
+    with pytest.raises(QuoteContractError):
+        build_anchor(blk, verbatim_quote="absent", **_kw())
+
+
+def test_rejects_multi_prov_block():
+    blk = make_block(0, "spans two pages", prov=[
+        {"page_no": 1, "bbox": {}, "charspan": [0, 8]},
+        {"page_no": 2, "bbox": {}, "charspan": [8, 15]}])
+    with pytest.raises(QuoteContractError):
+        build_anchor(blk, verbatim_quote="two", **_kw())
+
+
+def test_rejects_mid_token_subspan_not_word_boundary():
+    # "ice" inside "police" must be rejected (the ICE/polICE trap at anchor level)
+    blk = make_block(0, "the police arrived")
+    with pytest.raises(QuoteContractError):
+        build_anchor(blk, verbatim_quote="ice", **_kw())
+
+
+def test_rejects_quote_occurring_twice_in_block():
+    blk = make_block(0, "482 searches and 482 searches")
+    with pytest.raises(QuoteContractError):
+        build_anchor(blk, verbatim_quote="482 searches", **_kw())
