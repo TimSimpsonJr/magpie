@@ -193,3 +193,131 @@ def summarize(capability_map):
         "document_workflows": doc,
         "document_reduced": reduced,
     }
+
+
+def check_python_dist(dist_name):
+    """Distribution presence + version WITHOUT importing the package."""
+    try:
+        return {"present": True, "version": _md.version(dist_name)}
+    except _md.PackageNotFoundError:
+        return {"present": False, "version": None}
+
+
+def check_spacy_model(name=_SPACY_MODEL):
+    """spaCy model presence via distribution metadata (NEVER loads the model)."""
+    return check_python_dist(name)
+
+
+def check_binary(names):
+    """shutil.which over a name or a list of fallback names; first hit wins."""
+    if isinstance(names, str):
+        names = [names]
+    for n in names:
+        path = shutil.which(n)
+        if path:
+            return {"present": True, "path": path, "name": n}
+    return {"present": False, "path": None, "name": None}
+
+
+def check_openssl_ts(timeout=10):
+    """openssl on PATH + whether it carries the `ts` subcommand (rc==0 on ts -help)."""
+    path = shutil.which("openssl")
+    if not path:
+        return {"present": False, "path": None, "ts_subcommand": False}
+    try:
+        p = subprocess.run([path, "ts", "-help"], capture_output=True,
+                           text=True, timeout=timeout)
+        return {"present": True, "path": path, "ts_subcommand": p.returncode == 0}
+    except Exception:
+        return {"present": True, "path": path, "ts_subcommand": False}
+
+
+def check_mcp_wiring(mcp_json_path):
+    """READ-ONLY: uvx on PATH + .mcp.json TEXT references the mcp-sqlite server.
+    Does NOT execute uvx and does NOT start the server (no side effects, no network).
+    """
+    uvx = shutil.which("uvx")
+    p = Path(mcp_json_path)
+    present = p.is_file()
+    declares = False
+    if present:
+        try:
+            declares = "mcp-sqlite" in p.read_text(encoding="utf-8")
+        except OSError:
+            present = False
+    return {"uvx_present": uvx is not None, "uvx_path": uvx,
+            "mcp_json_present": present, "declares_mcp_sqlite": declares}
+
+
+def run_probes(mcp_json_path, repo_root=None):
+    """Run every probe; return the dict build_capability_map consumes. The IO edge."""
+    dists = {d: check_python_dist(d) for d in _ALL_DISTS}
+    return {
+        "dists": dists,
+        "spacy_model": check_spacy_model(),
+        "tesseract": check_binary("tesseract"),
+        "ghostscript": check_binary(["gswin64c", "gswin32c", "gs"]),
+        "openssl_ts": check_openssl_ts(),
+        "mcp": check_mcp_wiring(mcp_json_path),
+        "platform": {"os": platform.system().lower(), "arch": platform.machine()},
+    }
+
+
+def detect(mcp_json_path=None, repo_root=None):
+    """The one IO entry point: probe -> capability map -> summary -> full report."""
+    root = Path(repo_root) if repo_root else Path(__file__).resolve().parent.parent
+    if mcp_json_path is None:
+        mcp_json_path = root / ".mcp.json"
+    probes = run_probes(mcp_json_path, root)
+    cap_map = build_capability_map(probes)
+    return {
+        "capabilities": cap_map,
+        "summary": summarize(cap_map),
+        "probes": probes,
+        "python": {"version": sys.version.split()[0], "executable": sys.executable},
+    }
+
+
+_STATUS_MARK = {READY: "[OK]", DEGRADED: "[~]", UNAVAILABLE: "[X]"}
+
+
+def render_text(report):
+    """Plain-text rendering of the capability map + the subordinate headline."""
+    s = report["summary"]
+    lines = ["Magpie health check", "=" * 40]
+    # core headline is binary (READY / NOT READY); optional reductions show in the map
+    lines.append("core structured-data analysis: " + s["core_structured_data"])
+    doc_line = "document workflows: " + s["document_workflows"]
+    if s["document_workflows"] == "PARTIAL" and s["document_reduced"]:
+        doc_line += " (reduced: " + ", ".join(s["document_reduced"]) + ")"
+    lines.append(doc_line)
+    lines.append("")
+    lines.append("Capabilities:")
+    for name, cap in report["capabilities"].items():
+        mark = _STATUS_MARK.get(cap["status"], "[?]")
+        lines.append("  " + mark + " " + name + " -- " + cap["status"])
+        if cap["status"] != READY:
+            if cap.get("missing"):
+                lines.append("      missing: " + ", ".join(cap["missing"]))
+            if cap.get("optional_missing"):
+                lines.append("      optional: " + ", ".join(cap["optional_missing"]))
+            if cap.get("note"):
+                lines.append("      note: " + cap["note"])
+            lines.append("      blocks: " + cap["blocks"])
+            if cap.get("fix"):
+                lines.append("      fix: " + cap["fix"])
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    report = detect()
+    if "--json" in argv:
+        print(json.dumps(report, indent=2))
+    else:
+        print(render_text(report))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -172,3 +172,94 @@ def test_document_workflows_partial_when_some_reduced():
     s = dt.summarize(cm)
     assert s["document_workflows"] == "PARTIAL"
     assert "OCR preprocessing for scans" in s["document_reduced"]
+
+
+def test_check_python_dist_present(monkeypatch):
+    monkeypatch.setattr(dt._md, "version", lambda name: "1.2.3")
+    r = dt.check_python_dist("pandas")
+    assert r == {"present": True, "version": "1.2.3"}
+
+
+def test_check_python_dist_absent(monkeypatch):
+    def boom(name):
+        raise dt._md.PackageNotFoundError(name)
+    monkeypatch.setattr(dt._md, "version", boom)
+    r = dt.check_python_dist("nope")
+    assert r == {"present": False, "version": None}
+
+
+def test_check_binary_list_fallback(monkeypatch):
+    # gswin64c missing, gs present -> returns the gs hit
+    seen = {}
+    def which(n):
+        return "/usr/bin/gs" if n == "gs" else None
+    monkeypatch.setattr(dt.shutil, "which", which)
+    r = dt.check_binary(["gswin64c", "gswin32c", "gs"])
+    assert r["present"] and r["name"] == "gs"
+    assert dt.check_binary("nope")["present"] is False
+
+
+def test_check_openssl_ts(monkeypatch):
+    monkeypatch.setattr(dt.shutil, "which", lambda n: "/usr/bin/openssl")
+    monkeypatch.setattr(dt.subprocess, "run",
+                        lambda *a, **k: type("P", (), {"returncode": 0})())
+    r = dt.check_openssl_ts()
+    assert r["present"] and r["ts_subcommand"] is True
+    monkeypatch.setattr(dt.shutil, "which", lambda n: None)
+    assert dt.check_openssl_ts()["present"] is False
+
+
+def test_check_mcp_wiring_is_read_only(monkeypatch, tmp_path):
+    """The Codex risk fix: check_mcp_wiring must NOT execute uvx (no subprocess)."""
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text('{"mcpServers": {"magpie-dataset": {"args": ["mcp-sqlite==0.3.2"]}}}',
+                   encoding="utf-8")
+    monkeypatch.setattr(dt.shutil, "which", lambda n: "/usr/bin/uvx")
+    calls = []
+    monkeypatch.setattr(dt.subprocess, "run",
+                        lambda *a, **k: calls.append(a) or None)
+    r = dt.check_mcp_wiring(mcp)
+    assert r["uvx_present"] and r["mcp_json_present"] and r["declares_mcp_sqlite"]
+    assert calls == []  # NEVER ran a subprocess (no uvx execution)
+    missing = tmp_path / "absent.json"
+    r2 = dt.check_mcp_wiring(missing)
+    assert r2["mcp_json_present"] is False and r2["declares_mcp_sqlite"] is False
+
+
+def test_render_text_has_no_tier_language():
+    cm = dt.build_capability_map(all_present_probes())
+    report = {"capabilities": cm, "summary": dt.summarize(cm),
+              "probes": all_present_probes(),
+              "python": {"version": "3.12.10", "executable": "x"}}
+    out = dt.render_text(report)
+    low = out.lower()
+    assert "core structured-data analysis" in low
+    assert "document workflows" in low
+    # honesty guard: never expose a linear tier / "full" score to a user
+    assert "tier 1" not in low and "tier 2" not in low and "tier 3" not in low
+    for name in cm:
+        assert name in out
+
+
+def test_detect_smoke():
+    report = dt.detect()
+    assert set(report) >= {"capabilities", "summary", "probes", "python"}
+    assert "analyze datasets" in report["capabilities"]
+
+
+def test_cli_json(capsys):
+    rc = dt.main(["--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "capabilities" in payload
+
+
+def test_import_is_cheap():
+    """Importing the module must not pull in heavy stacks (subprocess-isolated)."""
+    code = ("import importlib, sys; importlib.import_module('scripts.detect_tier'); "
+            "heavy = [m for m in ('torch','docling','spacy','fitz') if m in sys.modules]; "
+            "print(heavy); sys.exit(1 if heavy else 0)")
+    p = subprocess.run([sys.executable, "-c", code],
+                       cwd=str(Path(__file__).resolve().parent.parent),
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout + p.stderr
