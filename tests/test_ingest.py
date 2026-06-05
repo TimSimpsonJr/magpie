@@ -141,3 +141,70 @@ def test_review_doc_contract_pinned_deterministically(tmp_path, native_pdf, monk
     assert r.trustworthy_for_extraction is False      # downstream (Phase 8) MUST refuse extraction
     assert Path(r.docling_json_path).exists()         # JSON still written for human inspection
     assert all(p["flagged"] for p in r.per_page)      # every page flagged on review
+
+
+# --------------------------------------------------------------------------- #
+# Finding 1 (Codex impl-review) -- the per_page CONTRACT (design §5). Pin the
+# EXACT key set so it can't silently drift again (parse_score/ocr_score regressed
+# away from the design's hit_rate/confidence_grade), and prove ocr_applied is
+# PAGE-ACCURATE (True on the scan's OCR'd page, False on a clean native page).
+# --------------------------------------------------------------------------- #
+
+# The design §5 per_page fields PLUS the kept raw-score debug fields
+# (parse_score / ocr_score), re-approved as the superset in the doc.
+_PER_PAGE_KEYS = {
+    "page_no", "native_chars", "hit_rate", "parse_score", "ocr_score",
+    "diagnosis", "ocr_applied", "confidence_grade", "flagged", "flag_reason",
+}
+
+
+@pytest.mark.docling
+def test_per_page_pins_contract_keys_and_page_accurate_ocr_applied(
+    tmp_path, scan_pdf, native_pdf
+):
+    from scripts.ingest import ingest
+
+    # Image-only scan -> ocr_images: the (single) OCR'd page must be ocr_applied.
+    rs = ingest(scan_pdf, out_dir=tmp_path)
+    assert rs.doc_decision == "ocr_images"
+    assert rs.per_page, "scan produced no per_page entries"
+    for p in rs.per_page:
+        assert set(p) == _PER_PAGE_KEYS, f"per_page key drift: {set(p) ^ _PER_PAGE_KEYS}"
+    # The OCR'd image-only page actually triggered OCR -> ocr_applied True there.
+    assert any(p["ocr_applied"] for p in rs.per_page)
+    assert any(p["diagnosis"] == "image_only" and p["ocr_applied"] for p in rs.per_page)
+    # hit_rate is real-or-None (never a fake 0.0): an image-only page with no alpha
+    # tokens reports None, never 0.0.
+    for p in rs.per_page:
+        assert p["hit_rate"] is None or isinstance(p["hit_rate"], float)
+    # confidence_grade is a human-readable string or None (nan-safe), never an enum.
+    for p in rs.per_page:
+        assert p["confidence_grade"] is None or isinstance(p["confidence_grade"], str)
+
+    # Clean native PDF -> native: NO page was OCR'd -> ocr_applied False everywhere.
+    rn = ingest(native_pdf, out_dir=tmp_path)
+    assert rn.doc_decision == "native"
+    assert rn.per_page
+    for p in rn.per_page:
+        assert set(p) == _PER_PAGE_KEYS
+        assert p["ocr_applied"] is False             # page-accurate: native page not OCR'd
+    # A clean native page DOES carry a hit_rate (real English text -> alpha tokens).
+    assert any(isinstance(p["hit_rate"], float) for p in rn.per_page)
+
+
+# --------------------------------------------------------------------------- #
+# Finding 2 (Codex impl-review) -- the ugly-PDF failure contract (design §2.6).
+# A corrupt / unparseable PDF drives Docling to ConversionStatus.FAILURE; ingest
+# must NOT crash or dereference a bad document -- it returns a flagged result.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.docling
+def test_corrupt_pdf_is_flagged_not_crashed(tmp_path, corrupt_pdf):
+    from scripts.ingest import ingest
+    # No exception, even though the document is unparseable.
+    r = ingest(corrupt_pdf, out_dir=tmp_path)
+    assert r.warnings, "a corrupt PDF must surface a warning"
+    # skip-and-flag: route to the human gate (review) OR mark not-extractable.
+    assert r.doc_decision == "review" or r.trustworthy_for_extraction is False
+    assert r.ocr_engine_used == "none"               # never OCR a doc that failed to load

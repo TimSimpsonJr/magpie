@@ -185,6 +185,23 @@ def bates_pdf(tmp_path) -> Path:
 
 
 @pytest.fixture
+def corrupt_pdf(tmp_path) -> Path:
+    """A file with a ``.pdf`` name whose bytes are NOT a valid PDF (a ``%PDF``
+    header followed by garbage). Docling's pdfium backend fails to load it ->
+    ``ConversionStatus.FAILURE`` (with ``raises_on_error=False``), exercising the
+    ugly-PDF skip-and-flag failure contract (design §2.6): ``ingest`` must return
+    a flagged ``IngestResult`` rather than crash or dereference a bad document.
+    Not threshold-fragile: any non-PDF byte stream drives the same FAILURE."""
+    path = tmp_path / "corrupt.pdf"
+    path.write_bytes(
+        b"%PDF-1.4 not really a pdf\n"
+        + b"garbage bytes that no PDF backend can parse " * 40
+        + bytes(range(256))
+    )
+    return path
+
+
+@pytest.fixture
 def degraded_pdf(tmp_path) -> Path:
     """A FAINT, blurred, speckled image-only scan whose OCR confidence is
     genuinely low (ocr_score ~0.54 vs a clean scan's ~0.98 -- verified at the

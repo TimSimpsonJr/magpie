@@ -24,7 +24,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scripts.ingest_gate import decide_doc, diagnose_page, DocDecision, PageDiagnosis
+from scripts.ingest_gate import (
+    decide_doc,
+    diagnose_page,
+    load_default_wordlist,
+    wordlist_hit_rate,
+    DocDecision,
+    PageDiagnosis,
+)
 
 __all__ = ["sha256_file", "IngestResult", "ingest"]
 
@@ -39,6 +46,13 @@ __all__ = ["sha256_file", "IngestResult", "ingest"]
 _DEGRADED_OCR_SCORE = 0.85   # OCR ran AND ocr_score below this (and not nan) -> flag
 _DEFAULT_MAX_PAGES = 2000    # convert() large-doc guard (oversized/malicious PDF)
 _DEFAULT_MAX_FILE_SIZE = 512 * 1024 * 1024  # 512 MiB convert() guard
+
+# Hard wall-clock ceiling on ONE Docling convert (design §2.6 ugly-PDF guard). A
+# pathological/huge PDF that would otherwise hang aborts with PARTIAL_SUCCESS
+# rather than wedging the pipeline. 300 s is generous for laptop-local CPU OCR
+# (warm native ~1.3 s/page, force-full OCR ~5.7 s/page per the research gate);
+# overridable via ingest(document_timeout=...).
+_DEFAULT_DOCUMENT_TIMEOUT = 300.0  # seconds, per-convert
 
 # Bates: an alphanumeric prefix + optional separator + a zero-padded digit run,
 # word-boundary anchored (design §7 / prior-art §7). Capture-and-tag only --
@@ -182,6 +196,63 @@ def _page_ocr_score(res, page_no: int) -> float | None:
     return _score_or_none(getattr(pc, "ocr_score", None)) if pc is not None else None
 
 
+# A page with no real modality score yields Docling's UNSPECIFIED grade (its
+# mean_score is nan -> _score_to_grade falls through). nan IS N/A NOT a fake
+# grade (design §2.4/§5), so UNSPECIFIED maps to None alongside an absent entry.
+_UNSPECIFIED_GRADE = "unspecified"
+
+
+def _page_confidence_grade(res, page_no: int) -> str | None:
+    """This page's human-readable Docling quality grade, or ``None``.
+
+    ``res.confidence.pages[page_no].mean_grade`` is a ``QualityGrade`` (str,Enum)
+    computed from the mean of the page's parse/layout/table/ocr scores. Rendered
+    as its lowercase ``.value`` string for the JSON contract. nan-safe: an absent
+    page entry OR the ``UNSPECIFIED`` grade (a page with no real score) -> ``None``
+    (never a fake grade), mirroring ``_score_or_none`` for the raw scores.
+    """
+    pages = getattr(getattr(res, "confidence", None), "pages", {}) or {}
+    pc = pages.get(page_no)
+    if pc is None:
+        return None
+    grade = getattr(pc, "mean_grade", None)
+    if grade is None:
+        return None
+    value = getattr(grade, "value", None)
+    text = value if isinstance(value, str) else str(grade)
+    if text == _UNSPECIFIED_GRADE:
+        return None
+    return text
+
+
+# --------------------------------------------------------------------------- #
+# Page-accurate ocr_applied (design §5). The per-page truth, not a doc-wide
+# stamp: which pages OCR ACTUALLY ran on depends on the decision + that page's
+# pass-#1 diagnosis.
+# --------------------------------------------------------------------------- #
+
+# do_ocr=True force_full_page_ocr=False only re-runs OCR on the bitmap regions of
+# pages Docling found needed it -- i.e. the pages the gate diagnosed as having no
+# / garbage native text. Native pages keep their pass-#1 text (no OCR).
+_OCR_IMAGES_DIAGNOSES = frozenset({PageDiagnosis.image_only, PageDiagnosis.garbled_text})
+
+
+def _page_ocr_applied(decision: DocDecision, diagnosis: PageDiagnosis) -> bool:
+    """Did OCR actually run on THIS page? (page-accurate, design §5).
+
+    * ``force_full_doc_ocr`` (force_full_page_ocr=True) -> every page OCR'd.
+    * ``ocr_images`` (force_full_page_ocr=False) -> only the pages whose pass-#1
+      diagnosis was image_only / garbled_text (a blank/garbage native layer);
+      native pages kept their text and were NOT OCR'd.
+    * ``native`` / ``review`` -> no OCR ran on any page.
+    """
+    if decision is DocDecision.force_full_doc_ocr:
+        return True
+    if decision is DocDecision.ocr_images:
+        return diagnosis in _OCR_IMAGES_DIAGNOSES
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # Provenance normalization (coordinate-origin trap, prior-art §2.3). Assembled
 # item provenance is typically BOTTOMLEFT, but mixed origins MUST be normalized
@@ -242,6 +313,133 @@ def _collect_bates(doc) -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
+# Ugly-PDF failure handling (design §2.6). With ``raises_on_error=False`` a
+# corrupt / encrypted / unparseable PDF comes back as ConversionStatus.FAILURE
+# (verified: the pdfium "Data format error" is swallowed, res.status == FAILURE,
+# res.document exists but res.document.pages == {}). We must NOT dereference a
+# bad document for extraction -- skip and flag.
+# --------------------------------------------------------------------------- #
+
+
+def _conversion_status_enum():
+    """The lazily-imported ``ConversionStatus`` enum (no docling import at top)."""
+    return _docling_imports()[3]
+
+
+def _is_failure(res) -> bool:
+    """True iff Docling reported ``ConversionStatus.FAILURE`` for this convert."""
+    return getattr(res, "status", None) is _conversion_status_enum().FAILURE
+
+
+def _is_partial_success(res) -> bool:
+    """True iff Docling reported ``ConversionStatus.PARTIAL_SUCCESS``."""
+    return getattr(res, "status", None) is _conversion_status_enum().PARTIAL_SUCCESS
+
+
+def _errors_summary(res) -> str:
+    """A short, human-readable summary of ``res.errors`` (possibly empty).
+
+    The pdfium backend-init failure logs but leaves ``res.errors`` empty, so this
+    is best-effort context appended to the status in the warning -- never relied
+    on for the decision (the status is authoritative).
+    """
+    errors = getattr(res, "errors", None) or []
+    parts: list[str] = []
+    for err in errors:
+        msg = getattr(err, "error_message", None) or str(err)
+        parts.append(str(msg))
+    return "; ".join(parts)
+
+
+def _build_failure_result(
+    *, pdf_path, source_sha256, json_path, warnings, doc, message,
+):
+    """Assemble the flagged skip-and-flag ``IngestResult`` for a failed convert.
+
+    Shared by the FAILURE-status path AND the caught-exception path so both honor
+    the same contract (no document dereference for extraction, no OCR, every
+    existing page flagged). Still writes the (minimal) ``DoclingDocument`` JSON if
+    a document object exists -- evidence for human inspection, consistent with the
+    ``review`` artifact contract. If no document exists, ``docling_json_path`` is
+    "" and a warning notes it. NEVER crashes.
+    """
+    warnings.append(message)
+
+    json_path_str = ""
+    schema_name = "DoclingDocument"
+    schema_version = ""
+    page_nos: list[int] = []
+    if doc is not None:
+        schema_name = getattr(doc, "schema_name", "DoclingDocument")
+        schema_version = str(getattr(doc, "version", ""))
+        try:
+            page_nos = _page_numbers(doc)
+        except Exception:  # pragma: no cover - a failed doc may lack .pages
+            page_nos = []
+        try:
+            doc.save_as_json(json_path)
+            json_path_str = str(json_path)
+        except Exception:  # pragma: no cover - persist best-effort on a bad doc
+            warnings.append(
+                "Could not write a DoclingDocument JSON for the failed convert."
+            )
+    else:
+        warnings.append("No DoclingDocument was produced for the failed convert.")
+
+    per_page = [
+        {
+            "page_no": page_no,
+            "native_chars": 0,
+            "hit_rate": None,
+            "parse_score": None,
+            "ocr_score": None,
+            "diagnosis": PageDiagnosis.uncertain_review.value,
+            "ocr_applied": False,
+            "confidence_grade": None,
+            "flagged": True,
+            "flag_reason": "conversion failed; page not trustworthy for extraction",
+        }
+        for page_no in page_nos
+    ]
+
+    return IngestResult(
+        source_path=str(pdf_path),
+        source_sha256=source_sha256,
+        docling_json_path=json_path_str,
+        schema_name=schema_name,
+        schema_version=schema_version,
+        n_pages=len(page_nos),
+        doc_decision=DocDecision.review.value,
+        trustworthy_for_extraction=False,
+        ocr_engine_used="none",
+        per_page=per_page,
+        bates=[],
+        warnings=warnings,
+    )
+
+
+def _failure_result_if_unparseable(
+    res, *, pdf_path, source_sha256, json_path, warnings,
+):
+    """If pass #1 reported FAILURE, build the flagged result; else ``None``."""
+    if not _is_failure(res):
+        return None
+    status_value = getattr(getattr(res, "status", None), "value", "failure")
+    detail = _errors_summary(res)
+    message = (
+        f"Docling could not parse the PDF (status={status_value}; "
+        "likely corrupt, encrypted, or not a valid PDF); routed to review, "
+        "not extracted."
+    )
+    if detail:
+        message += f" Docling errors: {detail}"
+    return _build_failure_result(
+        pdf_path=pdf_path, source_sha256=source_sha256, json_path=json_path,
+        warnings=warnings, doc=getattr(res, "document", None), message=message,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # The Docling edge -- the ONLY place docling is imported (LAZILY).
 # --------------------------------------------------------------------------- #
 
@@ -251,25 +449,32 @@ def _docling_imports():
 
     Kept in one helper so importing ``scripts.ingest`` stays cheap (the layout /
     OCR models load on first convert, like ``pii_sweep``'s lazy spaCy edge).
+    ``ConversionStatus`` is imported here too (same lazy edge) so the ugly-PDF
+    failure check (design §2.6) never adds a docling import at module top.
     """
     from docling.document_converter import DocumentConverter, PdfFormatOption
-    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.base_models import InputFormat, ConversionStatus
     from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
-    return (DocumentConverter, PdfFormatOption, InputFormat,
+    return (DocumentConverter, PdfFormatOption, InputFormat, ConversionStatus,
             PdfPipelineOptions, RapidOcrOptions)
 
 
 def _convert(pdf_path, *, do_ocr, force_full_page_ocr, lang,
-             max_num_pages, max_file_size, page_range):
+             max_num_pages, max_file_size, page_range, document_timeout):
     """One Docling convert with an explicit ingest profile (don't inherit
     defaults). do_table_structure OFF for latency (the gate needs text, not table
-    geometry); enrichments off. convert() large-doc guards from prior-art §2.6.
+    geometry); enrichments off. convert() large-doc guards from prior-art §2.6
+    plus a ``document_timeout`` hard wall-clock ceiling (an over-long convert
+    aborts to PARTIAL_SUCCESS rather than hanging). ``raises_on_error=False`` so a
+    corrupt/encrypted PDF returns ConversionStatus.FAILURE (caught by the caller)
+    instead of raising.
     """
-    (DocumentConverter, PdfFormatOption, InputFormat,
+    (DocumentConverter, PdfFormatOption, InputFormat, _ConversionStatus,
      PdfPipelineOptions, RapidOcrOptions) = _docling_imports()
 
     opts = PdfPipelineOptions(do_ocr=do_ocr)
     opts.do_table_structure = False
+    opts.document_timeout = document_timeout
     if do_ocr:
         opts.ocr_options = RapidOcrOptions(
             lang=[lang], force_full_page_ocr=force_full_page_ocr,
@@ -296,6 +501,7 @@ def ingest(
     max_num_pages: int = _DEFAULT_MAX_PAGES,
     max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
     page_range: tuple[int, int] | None = None,
+    document_timeout: float = _DEFAULT_DOCUMENT_TIMEOUT,
 ) -> IngestResult:
     """Ingest a PDF into a ``DoclingDocument`` JSON (internal) + an ``IngestResult``.
 
@@ -307,6 +513,11 @@ def ingest(
     for human inspection); never Markdown (it would drop the bbox/charspan a
     citation needs).
 
+    Ugly-PDF safety (design §2.6): a corrupt / encrypted / unparseable PDF that
+    Docling reports as ``ConversionStatus.FAILURE`` short-circuits to a flagged
+    ``review`` result (no bad-document dereference, no OCR); ``document_timeout``
+    caps each convert so a pathological PDF aborts instead of hanging.
+
     docling is imported LAZILY inside ``_convert`` so importing this module is
     cheap. ``decide_doc`` is referenced via this module's namespace so the
     review-doc test can monkeypatch ``scripts.ingest.decide_doc``.
@@ -315,17 +526,55 @@ def ingest(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
+    json_path = out_dir / f"{pdf_path.stem}.docling.json"
 
     source_sha256 = sha256_file(pdf_path)
 
     # ---- Pass #1: do_ocr=False -> what the gate sees (reused if native). ----
-    res = _convert(
-        pdf_path, do_ocr=False, force_full_page_ocr=False, lang=lang,
-        max_num_pages=max_num_pages, max_file_size=max_file_size, page_range=page_range,
+    # raises_on_error=False makes a corrupt/encrypted PDF come back as
+    # ConversionStatus.FAILURE (verified). The try/except is a belt-and-suspenders
+    # for the rare backend that raises DESPITE that flag -- the contract is "no
+    # crash, return a flagged result" (design §2.6), so a raise routes to the same
+    # skip-and-flag path.
+    try:
+        res = _convert(
+            pdf_path, do_ocr=False, force_full_page_ocr=False, lang=lang,
+            max_num_pages=max_num_pages, max_file_size=max_file_size,
+            page_range=page_range, document_timeout=document_timeout,
+        )
+    except Exception as exc:  # pragma: no cover - exercised only if docling raises
+        return _build_failure_result(
+            pdf_path=pdf_path, source_sha256=source_sha256, json_path=json_path,
+            warnings=warnings, doc=None,
+            message=(
+                "Docling raised while converting the PDF "
+                f"({type(exc).__name__}: {exc}); likely corrupt, encrypted, or "
+                "not a valid PDF; routed to review, not extracted."
+            ),
+        )
+
+    # ---- Ugly-PDF gate (design §2.6): a FAILURE convert never gets
+    # dereferenced for extraction. Skip-and-flag: a review result, OCR never
+    # runs, a (minimal) JSON is still written if a document object exists. ----
+    failure_result = _failure_result_if_unparseable(
+        res, pdf_path=pdf_path, source_sha256=source_sha256,
+        json_path=json_path, warnings=warnings,
     )
+    if failure_result is not None:
+        return failure_result
+
     doc = res.document
     page_nos = _page_numbers(doc)
     native_by_page = _page_native_text(doc)
+
+    # A PARTIAL_SUCCESS proceeds (partial geometry is still useful) but is noted +
+    # the whole doc is flagged not-fully-trustworthy.
+    partial = _is_partial_success(res)
+    if partial:
+        warnings.append(
+            "Docling reported PARTIAL_SUCCESS (incomplete conversion); "
+            "pages flagged for review."
+        )
 
     # ---- Pure gate: per-page diagnosis -> conservative doc decision. ----
     diagnoses: list[PageDiagnosis] = []
@@ -343,14 +592,16 @@ def ingest(
     if decision is DocDecision.ocr_images:
         res = _convert(
             pdf_path, do_ocr=True, force_full_page_ocr=False, lang=lang,
-            max_num_pages=max_num_pages, max_file_size=max_file_size, page_range=page_range,
+            max_num_pages=max_num_pages, max_file_size=max_file_size,
+            page_range=page_range, document_timeout=document_timeout,
         )
         doc = res.document
         ocr_engine_used = "rapidocr"
     elif decision is DocDecision.force_full_doc_ocr:
         res = _convert(
             pdf_path, do_ocr=True, force_full_page_ocr=True, lang=lang,
-            max_num_pages=max_num_pages, max_file_size=max_file_size, page_range=page_range,
+            max_num_pages=max_num_pages, max_file_size=max_file_size,
+            page_range=page_range, document_timeout=document_timeout,
         )
         doc = res.document
         ocr_engine_used = "rapidocr"
@@ -366,15 +617,16 @@ def ingest(
 
     # ---- Normalize prov origins, then persist the DoclingDocument JSON. ----
     _normalize_prov_origins(doc)
-    json_path = out_dir / f"{pdf_path.stem}.docling.json"
     doc.save_as_json(json_path)
 
     # ---- Bates post-pass (separate list; never rewrites text). ----
     bates = _collect_bates(doc)
 
     # ---- Per-page records + degraded flagging (nan-safe). ----
+    # hit_rate reuses the gate's DEFAULT wordlist so per_page matches what the
+    # gate actually scored (design §5). Loaded once; None when no alpha tokens.
+    wordlist = load_default_wordlist()
     review = decision is DocDecision.review
-    ocr_ran = ocr_engine_used == "rapidocr"
     diag_by_page = dict(zip(page_nos, diagnoses))
     per_page: list[dict[str, Any]] = []
     for page_no in page_nos:
@@ -382,18 +634,21 @@ def ingest(
         native_text = native_by_page.get(page_no, "")
         ocr_score = _page_ocr_score(res, page_no)
         parse_score = _page_parse_score(res, page_no)
+        ocr_applied = _page_ocr_applied(decision, diag)
 
         flag_reason = _flag_reason(
-            diag=diag, decision=decision, ocr_ran=ocr_ran, ocr_score=ocr_score,
-            review=review, ocrmypdf_unavailable=ocrmypdf_unavailable,
+            diag=diag, ocr_applied=ocr_applied, ocr_score=ocr_score,
+            review=review, partial=partial, ocrmypdf_unavailable=ocrmypdf_unavailable,
         )
         per_page.append({
             "page_no": page_no,
             "native_chars": len(native_text.strip()),
+            "hit_rate": wordlist_hit_rate(native_text, wordlist),
             "parse_score": parse_score,
             "ocr_score": ocr_score,
             "diagnosis": diag.value,
-            "ocr_applied": ocr_ran,
+            "ocr_applied": ocr_applied,
+            "confidence_grade": _page_confidence_grade(res, page_no),
             "flagged": flag_reason is not None,
             "flag_reason": flag_reason,
         })
@@ -406,7 +661,7 @@ def ingest(
         schema_version=str(getattr(doc, "version", "")),
         n_pages=len(page_nos),
         doc_decision=decision.value,
-        trustworthy_for_extraction=not review,
+        trustworthy_for_extraction=not (review or partial),
         ocr_engine_used=ocr_engine_used,
         per_page=per_page,
         bates=bates,
@@ -415,27 +670,31 @@ def ingest(
 
 
 def _flag_reason(
-    *, diag, decision, ocr_ran, ocr_score, review, ocrmypdf_unavailable,
+    *, diag, ocr_applied, ocr_score, review, partial, ocrmypdf_unavailable,
 ) -> str | None:
     """The reason this page is flagged for a human, or None if it is trustworthy.
 
     nan-safe (design §2.4): a clean native page (ocr_score nan) and a clean scan
-    (parse_score nan) are NOT flagged on a missing-modality score. A page is
-    flagged only when a signal is GENUINELY bad:
-      * ``review`` decision -> every page flagged (safety contract);
+    (parse_score nan) are NOT flagged on a missing-modality score. ``ocr_applied``
+    is PAGE-ACCURATE (did OCR run on THIS page), so an image-only page that the
+    decision did OCR is not spuriously flagged "not OCR'd". A page is flagged only
+    when a signal is GENUINELY bad:
+      * ``review`` decision OR ``partial`` (PARTIAL_SUCCESS) -> every page flagged;
       * the gate diagnosed the page garbled / uncertain / image-only-not-OCR'd;
       * OCR ran and the page's real ``ocr_score`` is below the degraded floor;
       * an OCRmyPDF op was requested but skipped (Tesseract absent).
     """
     if review:
         return "review: document not trustworthy for unattended extraction"
+    if partial:
+        return "partial conversion (Docling PARTIAL_SUCCESS)"
     if diag is PageDiagnosis.garbled_text:
         return "garbled text layer"
     if diag is PageDiagnosis.uncertain_review:
         return "uncertain: too little signal to trust the text layer"
-    if diag is PageDiagnosis.image_only and not ocr_ran:
+    if diag is PageDiagnosis.image_only and not ocr_applied:
         return "image-only page not OCR'd"
-    if ocr_ran and _is_real(ocr_score) and ocr_score < _DEGRADED_OCR_SCORE:
+    if ocr_applied and _is_real(ocr_score) and ocr_score < _DEGRADED_OCR_SCORE:
         return f"low OCR confidence ({ocr_score:.2f})"
     if ocrmypdf_unavailable:
         return "OCRmyPDF preprocessing requested but unavailable (Tesseract absent)"

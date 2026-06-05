@@ -186,8 +186,18 @@ IngestResult = {
   doc_decision: "native"|"ocr_images"|"force_full_doc_ocr"|"review",
   trustworthy_for_extraction: bool,    # FALSE iff doc_decision == review (Codex)
   ocr_engine_used: "none"|"rapidocr",  # Phase-6 scope; ocrmypdf values reserved (§2.5/§8)
-  per_page: [ {page_no, native_chars, hit_rate, diagnosis,
-               ocr_applied: bool, confidence_grade, flagged: bool, flag_reason} ],
+  per_page: [ {page_no, native_chars, hit_rate, parse_score, ocr_score,
+               diagnosis, ocr_applied: bool, confidence_grade,
+               flagged: bool, flag_reason} ],
+               # hit_rate = the gate's wordlist-hit-rate of the page's native text
+               #   (None when no alpha tokens — never a fake 0.0).
+               # confidence_grade = Docling mean_grade rendered as its string
+               #   (None when absent or UNSPECIFIED — nan-safe, never a fake grade).
+               # parse_score / ocr_score = the RAW Docling floats (kept as debug
+               #   fields alongside hit_rate/confidence_grade; nan -> None).
+               # ocr_applied = PAGE-ACCURATE: True only for pages OCR actually ran
+               #   on (every page under force_full_doc_ocr; only the image_only /
+               #   garbled_text pages under ocr_images; never under native/review).
   bates: [ {value, page_no, bbox} ],   # captured SEPARATELY, keeps provenance
   warnings: [str],                     # e.g. "OCRmyPDF unavailable: Tesseract absent"
 }
@@ -202,6 +212,19 @@ IngestResult = {
   to the human gate first. A `review` doc is evidence-for-inspection, never an
   automated-extraction source. `ocr_engine_used` reflects what actually ran
   ("none" when review skips OCR).
+- **The ugly-PDF failure contract (§2.6 — skip-and-flag).** A convert runs with
+  `raises_on_error=False` and a `document_timeout` (default 300 s) ceiling. When
+  Docling reports `ConversionStatus.FAILURE` (corrupt / encrypted / unparseable
+  PDF), ingest does **not** dereference the bad document for extraction: it
+  short-circuits to `doc_decision="review"`, `trustworthy_for_extraction=false`,
+  `ocr_engine_used="none"`, a `warnings` entry naming the status (+ any
+  `res.errors` summary), `n_pages` from whatever pages exist (0 is fine), and a
+  flagged `per_page` entry per existing page (`[]` if none). A minimal
+  `DoclingDocument` JSON is still written when a document object exists (else
+  `docling_json_path=""` + a warning). `PARTIAL_SUCCESS` proceeds but adds a
+  warning and flags every page; `SUCCESS` proceeds normally. The same flagged
+  path catches the rare backend that raises despite `raises_on_error=False` (the
+  convert is wrapped) — the contract is "no crash, return a flagged result".
 - **`ocr_engine_used` is Phase-6-scoped.** Only `"none"` / `"rapidocr"` occur in
   this phase — the OCRmyPDF seam detects/skips/flags but does not itself OCR
   (Tesseract absent). The `"ocrmypdf"` / `"ocrmypdf+rapidocr"` values are
@@ -210,10 +233,13 @@ IngestResult = {
 - **Bates post-pass:** a word-boundary-anchored regex over the `DoclingDocument`
   text items captures Bates stamps **separately** with each one's `{page_no, bbox}`
   (from `item.prov`). Leads-not-verdicts: capture + tag, never rewrite the text.
-- **Degraded-page flagging:** `flagged` is set from `res.confidence`
-  (`ocr_score`/`mean_grade`/`low_grade` per page; `nan` handled per modality) plus
-  the gate's `uncertain_review`/`image_only`-without-OCR diagnoses. Flagged pages
-  are surfaced for a human; nothing degraded is published as fact.
+- **Degraded-page flagging:** `flagged` is set from `res.confidence` (the real
+  `ocr_score` per page below the degraded floor; the page's `mean_grade` is also
+  surfaced as the `confidence_grade` string, with `nan`/`UNSPECIFIED` → `None`)
+  plus the gate's `uncertain_review`/`image_only`-without-OCR diagnoses (the
+  latter uses the page-accurate `ocr_applied`, so a page OCR actually ran on is
+  not spuriously flagged "not OCR'd"). Flagged pages are surfaced for a human;
+  nothing degraded is published as fact.
 
 ---
 
