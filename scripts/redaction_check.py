@@ -153,3 +153,79 @@ def check_incremental_save(path) -> list[RedactionFinding]:
             },
         )
     ]
+
+
+# docinfo keys worth surfacing as a metadata LEAD (author/tool/title/dates can
+# reveal names, internal filenames, software, or edit history). The value of any
+# present key is a RAW string -> local_evidence; the KEY is a publishable field
+# name -> detail.
+_DOCINFO_LEAK_KEYS = (
+    "/Author",
+    "/Creator",
+    "/Producer",
+    "/Title",
+    "/Subject",
+    "/Keywords",
+    "/CreationDate",
+    "/ModDate",
+)
+
+
+def check_metadata(path) -> list[RedactionFinding]:
+    """LEAD: document properties (docinfo + XMP) carry author / creator /
+    producer / title / dates. A leaked name, internal filename, or software
+    string is a lead (often it is just our own author/tool -- hence severity
+    medium at the orchestrator). READ-ONLY (never edits).
+
+    The never-publish-raw split: present field NAMES (``/Author``,
+    ``dc:creator``, ...) go in ``detail["fields"]``; the raw VALUES go in
+    ``local_evidence`` keyed by field name."""
+    import pikepdf
+
+    fields: list[str] = []
+    local: dict = {}
+    with pikepdf.open(str(path)) as pdf:
+        docinfo = pdf.docinfo
+        for key in _DOCINFO_LEAK_KEYS:
+            if key in docinfo:
+                value = str(docinfo[key]).strip()
+                if value:
+                    fields.append(key)
+                    local[key] = value
+        # XMP packet (namespaced keys). open_metadata() reads the dublin-core /
+        # xmp fields; the value can be a str or a list (e.g. dc:creator).
+        with pdf.open_metadata() as meta:
+            for xmp_key in sorted(meta.keys()):
+                try:
+                    value = meta.get(xmp_key)
+                except (KeyError, ValueError):  # pragma: no cover - defensive
+                    continue
+                rendered = _render_xmp_value(value)
+                if rendered:
+                    fields.append(xmp_key)
+                    local[xmp_key] = rendered
+    if not fields:
+        return []
+    return [
+        RedactionFinding(
+            check="metadata",
+            severity="low",
+            page=None,
+            summary=(
+                f"{len(fields)} document-metadata field(s) present "
+                f"(author/tool/title/dates) -- a lead to review for leaked names"
+            ),
+            detail={"fields": fields},
+            local_evidence=local,
+        )
+    ]
+
+
+def _render_xmp_value(value) -> str:
+    """Render an XMP value (str | list | None) as a single raw string for
+    local_evidence (empty string => skip)."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v).strip() for v in value if str(v).strip())
+    return str(value).strip()

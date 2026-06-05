@@ -138,3 +138,41 @@ def test_check_incremental_save_clean_single_rev_no_finding(clean_single_rev_pdf
     from scripts.redaction_check import check_incremental_save
 
     assert check_incremental_save(clean_single_rev_pdf) == []
+
+
+# --------------------------------------------------------------------------- #
+# 3c. metadata check (pikepdf docinfo + XMP).
+# --------------------------------------------------------------------------- #
+
+
+def test_check_metadata_flags_author_title_value_local_not_detail(metadata_pdf):
+    from scripts.redaction_check import check_metadata
+
+    findings = check_metadata(metadata_pdf)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.check == "metadata"
+    assert f.page is None
+    # detail lists field NAMES only -- never the raw values.
+    detail_blob = str(f.detail)
+    assert "Jane Author" not in detail_blob
+    assert "Internal Draft" not in detail_blob
+    # the present field names ARE in detail (publishable facts).
+    fields = f.detail["fields"]
+    assert any("Author" in name or "creator" in name for name in fields)
+    # raw VALUES live ONLY in local_evidence.
+    raw_blob = str(f.local_evidence)
+    assert "Jane Author" in raw_blob
+    assert "Internal Draft" in raw_blob
+
+
+def test_check_metadata_clean_pdf_minimal_or_no_leak(clean_pdf):
+    # fpdf2 stamps a /Producer (the fpdf2 version) but no author/title/creator
+    # name. The check may surface the producer as a (low) lead, but must NEVER
+    # invent an author/title leak. If it fires, the author/title fields are absent
+    # and no human name string is present.
+    from scripts.redaction_check import check_metadata
+
+    findings = check_metadata(clean_pdf)
+    for f in findings:
+        assert "Jane Author" not in str(f.local_evidence)
