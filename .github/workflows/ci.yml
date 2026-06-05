@@ -1,0 +1,49 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      heavy:
+        description: "Run the heavy (docling/spacy/xray) suite"
+        type: boolean
+        default: false
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5      # puts uv + uvx on PATH for the mcp-sqlite smoke
+      - name: Create venv + install OFFLINE deps only (NO 2 GB stack)
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install -U pip
+          python -m pip install -r requirements-offline.txt
+      - name: detect_tier capability report (informational; never fails the job)
+        run: . .venv/bin/activate && python scripts/detect_tier.py --json || true
+      - name: Offline suite + smoke (mcp-sqlite smoke runs -- uvx is on PATH)
+        run: |
+          . .venv/bin/activate
+          python -m pytest -m "not docling and not spacy and not xray and not tsa" -q
+  heavy:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.heavy }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Create venv + install ALL deps (~2 GB models on first run)
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install -U pip
+          python -m pip install -r requirements-dev.txt  # full stack incl. en_core_web_lg (pinned by URL)
+      - name: Heavy suite (docling/spacy/xray)
+        run: |
+          . .venv/bin/activate
+          python -m pytest -m "docling or spacy or xray" -q
