@@ -1,3 +1,13 @@
+---
+title: Magpie Phase 8 -- investigate (verification gate + citation anchor) (plan)
+date: 2026-06-05
+phase: 8
+plan_review: APPROVE (Codex, round 3, 2026-06-05)
+codex_plan_review_status: approved
+codex_plan_review_approved_hash: 2ab89d7e3e61bdf5073aa63e07028c24ab46d4607da5348fa104abb18424a0e7
+codex_thread_id: 019e95ea-d5d9-72f0-87db-e1bbd50a4c42
+---
+
 # Phase 8 -- investigate (verification gate + citation anchor) Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (or
