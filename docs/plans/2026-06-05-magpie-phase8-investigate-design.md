@@ -41,11 +41,15 @@ document and a published finding. Three deliverables (plan Tasks 8.1-8.3):
   (evidence-before-claim) -> redacted Librarian output. Encodes the section-7
   rigor guardrails.
 
-`investigate` shares **no code** with the Track-A analysis modules. Its only
-upstream contract is `ingest`'s `IngestResult` + the DoclingDocument JSON; its
-only downstream contract is the Librarian findings output and the section-7
-citation schema. It consumes `redaction-check` leads and `redact-output` at the
-publish edge (both Phase 7).
+`scripts/citation.py` shares **no code** with the Track-A analysis modules. The
+`investigate` **skill** deliberately reuses ONE public Track-A helper --
+`derive.keyword_mask` (the shared word-boundary ICE/polICE guardrail, exactly as
+`recipe.py` does) -- at its keyword-guard step (section 6); that single,
+intentional reuse is the only Track-A coupling. The only upstream contract is
+`ingest`'s `IngestResult` + the DoclingDocument JSON; the only downstream contract
+is the Librarian findings output and the section-7 citation schema. The skill
+consumes `redaction-check` leads and `redact-output` at the publish edge (both
+Phase 7).
 
 ## 1. The upstream seam -- and the refuse-on-`review` contract
 
@@ -53,9 +57,14 @@ publish edge (both Phase 7).
 `doc_id`), `docling_json_path`, `schema_name`/`schema_version`,
 `trustworthy_for_extraction`, `doc_decision`, `per_page[]`.
 
-**Hard refusal (safety-critical, the seam `ingest` already documents):** if
-`trustworthy_for_extraction == false` (a `review` doc -- handwriting / garbled /
-weak-signal pages dominate), `investigate` **refuses to auto-extract**. A `review`
+**Hard refusal (safety-critical, the seam `ingest` already documents):**
+`investigate` keys on the **`trustworthy_for_extraction` boolean**, NOT on
+`doc_decision`. `ingest` sets `trustworthy_for_extraction = not (review or
+partial)` (`scripts/ingest.py:721`), so it is false for BOTH a `review` decision
+(handwriting / garbled / weak-signal pages dominate) AND a `PARTIAL_SUCCESS`
+conversion. `investigate` **refuses to auto-extract** from any non-trustworthy
+result -- an implementer must check the boolean, never `doc_decision == review`
+(which would let a flagged partial-success doc leak through). A non-trustworthy
 doc is evidence-for-human-inspection, never an automated-extraction source. This
 is the first thing the skill checks; there is no override flag in v1.
 
@@ -79,7 +88,13 @@ A dataclass; native-typed and JSON-able. Fields:
 - `claim_text` -- the extractor's claim. **LOCAL-only raw** (may name a third
   party).
 - `verbatim_quote` -- the exact supporting span, an **exact substring of the
-  cited block's `.text`** (`[start, end)`). **LOCAL-only raw.**
+  cited block's `.text`** (`[start, end)`), obeying the v1 quote contract (2.4).
+  **LOCAL-only raw.**
+- `context_prefix` / `context_suffix` -- a small fixed-width window of the block's
+  `.text` immediately before / after the span (the W3C TextQuoteSelector
+  prefix/suffix pattern). **LOCAL-only raw.** Used to disambiguate duplicate spans
+  and to stop a short quote relocating into the interior of a larger token
+  elsewhere (2.2).
 - `doc_id` -- `ingest` `source_sha256` (artifact identity).
 - `doc_schema_name` / `doc_schema_version` -- the SOURCE doc schema
   (`"DoclingDocument"` / `"1.10.0"`), so a later Docling schema bump is
@@ -112,13 +127,18 @@ block_index, char_start, char_end, matched_text, bbox, n_matches}`. Ordered:
 1. **`exact`** -- `texts[block_index].text[char_start:char_end]` hashes to
    `text_hash`. Offsets intact; this also disambiguates duplicates (the offsets
    pick the right occurrence).
-2. **`relocated`** -- exact failed (offsets shifted by an OCR re-run), AND
-   `verbatim_quote` occurs **exactly once** across all blocks' `.text`. Resolve to
-   that unique block + recomputed offsets; confirm `sha256`. This is the
-   OCR-resilience path (the required round-trip test).
-3. **`ambiguous`** -- exact failed AND `verbatim_quote` occurs **more than once**
-   (across or within blocks). **Not a clean resolution** -- we never silently pick
-   one. Record `n_matches`; the citation-checker surfaces it as mis-cited.
+2. **`relocated`** -- exact failed (offsets shifted by an OCR re-run). Search all
+   blocks' `.text` for `verbatim_quote` as a **word-boundary-aligned** substring
+   (edges on token boundaries, so a short quote cannot relocate into the
+   *interior* of a larger token elsewhere), and confirm the candidate's
+   surrounding text matches the stored `context_prefix` / `context_suffix`.
+   Resolve ONLY if exactly ONE candidate survives both the boundary and context
+   checks; recompute offsets and confirm `sha256`. This is the OCR-resilience path
+   (the required round-trip test).
+3. **`ambiguous`** -- exact failed AND **more than one** candidate survives the
+   boundary + context checks (a genuinely repeated span the context window cannot
+   disambiguate). **Not a clean resolution** -- we never silently pick one. Record
+   `n_matches`; the citation-checker surfaces it as mis-cited.
 4. **`block`** -- exact + relocated failed (the characters themselves changed,
    e.g. OCR `rn`->`m`), BUT the stored `block_index` is in range and its
    `page_no` matches. Block-level localization only; offsets `None`. **Degraded.**
@@ -135,11 +155,26 @@ an auto-pass.
 A block's `prov` is a LIST (an item split across a page boundary has one prov
 per fragment, each with its own bbox + charspan). The record stores `n_prov`
 locally; the human card's `page_no`/`bbox` come from the prov entry whose
-`charspan` **contains** the quoted `[char_start, char_end)` (`prov_index`). If no
-single prov contains it (or the block is degraded), the card drops to page-level
-geometry (`bbox = None`) and is flagged -- we never point a precise box at the
-wrong fragment. For the common single-prov block, the containing prov is
-`prov[0]` and `charspan` is `[0, len(text))`, so this reduces to the simple case.
+`charspan` **contains** the quoted `[char_start, char_end)` (`prov_index`) -- its
+`page_no` is the card's page, its `bbox` the card's box. **v1 requires the quoted
+span to be contained within a SINGLE prov fragment:** if it straddles two prov
+fragments (a block wrapping across a page boundary), `build_anchor` REJECTS it
+(the citation-checker flags it), exactly like a cross-block quote (2.4). This
+keeps `page_no` a faithful scalar -- a lone page number never misstates where
+multi-fragment evidence lives. For the common single-prov block the containing
+prov is `prov[0]` with `charspan == [0, len(text))`, so this reduces to the
+simple case.
+
+### 2.4 The v1 quote contract (what `build_anchor` accepts)
+
+A valid v1 `verbatim_quote` is: **non-empty and not whitespace-only**; an **exact
+substring of ONE block's `.text`** (never `.orig`, never spanning two blocks);
+**contained within a single `prov` fragment** of that block (2.3); and
+**word-boundary-aligned** at both edges. `build_anchor` REJECTS anything else
+(empty/blank, cross-block, cross-prov-fragment, or a bare mid-token sub-span); the
+extractor is instructed to honor it and the citation-checker enforces it. This is
+the contract that makes `text_hash` stable and `relocated` safe -- without it a
+short quote could relocate into the interior of a larger token (2.2).
 
 ## 3. Never-publish-raw -- three local-only leak surfaces
 
@@ -156,12 +191,28 @@ non-raw anchor + status: `doc_id, page_no, block_index, block_self_ref,
 text_hash, bbox, checker_level, verifier_result, schema_name/version`. It is NOT
 the published finding -- it carries no `claim_text`.
 
-The **published finding** is assembled by the SKILL, not by `citation.py`:
-`redact-output(claim_text)` (uninvolved names -> initials, structured PII ->
-typed placeholders) + `public_anchor(record)` + the verification status. So
-`citation.py` never imports spaCy / `redact_output` and stays pure; redaction
-happens at the skill's publish edge, where the officials / `keep_names` context
-already lives.
+The **published finding** is assembled by the SKILL, not by `citation.py`. The
+skill runs `pii_sweep` over the cited source spans to collect the flagged
+`local_texts`, then sanitizes the claim with **`redact_note(claim_text,
+local_texts, keep_names=..., officials=...)`** -- the Phase-7 publish-safe path
+for narrative built from KNOWN flagged texts (it replaces each known flagged
+source-PII string the claim repeats: uninvolved names -> initials, structured PII
+-> typed placeholders). The published finding = the redacted claim +
+`public_anchor(record)` + verification status. So `citation.py` never imports
+spaCy / `redact_output` and stays pure; redaction happens at the skill's publish
+edge, where the officials / `keep_names` context already lives.
+
+**Honest limit (respecting `redact_output`'s locked scope).** `redact_note` only
+redacts KNOWN flagged texts -- it deliberately does NOT autonomously NER-scan
+novel claim narrative (`scripts/redact_output.py:186-205,261-268`; the scope lock
+exists to avoid false confidence on free text). So NOVEL uninvolved-third-party
+PII an extractor writes into a claim that was NOT a flagged source text is NOT
+auto-redacted. This is mitigated, not solved: (a) a skill GUARDRAIL instructs the
+extractor to reference people by ROLE or already-public official names and never
+introduce an uninvolved third party's name into a claim; (b) the HUMAN GATE is
+where a reviewer rejects / edits any claim that names an uninvolved party (and an
+edit re-runs verification, section 5). An autonomous novel-narrative PII scanner
+is a documented later-layer item, not a v1 hand-wave.
 
 ## 4. The verifier + citation-checker (Task 8.2)
 
@@ -217,11 +268,15 @@ mechanical complement to the semantic re-check.
    consciously resolved. The human accepts / edits / rejects. **Solo
    single-reviewer sign-off is the only required gate** (this is mostly solo
    work); a two-reviewer sign-off is optional + logged, NEVER required. Only
-   human-ACCEPTED claims proceed.
-5. **Output (redacted).** Accepted findings route to Librarian as
-   `redact-output(claim_text)` + `public_anchor` + status. The raw
-   `CitationRecord` + verifier/checker reasoning stay on the LOCAL citations log.
-   `redaction-check` leads on the source PDF can feed the investigation (a
+   human-ACCEPTED claims proceed. **Editing invalidates verification:** if the
+   human edits a claim's text or its quote, the skill re-stamps the anchor
+   (`build_anchor`) and **re-runs the citation-checker + advisory verifier** on
+   the edited claim before it can be accepted -- an edited claim never ships under
+   a verdict that only applied to the pre-edit text.
+5. **Output (redacted).** Accepted findings route to Librarian as the
+   **`redact_note`-sanitized** claim (section 3) + `public_anchor` + status. The
+   raw `CitationRecord` + verifier/checker reasoning stay on the LOCAL citations
+   log. `redaction-check` leads on the source PDF can feed the investigation (a
    suspected bad redaction is a lead to investigate, not a verdict).
 
 ## 6. Rigor guardrails (section 7, encoded as explicit skill checks)
@@ -262,22 +317,33 @@ Three tiers, escalating realism:
   a fixture, simulate an OCR re-run that PREPENDS a header (shifts char offsets)
   and inserts an earlier block (shifts `block_index`), assert level-1 `exact`
   FAILS but level-2 `relocated` RESOLVES via the hash.
-- **Tier 2 (docling-marked -- the "prototype + validate on real ingested output
-  early" step the design demands).** A `@pytest.mark.docling` test ingests a real
-  PDF through the ACTUAL Docling + RapidOCR pipeline (reusing the Phase-6
-  fpdf2-native + Pillow-scan conftest fixtures), builds anchors over the
-  NATIVE-ingest JSON, and resolves them against the OCR-ingest JSON of the SAME
-  content -- exercising REAL cross-pass offset drift. Asserts clean spans survive
-  (`exact`/`relocated`) and mangled spans degrade honestly (`block`/`page`), NOT a
-  false `exact`. This validates the invented format against real Docling
-  serialization + real OCR drift, with **no PII and no external-PDF licensing
-  risk** (the source PDF is generated, but the Docling output + OCR noise are
-  real -- and the source-PDF provenance is irrelevant to validating the anchor
-  over Docling's output).
-- **Tier 3 (Task 11.2, deferred).** The real Simpsonville ingested PDFs behind
-  the local env var (never committed). Filed as an `autonomous-safe` follow-up so
-  the anchor is re-validated against genuinely-messy real-world OCR before
-  release. The genuinely-public-domain sample corpus is Task 11.1.
+- **Tier 2 (docling-marked, generated source).** A `@pytest.mark.docling` test
+  ingests a generated PDF through the ACTUAL Docling + RapidOCR pipeline (reusing
+  the Phase-6 fpdf2-native + Pillow-scan conftest fixtures), builds anchors over
+  the NATIVE-ingest JSON, and resolves them against the OCR-ingest JSON of the
+  SAME content -- exercising REAL cross-pass offset drift. Asserts clean spans
+  survive (`exact`/`relocated`) and mangled spans degrade honestly
+  (`block`/`page`), NOT a false `exact`. Validates the format against real Docling
+  serialization + real OCR drift with no committed binary.
+- **Tier 2b (real-world PDF, env-var-gated -- the "prototype + validate on real
+  ingested output early" step section 7 / plan 8.1 demand).** Validate the anchor
+  against a genuinely messy, real-world public record: the **City of Greenville
+  RFP No. 21-3746 (LPR/Flock) FOIA response** (`Responsive records (1).pdf`, 96
+  pages -- DocuSign-stamped pages, repeating "RFP No. ... -- Page N" footers,
+  affidavit/forms, and OCR'd tabular pages: real item fragmentation). A
+  `@pytest.mark.docling` test gated on a local env var (e.g.
+  `MAGPIE_PHASE8_REAL_PDF`) ingests the pointed-at PDF, builds anchors over the
+  real DoclingDocument JSON, resolves them (including across a re-ingest pass),
+  and asserts the fallback chain behaves on real-world layout. **The PDF is used
+  LOCALLY only and is NEVER committed** (it is a public SC-FOIA record, but the
+  same env-var discipline as the Simpsonville corpus keeps the repo binary-free
+  and PII-free; the test SKIPS when the env var is unset, so CI stays hermetic).
+  This is run once during implementation and the empirical result recorded in the
+  plan / PR (the early real-world validation the invented format requires).
+- **Tier 3 (Task 11.2, deferred).** The real Simpsonville ingested PDFs behind a
+  local env var (never committed). Filed as an `autonomous-safe` follow-up so the
+  anchor is re-validated against the flagship corpus before release. The
+  genuinely-redistributable public sample corpus is Task 11.1.
 
 All Phase-8 fixtures are SYNTHETIC and ASCII-only.
 
@@ -318,10 +384,19 @@ All Phase-8 fixtures are SYNTHETIC and ASCII-only.
 ## 11. Provenance
 
 Brainstormed 2026-06-05 with Codex standing in as the critic partner (autonomous
-mode). Codex's pushback reshaped four things: the verifier is an advisory
-adversarial re-check, NOT a spec-compliant independent verifier (the human gate is
-the only real verifier in Layer 0-1); real-Docling validation is required early
-(Tier 2), not synthetic-only; multi-`prov` blocks select geometry by
+mode). Codex's brainstorm pushback reshaped four things: the verifier is an
+advisory adversarial re-check, NOT a spec-compliant independent verifier (the
+human gate is the only real verifier in Layer 0-1); real validation is required
+early, not synthetic-only; multi-`prov` blocks select geometry by
 charspan-containment, never naive `prov[0]`; and duplicate/ambiguous spans fail
-clean resolution rather than being silently picked. Source of truth: design
-section 7 + plan Tasks 8.1-8.3.
+clean resolution rather than being silently picked. The Codex **design-review**
+round then folded seven more fixes: refuse on the `trustworthy_for_extraction`
+boolean (not `doc_decision`, so `PARTIAL_SUCCESS` is caught); the v1 quote
+contract (non-empty, single-block, single-prov-fragment, word-boundary-aligned)
+plus stored `context_prefix`/`context_suffix` so `relocated` cannot slip into a
+larger token's interior; a human edit re-runs verification (no stale verdict); the
+publish edge uses `redact_note` with known flagged texts (the correct Phase-7 API)
+plus an honest limit on novel-narrative PII; and the early real-world validation
+runs against the Greenville RFP 21-3746 FOIA response (Tim's call: a real public
+record, used locally / never committed). Source of truth: design section 7 + plan
+Tasks 8.1-8.3.
