@@ -141,9 +141,27 @@ def test_multiple_uninvolved_names_all_initialed():
 
 def test_import_redact_output_does_not_import_spacy():
     # The default person-span provider is a LAZY spaCy edge; merely importing the
-    # module (and running the fake-span core) must not load spaCy.
-    assert "scripts.redact_output" in sys.modules
-    assert "spacy" not in sys.modules
+    # module must not load spaCy. Checked in a FRESH subprocess: in the shared
+    # full-suite interpreter an earlier (spacy-marked) test loads spaCy, which
+    # would pollute sys.modules and make an in-process check a false failure. A
+    # clean subprocess proves the IMPORT itself stays ML-free.
+    import subprocess
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    code = (
+        "import sys; import scripts.redact_output; "
+        "sys.exit(1 if 'spacy' in sys.modules else 0)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=str(repo_root),
+        capture_output=True,
+    )
+    assert result.returncode == 0, (
+        "importing scripts.redact_output pulled spaCy at import time "
+        f"(stderr: {result.stderr.decode('utf-8', 'replace')})"
+    )
 
 
 # --------------------------------------------------------------------------- #
