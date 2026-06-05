@@ -146,12 +146,24 @@ class BoundingBox(BaseModel):
 ```
 
 - Iterate everything with `for item, level in doc.iterate_items(): item.prov`.
-- A bbox can be normalized origin via `bbox.to_bottom_left_origin(page_height)`
-  (page size is on `doc.pages[page_no].size`).
-- **OCR cells carry their own quality signal:** each OCR `TextCell` is built with
-  `from_ocr=True` and a per-cell `confidence`, and is dropped if
-  `confidence < confidence_threshold` (verified in the OCR model code). This is a
-  per-cell provenance flag the degraded-page logic (Task 6.2) can read.
+- **Coordinate-origin trap (verified):** parsed *page cells* in the backend are
+  normalized **TOPLEFT**, but the assembled `DoclingDocument` *item* provenance
+  came back **BOTTOMLEFT** in the probe (`origin=BOTTOMLEFT`). Normalize
+  explicitly — `bbox.to_top_left_origin(page_height)` /
+  `to_bottom_left_origin(page_height)`, height from `doc.pages[page_no].size` —
+  never assume an origin. **The supported ingest contract is the item-level
+  `{page_no, bbox, charspan}`** via `doc.iterate_items()`; if a task needs
+  parsed-page *char* cells, assert their presence at runtime rather than assuming
+  char-level retention survives assembly.
+- **OCR-cell confidence is engine-specific (corrected):** OCR `TextCell`s carry
+  `from_ocr=True` + a per-cell `confidence`, but only the **EasyOCR** path culls
+  cells below a `confidence_threshold`. The **RapidOCR** path (our default) does
+  **not** — its knob is `text_score` on `RapidOcrOptions`, and `RapidOcrOptions`
+  has **no** `confidence_threshold` field (verified; it exists only on
+  `EasyOcrOptions`). So low-confidence RapidOCR cells **can still arrive** in the
+  document — the degraded-page logic (Task 6.2) must apply **its own** thresholds
+  (`res.confidence` scores + `text_score` + cell `confidence`), not assume Docling
+  pre-culled them.
 - This `{page_no, bbox, charspan}` triple is the seam to the **§7 citation-anchor
   fallback chain** (char-offset → text-hash → block-index → page) that Phase 8
   `investigate` builds — ingest must preserve it losslessly.
@@ -179,13 +191,41 @@ Docling computes a per-document + per-page **confidence report** on the
 
 ### 2.5 PDF backend
 
-- Verified importable: `DoclingParseV4DocumentBackend`,
-  `DoclingParseV2DocumentBackend`, `DoclingParseDocumentBackend` (v1), and
-  `PyPdfiumDocumentBackend`. `DoclingParseV4` is the current default in 2.97.
-- Backend is set per-format via `PdfFormatOption(backend=...)`. The
-  `docling-parse` backends are what yield char/word/line cell geometry; pypdfium2
-  is a lighter alternative. Backend choice → §9 (charspan fidelity matters for
-  citations).
+- **Verified default (corrected):** `PdfFormatOption().backend` is
+  **`DoclingParseDocumentBackend`** in 2.97 — *not* V4.
+  `DoclingParseV4DocumentBackend` / `…V2…` import as **subclasses** of it (no
+  import-time deprecation warning observed here, but they are not the default).
+  The default backend and `PyPdfiumDocumentBackend` now share a
+  `ManagedPdfiumDocumentBackend` base.
+- Backend is set per-format via `PdfFormatOption(backend=...)`. The default
+  `DoclingParseDocumentBackend` yields the char/word/line cell geometry;
+  `PyPdfiumDocumentBackend` is the lighter alternative. Backend choice → §9
+  (`DoclingParseDocumentBackend` vs `PyPdfium`) — charspan fidelity matters for
+  the citation anchor.
+
+### 2.6 Operational controls — `convert()` limits, offline, ugly PDFs, explicit profile
+
+Verified controls + the failure-mode decisions the wrapper (Task 6.2) must make —
+Docling's defaults are **not** safe to inherit blindly:
+
+- **Large-doc guards (on `convert()`, signature verified):** `max_num_pages`,
+  `max_file_size`, `page_range`, `raises_on_error`. Set these so a thousand-page
+  or oversized/malicious PDF can't run unbounded; pair with `document_timeout`
+  (a `PdfPipelineOptions` field) per doc.
+- **Explicit ingest profile (don't inherit defaults):** Docling defaults
+  `do_table_structure=True` and `generate_parsed_pages=False`. Ingest sets these
+  deliberately — likely `do_table_structure` ON (FOIA tables matter) but the
+  enrichments (`do_picture_classification`, `do_formula_enrichment`,
+  `do_code_enrichment`) OFF for latency, and `generate_parsed_pages=True` only if
+  the gate wants page cells. A plan decision, not a default.
+- **Offline / model fetch:** first run downloads layout + OCR models from
+  HuggingFace/ModelScope (§3). Decide: prefetch (`docling-tools models download`
+  + a pinned `artifacts_path`) vs fail-fast with a clear message when offline.
+  Air-gapped operators (a real FOIA posture) need the prefetch path.
+- **Ugly PDFs:** encrypted/password-protected, corrupt, digitally-signed, and
+  tagged PDFs must be handled by the wrapper — catch `convert()` errors
+  (`raises_on_error=False` or try/except) and **flag for a human** rather than
+  emit a partial/garbage doc. (Decisions enumerated in §9.)
 
 ---
 
@@ -233,41 +273,55 @@ programs that are ABSENT on this box** (verified via `Get-Command`):
 
 | Binary | Needed for | Present here? |
 |---|---|---|
-| `tesseract` | OCR (required for any run) | **MISSING** |
-| `ghostscript` (`gswin64c`) | PDF rasterization + PDF/A | **MISSING** |
-| `qpdf` (via pikepdf) | PDF repair | MISSING (pikepdf vendors libqpdf — ok) |
+| `tesseract` | OCR — **hard-required** for any OCRmyPDF run | **MISSING** |
+| `ghostscript` (`gswin64c`) | **conditional:** PDF/A output, or PDF rasterization when `pypdfium2` isn't used (pypdfium2 IS installed → not needed for a basic OCR run) | **MISSING** |
+| `qpdf` | PDF repair | OK — pikepdf vendors libqpdf |
 | `unpaper` | `--clean` / `--clean-final` only | MISSING (optional) |
 | `pngquant` / `jbig2enc` | `--optimize 2/3` only | MISSING (optional) |
 
-⇒ **OCRmyPDF cannot run here until Tesseract + Ghostscript are installed**
-(Windows: `winget install UB-Mannheim.TesseractOCR` + `winget install
-ArtifexSoftware.GhostScript`, or `choco install tesseract ghostscript`). This is
-a setup-doctor (Phase 10) concern; ingest must **detect-and-skip** OCRmyPDF when
-the binaries are absent rather than crash.
+⇒ **Tesseract is the only hard blocker** (corrected — Codex). With `pypdfium2`
+present, **Ghostscript is not required** for a basic OCR / re-OCR run; it's needed
+only for PDF/A output or as a Ghostscript-rasterization alternative. So the gate
+is: **require `tesseract`; treat `ghostscript` as conditional.** Windows install
+(setup-doctor, Phase 10): `winget install UB-Mannheim.TesseractOCR` (add
+`ArtifexSoftware.GhostScript` only if PDF/A is wanted). Ingest must
+**detect-and-skip** OCRmyPDF (catch `MissingDependencyError`) and flag — never
+crash — when Tesseract is absent.
 
-**Policy flags (mutually exclusive — verified):**
+**OCRmyPDF has two distinct, NON-combinable modes** (the [critical] correction:
+`--redo-ocr` is **incompatible with `--deskew`** — and with `--clean`,
+`--force-ocr`, `--remove-background`; redo-ocr preserves the page raster, so it
+cannot also alter it). Pick one per run:
+
+*Re-OCR mode* — exactly one text policy (mutually exclusive):
 
 | Flag / kwarg | Behavior |
 |---|---|
-| `--skip-text` / `skip_text=True` | leave pages that already have text untouched |
-| `--redo-ocr` / `redo_ocr=True` | strip existing OCR text, OCR again (best for a *bad* existing text layer / mixed digital+scanned) |
-| `--force-ocr` / `force_ocr=True` | rasterize **all** content and OCR (failed prior OCR, watermarks) |
-| `--deskew` / `deskew=True` | straighten skewed scans (Leptonica; no `unpaper` needed) |
+| `skip_text=True` | leave pages that already have text untouched |
+| `redo_ocr=True` | strip existing OCR text + OCR again — best for a *bad* existing text layer / mixed digital+scanned (NOT combinable with deskew/clean/force) |
+| `force_ocr=True` | rasterize **all** content and OCR (failed prior OCR, watermarks) |
+
+*Image-cleanup mode* — `deskew=True` straightens skewed scans (Leptonica; no
+`unpaper`). Combine with a plain OCR pass or `force_ocr`, **never** with
+`redo_ocr`. So "deskew a poisoned-text-layer scan" is **two passes**, not one
+flag combination.
 
 **Python API (verified signature):** `ocrmypdf.ocr(input_file_or_options,
 output_file=None, *, language=None, image_dpi=None, output_type=None,
 sidecar=None, jobs=None, deskew=…, redo_ocr=…, force_ocr=…, skip_text=…, …)` —
 the first arg accepts **either** a path **or** an `OcrOptions` object (modern
 form). `from ocrmypdf.exceptions import MissingDependencyError` imports cleanly
-(verified) and is raised when Tesseract/Ghostscript are absent — the catchable
+(verified) and is raised when the hard dep (Tesseract) is absent — the catchable
 signal for the detect-and-skip seam.
 
 **Architectural note (→ §9):** OCRmyPDF (Tesseract) and Docling+RapidOCR are two
 OCR engines. The coherent split: **RapidOCR-via-Docling = the guaranteed OCR
-path** (no system deps); **OCRmyPDF = optional preprocessing** (deskew, and
-`--redo-ocr` to fix a poisoned text layer) used only when its binaries exist.
-Output of OCRmyPDF is a new PDF Docling then ingests (`do_ocr=False`, since the
-text layer is now clean).
+path** (no system binaries); **OCRmyPDF = optional, Tesseract-gated
+preprocessing** with two *separate* uses — (a) `deskew` to straighten a skewed
+scan before Docling OCRs it, and (b) `redo_ocr`/`force_ocr` to replace a poisoned
+text layer — each producing a new PDF Docling then ingests (`do_ocr=False` after
+a clean redo). The two modes run as separate passes (not chained), and the whole
+path is skipped-with-a-flag when Tesseract is absent.
 
 ---
 
@@ -295,6 +349,13 @@ blocks (no new heavy dep needed):
   layer (mojibake, bad embedded OCR) scores low and forces re-OCR even though
   chars-per-page is high. **[→ §9] wordlist source** — a small bundled list, or
   Python's `str` heuristics; must stay dependency-light and deterministic.
+- **guardrails against false re-OCR (Codex):** the hit-rate is only meaningful
+  once a page clears a **minimum alphabetic-token floor** — a sparse, tabular,
+  numeric, acronym-heavy, or legitimately non-English page must NOT be force-
+  re-OCR'd just for a low hit-rate. Combine the hit-rate with a char-density /
+  glyph-sanity check, support a **language override**, and when the signal is weak
+  return **"uncertain → flag for a human"**, never an automatic force-OCR (the
+  same leads-not-verdicts stance as the rest of the suite).
 - **why this gate is needed (not redundant with Docling):** with `do_ocr=True`,
   Docling only OCRs *bitmap regions not covered by programmatic text* — it
   **trusts a present text layer even if it is garbage**. Our dictionary-hit-rate
@@ -339,20 +400,29 @@ underlying text.
 ## 9. Open questions → brainstorming (NOT decided at this gate)
 
 1. **OCR composition.** Recommend **RapidOCR-via-Docling as the default,
-   no-system-dep OCR path**, with **OCRmyPDF deskew/`--redo-ocr` as an optional
-   preprocess gated on a Tesseract+Ghostscript presence check** (detect-and-skip,
-   flag when unavailable). Confirm in brainstorm.
+   no-system-binary OCR path**, with OCRmyPDF as an optional, **Tesseract-gated**
+   preprocess in two *separate* modes — `deskew` (straighten) and
+   `redo_ocr`/`force_ocr` (replace a poisoned text layer), never chained — behind
+   a detect-and-skip seam that flags when Tesseract is absent (Ghostscript only
+   for PDF/A). Confirm in brainstorm.
 2. **Docling footprint.** Full `docling` (`-slim[standard]`, pulls chunking/
    transformers) vs a narrower `docling-slim` + parse/OCR extras. Measure the MB
    delta; decide whether to trim.
 3. **Dictionary source** for the hit-rate heuristic (bundled list vs heuristic;
    keep deterministic + light).
-4. **PDF backend default** (`DoclingParseV4` vs `V2`) — which yields the most
-   reliable `charspan` for the citation anchor.
+4. **PDF backend** — `DoclingParseDocumentBackend` (the verified default) vs
+   `PyPdfiumDocumentBackend` (lighter), plus whether a threaded docling-parse
+   variant helps batch throughput — which yields the most reliable `charspan` for
+   the citation anchor.
 5. **Where the gate reads native text** (pdfminer.six vs a Docling no-OCR pass) —
    avoid double-parsing the PDF if one source suffices.
 6. **Per-page vs per-doc OCR decision** — the gate may need to re-OCR only the
    bad pages, not the whole document.
+7. **Ugly-PDF + offline policy (Codex gate-add, see §2.6).** Wrapper behavior for
+   encrypted/corrupt/signed/tagged PDFs (skip-and-flag vs attempt) and the offline
+   model strategy (prefetch + pinned `artifacts_path` vs fail-fast), plus the
+   explicit ingest profile (which Docling enrichments to disable). Decide in the
+   plan.
 
 ---
 
