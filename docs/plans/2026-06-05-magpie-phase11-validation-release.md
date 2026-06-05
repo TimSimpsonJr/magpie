@@ -551,9 +551,15 @@ rely on the skipif (so the offline command needs no change); document it.
 
 ## Task D -- 11.3 CI + release docs  [SUBAGENT 4]
 
-### D0: requirements-offline.txt (trimmed offline dependency set)
+### D0: requirements-offline.txt (trimmed offline dependency set) -- DONE in MAIN thread
 
-**Files:** Create `requirements-offline.txt`. A STRICT SUBSET of requirements-dev.txt
+> ALREADY created + clean-room VALIDATED in the main thread: installing ONLY this set
+> into a fresh venv runs the offline subset 494 passed / 1 skipped (it must include the
+> lightweight offline-test deps Codex's confirmatory review flagged: pikepdf,
+> pdfminer.six, fpdf2, pillow, img2pdf, rfc3161-client, cryptography). The SDD subagent
+> must NOT recreate it; D1's CI YAML references it. Spec retained for the record.
+
+**Files:** `requirements-offline.txt` (already created). A STRICT SUBSET of requirements-dev.txt
 with ONLY the offline deps, so the default CI job does NOT pull the ~2 GB
 spacy/docling/torch stack or the 400 MB en_core_web_lg model. Every magpie module
 imports its heavy deps LAZILY, so the offline subset collects + runs with just these:
