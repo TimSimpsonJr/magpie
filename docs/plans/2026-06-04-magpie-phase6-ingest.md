@@ -177,7 +177,12 @@ def test_low_parse_score_downgrades_otherwise_native_to_uncertain():
 
 **Step 2 — run, expect FAIL.** **Step 3 — implement** `diagnose_page(native_text, *, parse_score=None, lang="en", wordlist=None, min_chars=..., min_tokens=..., garbled_hit_rate=...) -> PageDiagnosis`:
 - normalize; `n = len(native_text.strip())`.
-- `n < min_chars` → `image_only`.
+- `n < min_chars` **AND no alphabetic tokens** → `image_only` (a truly empty /
+  near-empty layer). A sparse-but-present-token page (e.g. `"Ref: 88-A"`,
+  `"SVPD-000123"`) is NOT image_only — it falls through to the token floor below.
+  (The design doc §4 is the source of truth here: `image_only` is "native_char
+  count ≈ 0"; the terse `n < min_chars` alone would wrongly capture short Bates /
+  ref pages the tests require to be `uncertain_review`.)
 - `toks = alphabetic_tokens`; `len(toks) < min_tokens` → `uncertain_review`
   (not enough signal — the boilerplate/sparse guard).
 - compute `hit = wordlist_hit_rate`; `density = char_density_ok`.
@@ -315,17 +320,19 @@ def test_clean_digital_pdf_decides_native_and_does_not_flag(tmp_path, native_pdf
 - `tests/conftest.py` fixtures (all synthetic, built into `tmp_path`):
   - `native_pdf` — fpdf2 text PDF (clean English).
   - `scan_pdf` — Pillow image-only PDF (no text layer).
-  - `garbled_pdf` — **ONE concrete recipe, built to TRIP `char_density_ok`
-    unambiguously** (Codex r2): a latin-1-safe garbage string with a LOW letter
-    ratio AND explicit LONG non-letter runs, e.g.
-    `";;;;;;;;;;;;;;;; ################ %%%%%%%%%%%% 8492037184920371 @@@@@@@@@@@@ "`
-    repeated to fill the page (long identical-symbol runs + a long digit run; very
-    few letters). This is a PRESENT native text layer Docling would otherwise
-    TRUST, which the gate MUST diagnose as `garbled_text` — no wordlist hits AND
-    `char_density_ok` returns False (letter-ratio below `_MIN_LETTER_RATIO` and a
-    non-letter run beyond `_MAX_NONLETTER_RUN`) → `force_full_doc_ocr`. The Task-1
-    `char_density_ok` constants and this fixture are tuned TOGETHER so the trip is
-    deterministic, not threshold-fragile. Latin-1-safe so fpdf2's Helvetica renders it.
+  - `garbled_pdf` — **ONE concrete recipe, built to diagnose `garbled_text`
+    deterministically** (matches the committed Task-2 garbled golden): gibberish
+    NON-dictionary letter tokens (so it clears the `_MIN_TOKENS` floor at a ~0
+    wordlist-hit-rate) interleaved with LONG non-letter runs (so `char_density_ok`
+    returns False via `_MAX_NONLETTER_RUN`), e.g.
+    `"xqzklm zzzz vvvv bbbb ;;;;;;;;;;;;;;;; ############ qwzx lkjhg nnnn "` repeated
+    to fill the page. This is a PRESENT native text layer Docling would otherwise
+    TRUST, which the gate MUST diagnose as `garbled_text` — enough tokens + low hit
+    AND failed density (the co-occurrence `diagnose_page` requires) →
+    `force_full_doc_ocr`. **NOTE (a real trap):** a PURE-symbol string (zero
+    letters) instead hits the token floor → `uncertain_review` → doc `review`, NOT
+    garbled; the garbled page therefore needs gibberish *letter* tokens, not just
+    symbols. Latin-1-safe so fpdf2's Helvetica renders it.
   - `mixed_pdf` — multi-page fpdf2 doc: mostly clean native pages + 1–2
     garbage/blank pages (→ `native` with those pages flagged).
   - `bates_pdf` — native page(s) stamped with a `SVPD-000123`-style Bates number.
