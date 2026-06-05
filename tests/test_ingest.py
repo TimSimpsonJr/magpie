@@ -205,6 +205,60 @@ def test_corrupt_pdf_is_flagged_not_crashed(tmp_path, corrupt_pdf):
     # No exception, even though the document is unparseable.
     r = ingest(corrupt_pdf, out_dir=tmp_path)
     assert r.warnings, "a corrupt PDF must surface a warning"
-    # skip-and-flag: route to the human gate (review) OR mark not-extractable.
-    assert r.doc_decision == "review" or r.trustworthy_for_extraction is False
+    # skip-and-flag: a FAILURE short-circuits SPECIFICALLY to review (design §2.6),
+    # so pin BOTH the decision AND the trust bit AND a warning -- a bug that leaves
+    # the decision `native` and only flips the trust bit must fail (Codex r2).
+    assert r.doc_decision == "review"
+    assert r.trustworthy_for_extraction is False
+    assert r.warnings                                # non-empty (named the failing stage)
     assert r.ocr_engine_used == "none"               # never OCR a doc that failed to load
+
+
+# --------------------------------------------------------------------------- #
+# Finding 1 r2 (Codex impl-review) -- the OCR RE-CONVERT must honor the SAME
+# failure contract as pass #1. The corrupt_pdf only fails at pass #1; the second
+# (OCR) convert was UNGUARDED, so a timeout / FAILURE / raise on the OCR pass
+# would still normalize/save/dereference a bad result. Fabricate an OCR-pass
+# failure deterministically by monkeypatching `_convert`: the real convert runs
+# for the do_ocr=False gate pass (so a scan_pdf still decides ocr_images), but
+# the do_ocr=True OCR pass returns a FAILURE-status result. ingest MUST return a
+# flagged `review` result -- no crash, no bad-doc dereference.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.docling
+def test_ocr_reconvert_failure_is_flagged_not_crashed(tmp_path, scan_pdf, monkeypatch):
+    import scripts.ingest as ing
+    from docling.datamodel.base_models import ConversionStatus
+
+    real_convert = ing._convert
+
+    class _FailedResult:
+        """Minimal stand-in for a Docling FAILURE ConversionResult (the OCR pass
+        timed out / could not OCR). Carries the real pass-#1 document so the
+        skip-and-flag path can still persist a minimal JSON for human review."""
+
+        status = ConversionStatus.FAILURE
+        errors = []
+
+        def __init__(self, document):
+            self.document = document
+
+    def fake_convert(pdf_path, *, do_ocr, **kwargs):
+        if do_ocr:                                   # the OCR re-convert -> fail it
+            # Fabricate a FAILURE result carrying a real (do_ocr=False) document so
+            # the skip-and-flag path can still persist a minimal JSON. Skip the
+            # real OCR entirely (deterministic + fast -- we only need the failure).
+            base = real_convert(pdf_path, do_ocr=False, **kwargs)
+            return _FailedResult(base.document)
+        return real_convert(pdf_path, do_ocr=do_ocr, **kwargs)  # the gate pass is real
+
+    monkeypatch.setattr(ing, "_convert", fake_convert)
+
+    r = ing.ingest(scan_pdf, out_dir=tmp_path)       # a scan triggers ocr_images
+    # No exception, even though the OCR convert failed.
+    assert r.doc_decision == "review"
+    assert r.trustworthy_for_extraction is False
+    assert r.warnings, "an OCR-pass failure must surface a warning"
+    assert any("OCR" in w for w in r.warnings), "the warning must name the OCR stage"
+    assert r.ocr_engine_used == "none"               # it never successfully OCR'd

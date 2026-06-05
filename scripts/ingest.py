@@ -54,6 +54,14 @@ _DEFAULT_MAX_FILE_SIZE = 512 * 1024 * 1024  # 512 MiB convert() guard
 # overridable via ingest(document_timeout=...).
 _DEFAULT_DOCUMENT_TIMEOUT = 300.0  # seconds, per-convert
 
+# A PARTIAL_SUCCESS proceeds (partial geometry is still useful) but is noted +
+# the whole doc is flagged not-fully-trustworthy. Named once -- EITHER convert
+# (pass #1 OR the OCR re-convert) can report it, so both append this same string.
+_PARTIAL_SUCCESS_WARNING = (
+    "Docling reported PARTIAL_SUCCESS (incomplete conversion); "
+    "pages flagged for review."
+)
+
 # Bates: an alphanumeric prefix + optional separator + a zero-padded digit run,
 # word-boundary anchored (design §7 / prior-art §7). Capture-and-tag only --
 # NEVER rewrites the underlying text.
@@ -418,24 +426,76 @@ def _build_failure_result(
     )
 
 
-def _failure_result_if_unparseable(
-    res, *, pdf_path, source_sha256, json_path, warnings,
-):
-    """If pass #1 reported FAILURE, build the flagged result; else ``None``."""
-    if not _is_failure(res):
-        return None
+def _failure_message(stage: str, res) -> str:
+    """A stage-named FAILURE-status warning (names the stage + status + errors).
+
+    ``stage`` is the human label of the convert that failed ("pass-1" do_ocr=False
+    or "OCR" the re-convert) so the warning pinpoints WHERE the contract tripped.
+    """
     status_value = getattr(getattr(res, "status", None), "value", "failure")
-    detail = _errors_summary(res)
     message = (
-        f"Docling could not parse the PDF (status={status_value}; "
-        "likely corrupt, encrypted, or not a valid PDF); routed to review, "
-        "not extracted."
+        f"Docling could not parse the PDF at the {stage} convert "
+        f"(status={status_value}; likely corrupt, encrypted, or not a valid PDF); "
+        "routed to review, not extracted."
     )
+    detail = _errors_summary(res)
     if detail:
         message += f" Docling errors: {detail}"
-    return _build_failure_result(
-        pdf_path=pdf_path, source_sha256=source_sha256, json_path=json_path,
-        warnings=warnings, doc=getattr(res, "document", None), message=message,
+    return message
+
+
+def _exception_message(stage: str, exc: BaseException) -> str:
+    """A stage-named warning for a convert that RAISED despite raises_on_error=False."""
+    return (
+        f"Docling raised while converting the PDF at the {stage} convert "
+        f"({type(exc).__name__}: {exc}); likely corrupt, encrypted, or not a valid "
+        "PDF; routed to review, not extracted."
+    )
+
+
+@dataclass
+class _ConvertOutcome:
+    """The result of running ONE convert through the shared failure contract.
+
+    Exactly one of two shapes:
+      * ``failed`` True  -> ``ingest`` short-circuits to a flagged ``review``
+        result via ``_build_failure_result``; ``res`` is the (possibly bad)
+        ConversionResult or ``None`` (an exception), ``message`` names the stage.
+      * ``failed`` False -> ``ingest`` proceeds with ``res``; ``partial`` carries
+        PARTIAL_SUCCESS forward (warn + flag every page, still not fully trusted).
+    """
+
+    res: Any
+    failed: bool
+    partial: bool
+    message: str | None
+
+
+def _run_convert(stage: str, **convert_kwargs) -> _ConvertOutcome:
+    """Run ONE ``_convert`` through the UNIFORM failure contract (design §2.6).
+
+    Shared by pass #1 AND the OCR re-convert so both honor the SAME guard:
+    try/except (a backend that RAISES despite ``raises_on_error=False``) +
+    ``res.status`` inspection. On FAILURE or an exception -> a ``failed`` outcome
+    (``ingest`` short-circuits to the flagged ``review`` result, never
+    dereferencing a bad document for extraction). On PARTIAL_SUCCESS -> proceed
+    but flag ``partial``. On SUCCESS -> proceed clean. The stage label is woven
+    into the warning so it names WHERE the failure happened (pass-1 vs OCR).
+    """
+    try:
+        res = _convert(**convert_kwargs)
+    except Exception as exc:
+        return _ConvertOutcome(
+            res=None, failed=True, partial=False,
+            message=_exception_message(stage, exc),
+        )
+    if _is_failure(res):
+        return _ConvertOutcome(
+            res=res, failed=True, partial=False,
+            message=_failure_message(stage, res),
+        )
+    return _ConvertOutcome(
+        res=res, failed=False, partial=_is_partial_success(res), message=None,
     )
 
 
@@ -531,50 +591,37 @@ def ingest(
     source_sha256 = sha256_file(pdf_path)
 
     # ---- Pass #1: do_ocr=False -> what the gate sees (reused if native). ----
-    # raises_on_error=False makes a corrupt/encrypted PDF come back as
-    # ConversionStatus.FAILURE (verified). The try/except is a belt-and-suspenders
-    # for the rare backend that raises DESPITE that flag -- the contract is "no
-    # crash, return a flagged result" (design §2.6), so a raise routes to the same
-    # skip-and-flag path.
-    try:
-        res = _convert(
-            pdf_path, do_ocr=False, force_full_page_ocr=False, lang=lang,
-            max_num_pages=max_num_pages, max_file_size=max_file_size,
-            page_range=page_range, document_timeout=document_timeout,
-        )
-    except Exception as exc:  # pragma: no cover - exercised only if docling raises
-        return _build_failure_result(
-            pdf_path=pdf_path, source_sha256=source_sha256, json_path=json_path,
-            warnings=warnings, doc=None,
-            message=(
-                "Docling raised while converting the PDF "
-                f"({type(exc).__name__}: {exc}); likely corrupt, encrypted, or "
-                "not a valid PDF; routed to review, not extracted."
-            ),
-        )
-
-    # ---- Ugly-PDF gate (design §2.6): a FAILURE convert never gets
+    # The UNIFORM failure contract (design §2.6) runs the convert through
+    # _run_convert: raises_on_error=False makes a corrupt/encrypted PDF come back
+    # as ConversionStatus.FAILURE (verified), and the try/except is a
+    # belt-and-suspenders for the rare backend that raises DESPITE that flag --
+    # either way the contract is "no crash, return a flagged review result".
+    pass1 = _run_convert(
+        "pass-1",
+        pdf_path=pdf_path, do_ocr=False, force_full_page_ocr=False, lang=lang,
+        max_num_pages=max_num_pages, max_file_size=max_file_size,
+        page_range=page_range, document_timeout=document_timeout,
+    )
+    # ---- Ugly-PDF gate (design §2.6): a FAILURE/raise convert never gets
     # dereferenced for extraction. Skip-and-flag: a review result, OCR never
     # runs, a (minimal) JSON is still written if a document object exists. ----
-    failure_result = _failure_result_if_unparseable(
-        res, pdf_path=pdf_path, source_sha256=source_sha256,
-        json_path=json_path, warnings=warnings,
-    )
-    if failure_result is not None:
-        return failure_result
+    if pass1.failed:
+        return _build_failure_result(
+            pdf_path=pdf_path, source_sha256=source_sha256, json_path=json_path,
+            warnings=warnings, doc=getattr(pass1.res, "document", None),
+            message=pass1.message,
+        )
 
+    res = pass1.res
     doc = res.document
     page_nos = _page_numbers(doc)
     native_by_page = _page_native_text(doc)
 
-    # A PARTIAL_SUCCESS proceeds (partial geometry is still useful) but is noted +
-    # the whole doc is flagged not-fully-trustworthy.
-    partial = _is_partial_success(res)
+    # PARTIAL_SUCCESS is accumulated across BOTH converts (the OCR re-convert can
+    # also come back PARTIAL_SUCCESS) -- see _PARTIAL_SUCCESS_WARNING.
+    partial = pass1.partial
     if partial:
-        warnings.append(
-            "Docling reported PARTIAL_SUCCESS (incomplete conversion); "
-            "pages flagged for review."
-        )
+        warnings.append(_PARTIAL_SUCCESS_WARNING)
 
     # ---- Pure gate: per-page diagnosis -> conservative doc decision. ----
     diagnoses: list[PageDiagnosis] = []
@@ -587,24 +634,34 @@ def ingest(
         diagnoses.append(diag)
     decision = decide_doc(diagnoses)
 
-    # ---- Apply the decision (Task 6/7 fill the OCR + review branches). ----
+    # ---- Apply the decision. The OCR re-convert honors the SAME failure
+    # contract as pass #1 (design §2.6): if it times out / FAILUREs / raises, we
+    # short-circuit to the flagged `review` result instead of normalizing/saving/
+    # dereferencing a bad document. On success it replaces `res`/`doc`; a
+    # PARTIAL_SUCCESS OCR pass proceeds but flags the whole doc. ----
     ocr_engine_used = "none"
-    if decision is DocDecision.ocr_images:
-        res = _convert(
-            pdf_path, do_ocr=True, force_full_page_ocr=False, lang=lang,
-            max_num_pages=max_num_pages, max_file_size=max_file_size,
+    needs_ocr = decision in (DocDecision.ocr_images, DocDecision.force_full_doc_ocr)
+    if needs_ocr:
+        ocr_pass = _run_convert(
+            "OCR",
+            pdf_path=pdf_path, do_ocr=True,
+            force_full_page_ocr=decision is DocDecision.force_full_doc_ocr,
+            lang=lang, max_num_pages=max_num_pages, max_file_size=max_file_size,
             page_range=page_range, document_timeout=document_timeout,
         )
+        if ocr_pass.failed:
+            # The OCR convert failed -> never OCR'd successfully (ocr_engine "none"),
+            # never dereference its bad document; flag the pass-#1 pages for review.
+            return _build_failure_result(
+                pdf_path=pdf_path, source_sha256=source_sha256, json_path=json_path,
+                warnings=warnings, doc=doc, message=ocr_pass.message,
+            )
+        res = ocr_pass.res
         doc = res.document
         ocr_engine_used = "rapidocr"
-    elif decision is DocDecision.force_full_doc_ocr:
-        res = _convert(
-            pdf_path, do_ocr=True, force_full_page_ocr=True, lang=lang,
-            max_num_pages=max_num_pages, max_file_size=max_file_size,
-            page_range=page_range, document_timeout=document_timeout,
-        )
-        doc = res.document
-        ocr_engine_used = "rapidocr"
+        if ocr_pass.partial and not partial:
+            partial = True
+            warnings.append(_PARTIAL_SUCCESS_WARNING)
     # native / review reuse pass #1's doc (review never silently OCRs).
 
     # ---- OCRmyPDF seam: detect / skip / flag (design §2.5). ----
