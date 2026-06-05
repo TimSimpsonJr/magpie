@@ -26,6 +26,7 @@ import pytest
 from tests.conftest_redaction import (  # noqa: F401
     acroform_pdf,
     annotation_text_pdf,
+    bad_redaction_pdf,
     clean_pdf,
     clean_single_rev_pdf,
     embedded_file_pdf,

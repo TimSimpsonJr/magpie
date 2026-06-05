@@ -45,6 +45,28 @@ def _fpdf_line_pdf(path: Path, line: str) -> Path:
     return path
 
 
+def _fpdf_box_over_text_pdf(path: Path, line: str) -> Path:
+    """Render an ASCII ``line`` of live text, THEN draw a solid black filled rect
+    OVER it (text command first, rect command second -- so the box covers
+    still-extractable text). This is the classic BAD redaction x-ray detects: the
+    text is geometrically hidden but the text operator is still in the content
+    stream, so ``xray.inspect()`` recovers it. Built with fpdf2 (no fitz), so the
+    offline tier never imports PyMuPDF to BUILD it (the x-ray import is lazy in the
+    check, exercised only by the ``xray``-marked test)."""
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    pdf.set_xy(40, 90)
+    pdf.cell(0, 10, line)
+    # Draw the covering box AFTER the text so it sits on top of live text.
+    pdf.set_fill_color(0, 0, 0)
+    pdf.rect(38, 86, 230, 22, style="F")
+    pdf.output(str(path))
+    return path
+
+
 def _new_single_page_pdf():
     """A fresh one-blank-page pikepdf the annotation/AcroForm/embedded builders
     attach to."""
@@ -67,6 +89,19 @@ def clean_pdf(tmp_path) -> Path:
     no-finding negative case for the pikepdf checks (no /Redact annot, no
     embedded files, no AcroForm, no comment annots)."""
     return _fpdf_line_pdf(tmp_path / "clean.pdf", "Visible public text")
+
+
+@pytest.fixture
+def bad_redaction_pdf(tmp_path) -> Path:
+    """A BAD-redaction PDF: the ASCII line ``SECRET NAME John Q Public`` rendered
+    as live text with a solid black rect drawn OVER it (text first, rect second).
+    x-ray flags this (a box over still-extractable text); the recovered under-box
+    string is the x-ray-marked test's local-only evidence. Also doubles as the
+    box_over_text + text_layer co-occurrence corroboration fixture (the page has
+    BOTH an x-ray box and an extractable text layer)."""
+    return _fpdf_box_over_text_pdf(
+        tmp_path / "bad_redaction.pdf", "SECRET NAME John Q Public"
+    )
 
 
 @pytest.fixture

@@ -14,6 +14,8 @@ The load-bearing safety invariant under test: a raw recovered/leaked STRING
 in a finding's ``local_evidence`` and NEVER in ``detail`` -- so ``detail`` (which
 publishes) carries no third-party PII.
 """
+import sys
+
 import pytest
 
 
@@ -287,3 +289,37 @@ def test_check_annotation_text_ignores_redact_annot(redact_annot_pdf):
     from scripts.redaction_check import check_annotation_text
 
     assert check_annotation_text(redact_annot_pdf) == []
+
+
+# --------------------------------------------------------------------------- #
+# 4. box_over_text check (x-ray lazy edge -> PyMuPDF). The ONLY xray-marked path.
+#    The OFFLINE degrade test must NOT load x-ray.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.xray
+def test_box_over_text_flags_bad_redaction(bad_redaction_pdf, clean_pdf):
+    from scripts.redaction_check import check_box_over_text
+
+    hits = check_box_over_text(bad_redaction_pdf)
+    assert hits and hits[0].page == 1
+    assert hits[0].check == "box_over_text"
+    # the recovered under-box text is LOCAL-ONLY (local_evidence), never published.
+    assert "John Q Public" in (hits[0].local_evidence or {}).get("text", "")
+    # detail carries publishable facts (bbox + origin), NEVER the recovered text.
+    assert "John Q Public" not in str(hits[0].detail)
+    # a clean control (text not covered) returns no finding.
+    assert check_box_over_text(clean_pdf) == []
+
+
+def test_box_over_text_degrades_when_xray_missing(monkeypatch, clean_pdf):
+    # DEGRADE-DON'T-CRASH and DON'T-FALSE-CLEAN: when ``import xray`` fails, the
+    # check must raise the CheckUnavailable sentinel (the orchestrator turns it
+    # into a checks_unavailable entry), NOT crash and NOT return [] (a false clean).
+    # OFFLINE: forcing sys.modules["xray"] = None makes ``import xray`` raise
+    # ImportError without ever loading PyMuPDF.
+    from scripts.redaction_check import CheckUnavailable, check_box_over_text
+
+    monkeypatch.setitem(sys.modules, "xray", None)
+    with pytest.raises(CheckUnavailable):
+        check_box_over_text(clean_pdf)

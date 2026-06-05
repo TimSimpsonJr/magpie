@@ -31,8 +31,26 @@ ingest.
 from __future__ import annotations
 
 import copy
+import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+
+# --------------------------------------------------------------------------- #
+# Degrade-don't-crash sentinel (design 1.6). A check that CANNOT RUN (a lazy
+# engine import failed, or an engine raised on a malformed PDF) raises this
+# rather than crashing OR returning [] (a false "clean"). The orchestrator
+# (check_redactions) catches it into ``checks_unavailable`` + a warning, the
+# other checks still run, and in pre-publish mode an unavailable check forces
+# ``safe_to_publish=False`` (fail-closed).
+# --------------------------------------------------------------------------- #
+
+
+class CheckUnavailable(Exception):
+    """A check could not run (engine missing / engine raised). Carries a
+    ``"<check>: <reason>"`` message the orchestrator records in
+    ``checks_unavailable``. NOT a clean result -- a check that did not run never
+    certifies the absence of what it checks for."""
 
 
 # --------------------------------------------------------------------------- #
@@ -489,4 +507,78 @@ def check_annotation_text(path) -> list[RedactionFinding]:
                         local_evidence={"contents": texts},
                     )
                 )
+    return findings
+
+
+# --------------------------------------------------------------------------- #
+# The x-ray LAZY EDGE (Task 4 / design 1.1 check 1, 1.6). This is the ONLY check
+# that pulls PyMuPDF -- and ONLY when CALLED. ``import xray`` lives INSIDE the
+# function so importing this module stays PyMuPDF-free (the offline tier loads
+# stdlib + pikepdf only). DEGRADE-DON'T-CRASH: a missing x-ray OR an inspect()
+# that raises on a malformed PDF -> raise ``CheckUnavailable`` (the orchestrator
+# records it), NEVER crash and NEVER return [] (a false "clean").
+# --------------------------------------------------------------------------- #
+
+# x-ray's bbox comes from PyMuPDF, whose default page coordinate origin is the
+# TOP-LEFT corner (the PDF spec / pdfminer use BOTTOM-left). We report the bbox in
+# its NATIVE engine space and NAME the origin in detail so a human reads it
+# correctly; we never do cross-engine bbox math (design 1.4).
+_XRAY_BBOX_ORIGIN = "top-left (PyMuPDF/x-ray native)"
+
+
+def check_box_over_text(path) -> list[RedactionFinding]:
+    """LEAD: a rectangle / highlight was drawn OVER still-extractable text (a box
+    that hides the text visually but leaves the text operator in the content
+    stream -- the classic bad redaction). Uses Free Law's ``x-ray`` (lazy ->
+    PyMuPDF).
+
+    ``xray.inspect(str(path))`` -> ``{page: [{"bbox": (x0,y0,x1,y1), "text": ...}]}``
+    (1-based page; empty dict => none found). One finding per page entry: the
+    ``bbox`` (+ the named origin) is a publishable fact -> ``detail``; the recovered
+    under-box ``text`` is a RAW leak -> ``local_evidence`` (NEVER ``detail``).
+
+    DEGRADE-DON'T-CRASH (design 1.6): if ``import xray`` fails (x-ray/PyMuPDF
+    absent) OR ``inspect()`` raises on a malformed PDF, raise ``CheckUnavailable``
+    -- the orchestrator turns it into a ``checks_unavailable`` entry + a warning,
+    and pre-publish fails closed. Returning [] here would be a FALSE "clean"."""
+    try:
+        import xray  # LAZY: pulls PyMuPDF only when this check actually runs.
+    except ImportError as exc:
+        raise CheckUnavailable(
+            f"box_over_text: x-ray not importable ({exc})"
+        ) from exc
+
+    try:
+        result = xray.inspect(str(path))
+    except Exception as exc:  # noqa: BLE001 - any inspect() failure degrades, never a false clean
+        raise CheckUnavailable(
+            f"box_over_text: x-ray inspect() failed ({type(exc).__name__})"
+        ) from exc
+
+    findings: list[RedactionFinding] = []
+    # result keys are 1-based page numbers; an empty dict means no bad redactions.
+    for pageno in sorted(result):
+        for entry in result[pageno]:
+            bbox = entry.get("bbox")
+            text = entry.get("text", "")
+            findings.append(
+                RedactionFinding(
+                    check="box_over_text",
+                    severity="high",
+                    page=int(pageno),
+                    summary=(
+                        f"1 box-over-text region on page {pageno} -- a box covers "
+                        f"still-extractable text (a lead; the under-box text is "
+                        f"recoverable, kept LOCAL)"
+                    ),
+                    detail={
+                        # bbox is a publishable geometric fact, reported in its
+                        # NATIVE engine space with the origin named (design 1.4).
+                        "bbox": list(bbox) if bbox is not None else None,
+                        "bbox_origin": _XRAY_BBOX_ORIGIN,
+                    },
+                    # the recovered under-box string is the RAW leak -> LOCAL ONLY.
+                    local_evidence={"text": text},
+                )
+            )
     return findings
