@@ -229,3 +229,38 @@ def _render_xmp_value(value) -> str:
     if isinstance(value, (list, tuple)):
         return ", ".join(str(v).strip() for v in value if str(v).strip())
     return str(value).strip()
+
+
+def check_unapplied_redact(path) -> list[RedactionFinding]:
+    """LEAD: a page carries a ``/Subtype /Redact`` annotation that was MARKED but
+    never APPLIED -- the tool flagged content for redaction but the underlying
+    content (text/image) was never removed and is still present.
+
+    pikepdf iterates each page's ``/Annots`` and matches
+    ``str(a.get("/Subtype")) == "/Redact"`` (verified API). One finding per page
+    that carries unapplied redaction annot(s); ``detail`` carries the per-page
+    count (a publishable int) -- there is no raw string to surface here."""
+    import pikepdf
+
+    findings: list[RedactionFinding] = []
+    with pikepdf.open(str(path)) as pdf:
+        for pageno, page in enumerate(pdf.pages, start=1):
+            annots = page.get("/Annots")
+            if annots is None:
+                continue
+            count = sum(1 for a in annots if str(a.get("/Subtype")) == "/Redact")
+            if count:
+                findings.append(
+                    RedactionFinding(
+                        check="unapplied_redact",
+                        severity="medium",
+                        page=pageno,
+                        summary=(
+                            f"{count} /Redact annotation(s) marked but not applied "
+                            f"on page {pageno} -- underlying content may still be "
+                            f"present (a lead)"
+                        ),
+                        detail={"count": count},
+                    )
+                )
+    return findings

@@ -176,3 +176,26 @@ def test_check_metadata_clean_pdf_minimal_or_no_leak(clean_pdf):
     findings = check_metadata(clean_pdf)
     for f in findings:
         assert "Jane Author" not in str(f.local_evidence)
+
+
+# --------------------------------------------------------------------------- #
+# 3d. unapplied_redact check (pikepdf /Annots /Subtype /Redact).
+# --------------------------------------------------------------------------- #
+
+
+def test_check_unapplied_redact_flags_redact_annot(redact_annot_pdf):
+    from scripts.redaction_check import check_unapplied_redact
+
+    findings = check_unapplied_redact(redact_annot_pdf)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.check == "unapplied_redact"
+    assert f.page == 1  # 1-based page number
+    # a /Redact annot that was marked but never applied -> underlying text present
+    assert "redact" in f.summary.lower()
+
+
+def test_check_unapplied_redact_clean_pdf_no_finding(clean_pdf):
+    from scripts.redaction_check import check_unapplied_redact
+
+    assert check_unapplied_redact(clean_pdf) == []
