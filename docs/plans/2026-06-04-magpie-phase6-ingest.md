@@ -88,8 +88,11 @@ def test_wordlist_hit_rate_none_when_no_tokens():
 
 def test_char_density_flags_garbage_glyph_runs():
     assert char_density_ok("Normal readable sentence with words.") is True
-    # mojibake-like: high non-letter ratio / long non-space runs
+    # mojibake-like (exotic glyphs): high non-letter ratio / long non-space runs
     assert char_density_ok("∎˚¬∆ﬁ�����⁂⁂⁂⁂⁂⁂⁂⁂⁂⁂⁂⁂") is False
+    # the EXACT latin-1 garbled_pdf fixture text MUST also fail (ties the density
+    # constants to the fixture so Task-6's garbled e2e is deterministic, not fragile)
+    assert char_density_ok(";;;;;;;;;;;;;;;; ################ %%%%%%%%%%%% 8492037184920371 @@@@@@@@@@@@ ") is False
 
 def test_enums_have_the_documented_members():
     assert {d.value for d in PageDiagnosis} == {
@@ -289,14 +292,18 @@ generators; Test `tests/test_ingest.py`.
 import pytest
 pytestmark = pytest.mark.docling   # whole module needs the real models
 
-def test_clean_digital_pdf_decides_native(tmp_path, native_pdf):
+def test_clean_digital_pdf_decides_native_and_does_not_flag(tmp_path, native_pdf):
+    from pathlib import Path
+    import json
     from scripts.ingest import ingest
     r = ingest(native_pdf, out_dir=tmp_path)
     assert r.doc_decision == "native"
     assert r.ocr_engine_used == "none"
     assert r.trustworthy_for_extraction is True
-    # provenance survived into the JSON
-    import json; doc = json.loads((tmp_path/ "*.json" resolved).read_text())
+    # nan semantics (Codex r2): native pages have ocr_score == nan -> nan is N/A,
+    # NOT 0 -> a clean native page must NOT be flagged as degraded.
+    assert not any(p["flagged"] for p in r.per_page)
+    doc = json.loads(Path(r.docling_json_path).read_text(encoding="utf-8"))
     assert doc["schema_name"] == "DoclingDocument"
 ```
 
@@ -308,13 +315,17 @@ def test_clean_digital_pdf_decides_native(tmp_path, native_pdf):
 - `tests/conftest.py` fixtures (all synthetic, built into `tmp_path`):
   - `native_pdf` — fpdf2 text PDF (clean English).
   - `scan_pdf` — Pillow image-only PDF (no text layer).
-  - `garbled_pdf` — **ONE concrete recipe:** an fpdf2 PDF whose text is a
-    DETERMINISTIC latin-1-safe garbage string (random consonant clusters + ASCII
-    symbols, e.g. `"Xqzklm zzz qwxz lkjh bvcx ### @@@ %%% kjhg vbnm "` repeated to
-    fill the page) — a PRESENT native text layer Docling would otherwise TRUST,
-    which the gate must diagnose as `garbled_text` (low wordlist-hit-rate AND fails
-    `char_density_ok`) → `force_full_doc_ocr`. Latin-1-safe so fpdf2's Helvetica
-    renders it (no exotic glyphs to fail rendering).
+  - `garbled_pdf` — **ONE concrete recipe, built to TRIP `char_density_ok`
+    unambiguously** (Codex r2): a latin-1-safe garbage string with a LOW letter
+    ratio AND explicit LONG non-letter runs, e.g.
+    `";;;;;;;;;;;;;;;; ################ %%%%%%%%%%%% 8492037184920371 @@@@@@@@@@@@ "`
+    repeated to fill the page (long identical-symbol runs + a long digit run; very
+    few letters). This is a PRESENT native text layer Docling would otherwise
+    TRUST, which the gate MUST diagnose as `garbled_text` — no wordlist hits AND
+    `char_density_ok` returns False (letter-ratio below `_MIN_LETTER_RATIO` and a
+    non-letter run beyond `_MAX_NONLETTER_RUN`) → `force_full_doc_ocr`. The Task-1
+    `char_density_ok` constants and this fixture are tuned TOGETHER so the trip is
+    deterministic, not threshold-fragile. Latin-1-safe so fpdf2's Helvetica renders it.
   - `mixed_pdf` — multi-page fpdf2 doc: mostly clean native pages + 1–2
     garbage/blank pages (→ `native` with those pages flagged).
   - `bates_pdf` — native page(s) stamped with a `SVPD-000123`-style Bates number.
@@ -350,6 +361,9 @@ def test_image_only_scan_engages_rapidocr_with_full_provenance(tmp_path, scan_pd
         assert "page_no" in p and "charspan" in p
         assert {"l","t","r","b","coord_origin"} <= set(p["bbox"])
     assert len({p["bbox"]["coord_origin"] for p in provs}) == 1, "bbox origins not normalized"
+    # nan semantics (Codex r2): an OCR'd scan has parse_score == nan -> N/A, not 0;
+    # a CLEAN scan (good ocr_score) must NOT be flagged merely because parse_score is nan.
+    assert not any(p["flagged"] for p in r.per_page)
 
 def test_garbled_text_layer_forces_full_doc_ocr(tmp_path, garbled_pdf):
     r = ingest(garbled_pdf, out_dir=tmp_path)
