@@ -39,6 +39,11 @@ from tests.conftest_redaction import (  # noqa: F401
     small_image_caption_pdf,
 )
 
+# Phase 8 citation-anchor fixtures (synthetic DoclingDocument-shaped dicts; no
+# docling import). Star-imported here so the make_block/make_doc builders are
+# importable from tests/test_citation.py the same way conftest_redaction is.
+from tests.conftest_citation import *  # noqa: F401,F403
+
 # A latin-1-safe garbled text-layer line the gate must diagnose as garbled_text:
 # gibberish non-dictionary LETTER tokens (so the page clears the alphabetic-token
 # floor with a ~0 wordlist hit-rate -- a present text layer Docling would TRUST)
@@ -235,3 +240,35 @@ def degraded_pdf(tmp_path) -> Path:
         fill=(195, 195, 195), font_size=20, blur=2.8, noise_frac=0.20, seed=0,
     )
     return _scan_pdf(tmp_path / "degraded.pdf", img, dpi)
+
+
+# Phase 8 Task 6: ONE shared ASCII text rendered BOTH ways so the citation
+# Tier-2 test can validate native-vs-OCR resolution of the SAME content. The
+# distinctive 6+ char tokens (Ramirez, searches, retention, calendar, Vehicle,
+# descriptions, incident) give the anchor builder doc-unique single-prov tokens
+# to relocate across the OCR pass. Reuses the same _native_pdf (fpdf2) and
+# _scan_page_image / _scan_pdf (Pillow) builders the native_pdf / scan_pdf
+# fixtures use -- the CLEAN scan recipe (width=1240, height=1754, dpi=150.0), not
+# the degraded one, so OCR is high quality.
+_PAIRED_TEXT_LINES = [
+    "Officer Ramirez ran 482 searches in March 2026.",
+    "The retention period is thirty calendar days.",
+    "Vehicle descriptions were logged for each incident.",
+]
+
+
+@pytest.fixture
+def paired_native_scan(tmp_path):
+    """Render ONE shared ASCII text BOTH ways: a native text-layer PDF (fpdf2,
+    OCR-free) and an image-only PDF (Pillow, forces OCR). Returns
+    ``(native_pdf_path, scan_pdf_path, shared_text)`` so the Tier-2 citation test
+    can build anchors on the native ingest and resolve them against the OCR
+    ingest of the identical content."""
+    native_path = _native_pdf(tmp_path / "paired_native.pdf", [list(_PAIRED_TEXT_LINES)])
+    img, dpi = _scan_page_image(
+        list(_PAIRED_TEXT_LINES),
+        width=1240, height=1754, dpi=150.0,
+    )
+    scan_path = _scan_pdf(tmp_path / "paired_scan.pdf", img, dpi)
+    shared_text = " ".join(_PAIRED_TEXT_LINES)
+    return native_path, scan_path, shared_text
