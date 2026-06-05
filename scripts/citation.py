@@ -84,14 +84,21 @@ def _word_boundary_aligned(text: str, quote: str, start: int, end: int) -> bool:
 
 
 def _find_all(text: str, sub: str) -> List[int]:
-    """Every start index of ``sub`` in ``text`` (non-overlapping left-to-right)."""
+    """Every start index of ``sub`` in ``text``, INCLUDING overlapping repeats.
+
+    Advances the search by ONE (``start + 1``), not by ``len(sub)``: overlapping
+    positions are genuinely distinct anchor positions, so they each count toward
+    the uniqueness/ambiguity contract. ``"A A"`` in ``"A A A"`` therefore yields
+    BOTH index 0 and index 2 (two occurrences -> not unique-in-block at build
+    time; ambiguous at relocation time), never a single faux-unique hit.
+    """
     starts: List[int] = []
     if sub == "":
         return starts
     i = text.find(sub)
     while i != -1:
         starts.append(i)
-        i = text.find(sub, i + len(sub))
+        i = text.find(sub, i + 1)
     return starts
 
 

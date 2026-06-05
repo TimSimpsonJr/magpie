@@ -59,17 +59,21 @@ multi-prov block, or not word-boundary-aligned.
 ## 2. Verify independently (two blinded agents, neither auto-accepts)
 
 Dispatch both agents per claim. Both are blinded to the extractor's
-chain-of-thought; they see only the claim and the cited span.
+chain-of-thought (its reasoning/justification) -- NOT to the quote. Each agent
+receives a DIFFERENT, purpose-built input:
 
-- citation-checker (MECHANICAL): drives scripts/citation.py resolve_anchor +
-  is_clean_citation over every claim. It reports the anchor level per claim and
-  flags uncited claims, anchors resolving only at ambiguous / block / page /
-  unresolved (degraded -- NOT a pass), and any matched_text that does not equal
-  the verbatim_quote. Deterministic; no semantic judgment.
-- extraction-verifier (SEMANTIC, advisory): re-reads the cited span from .text
-  plus the claim and returns supported / contradicted / indeterminate +
-  confidence + reasoning. indeterminate is the conservative default (presence OR
-  entailment in doubt -> indeterminate).
+- citation-checker (MECHANICAL): receives each claim's CitationRecord (the
+  anchor) plus the DoclingDocument JSON, and drives scripts/citation.py
+  resolve_anchor + is_clean_citation over every claim. It reports the anchor level
+  per claim and flags uncited claims, anchors resolving only at ambiguous / block
+  / page / unresolved (degraded -- NOT a pass), and any matched_text that does not
+  equal the verbatim_quote. Deterministic; no semantic judgment.
+- extraction-verifier (SEMANTIC, advisory): receives {claim_text, verbatim_quote,
+  source span} -- blinded to the extractor's reasoning, but it DOES get the
+  verbatim_quote (it needs it for the presence check) and the cited span re-read
+  independently from .text (for entailment). It returns supported / contradicted /
+  indeterminate + confidence + reasoning. indeterminate is the conservative
+  default (presence OR entailment in doubt -> indeterminate).
 
 Honest limit: in Layer 0-1 the semantic verifier runs as the SAME model in a
 fresh context, so its errors are correlated with the extractor's. It is an

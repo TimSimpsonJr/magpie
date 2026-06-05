@@ -123,12 +123,12 @@ def test_paired_native_scan_resolves_across_ocr(paired_native_scan, tmp_path):
 
     # No anchor produced a false exact (the load-bearing trust property).
     assert not false_exact
-    # LENIENT survival: prefer at least one clean survivor; but if the synthetic
-    # OCR was too lossy for any clean hit, accept all-degraded SO LONG AS no
-    # result was a false exact (already asserted above). This keeps the test from
-    # going flaky-red on a lossy OCR render without weakening the no-false-exact
-    # guarantee.
-    assert clean_count >= 1 or not false_exact
+    # SURVIVAL: at least one anchor must still resolve clean (exact or unique
+    # relocated) across the OCR drift. Empirically this fixture clears ~8 clean,
+    # so >=1 is a comfortable floor. The earlier `or not false_exact` form was
+    # tautological (false_exact is already asserted False above), so it required
+    # no survivor at all; this restores the approved Tier-2 survivor guarantee.
+    assert clean_count >= 1
 
 
 # --------------------------------------------------------------------------- #

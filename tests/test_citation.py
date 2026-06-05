@@ -122,6 +122,20 @@ def test_rejects_quote_occurring_twice_in_block():
         build_anchor(blk, verbatim_quote="482 searches", **_kw())
 
 
+def test_rejects_overlapping_repeated_quote_in_block():
+    # "A A" occurs TWICE in "A A A" as OVERLAPPING repeats (index 0 and index 2),
+    # so it is NOT unique-in-block and build_anchor must reject it. Both edges of
+    # "A A" land on whitespace/string boundaries in "A A A" (left: start==0 or a
+    # space; right: a space or end), so it is genuinely word-boundary aligned --
+    # the rejection is therefore specifically about non-uniqueness, NOT the
+    # word-boundary guard. The pre-fix occurrence search advanced by len(sub) and
+    # found only ONE occurrence, wrongly accepting "A A" as unique; counting
+    # overlapping positions makes it (correctly) non-unique.
+    blk = make_block(0, "A A A")
+    with pytest.raises(QuoteContractError):
+        build_anchor(blk, verbatim_quote="A A", **_kw())
+
+
 # --------------------------------------------------------------------------- #
 # Task 3: resolve_anchor fallback chain + clean-citation gate (design 2.2/2.3).
 # --------------------------------------------------------------------------- #
@@ -164,6 +178,32 @@ def test_ambiguous_when_quote_repeats_and_context_cannot_disambiguate():
     rec = _anchor_in(None, blk, "482 searches")
     # two identical-context occurrences after an offset shift
     doc2 = make_doc([make_block(0, "HDR x 482 searches y ... x 482 searches y")])
+    r = resolve_anchor(rec, doc2)
+    assert r.level == "ambiguous" and r.n_matches >= 2
+    assert is_clean_citation(r) is False
+
+
+def test_ambiguous_when_quote_repeats_OVERLAPPING_in_target():
+    # Build a UNIQUE quote "A A" on a tiny single-prov block (its context windows
+    # are empty, so they match trivially anywhere). In the target, the stored
+    # exact offsets FAIL (block 0 is a different inserted block), and the quote
+    # then appears as OVERLAPPING repeats in block 1 "A A A" -- at index 0 AND
+    # index 2, which overlap on the shared middle space. Both occurrences are
+    # word-boundary aligned, both carry the (empty) stored context, and both hash
+    # to the quote -> TWO relocation candidates -> ambiguous (n_matches >= 2),
+    # NEVER a clean relocated.
+    #
+    # This PINS finding 1: the pre-fix occurrence search advanced by len(sub) and
+    # saw only the index-0 occurrence (a single candidate), so resolve_anchor
+    # would wrongly relocate "A A" cleanly. Counting overlapping positions makes
+    # the second occurrence visible and forces the correct ambiguous verdict.
+    build_blk = make_block(0, "A A")  # quote unique here; empty context windows
+    rec = _anchor_in(None, build_blk, "A A")
+    assert rec.context_prefix == "" and rec.context_suffix == ""  # both windows empty
+    doc2 = make_doc([
+        make_block(0, "INSERTED EARLIER BLOCK"),  # breaks the stored exact offsets
+        make_block(1, "A A A"),                    # "A A" overlaps at idx 0 and idx 2
+    ])
     r = resolve_anchor(rec, doc2)
     assert r.level == "ambiguous" and r.n_matches >= 2
     assert is_clean_citation(r) is False
