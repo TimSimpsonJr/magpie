@@ -264,3 +264,117 @@ def check_unapplied_redact(path) -> list[RedactionFinding]:
                     )
                 )
     return findings
+
+
+def check_embedded_files(path) -> list[RedactionFinding]:
+    """LEAD: the PDF carries embedded / attached files (a spreadsheet, an
+    original) that can hold un-redacted source data. Enumerate name + size only;
+    NEVER auto-extract contents.
+
+    Surfaces (design 1.1 check 6): ``pdf.attachments`` (the document-level
+    EmbeddedFiles name tree) PLUS ``/AF`` associated files PLUS ``/FileAttachment``
+    annotations -- de-duplicated by (name, size).
+
+    THE FILENAME IS A RAW STRING: a filename can itself leak PII
+    (``John_Doe_DOB.xlsx``), so it goes in ``local_evidence["names"]``. ``detail``
+    carries ONLY non-string facts: ``{count, sizes}`` (byte sizes are publishable
+    ints). The file bytes are NEVER read into any output."""
+    import pikepdf
+
+    # collect (name, size) pairs; de-dup by the pair.
+    seen: set[tuple[str, int]] = set()
+    pairs: list[tuple[str, int]] = []
+
+    def _add(name: str, size: int) -> None:
+        key = (name, size)
+        if key not in seen:
+            seen.add(key)
+            pairs.append(key)
+
+    with pikepdf.open(str(path)) as pdf:
+        # 1. Document-level attachments (the /Names/EmbeddedFiles name tree).
+        for name in list(pdf.attachments):
+            try:
+                filespec = pdf.attachments[name]
+                _add(str(name), _filespec_size(filespec.obj))
+            except Exception:  # noqa: BLE001 - a malformed attachment is still a lead
+                _add(str(name), -1)
+        # 2. Associated files /AF on the document root.
+        for spec in _iter_filespec_objs(pdf.Root.get("/AF")):
+            name, size = _filespec_name_size(spec)
+            if name is not None:
+                _add(name, size)
+        # 3. /FileAttachment annots + page-level /AF.
+        for page in pdf.pages:
+            annots = page.get("/Annots")
+            if annots is None:
+                continue
+            for annot in annots:
+                if str(annot.get("/Subtype")) == "/FileAttachment":
+                    spec = annot.get("/FS")
+                    if spec is not None:
+                        name, size = _filespec_name_size(spec)
+                        if name is not None:
+                            _add(name, size)
+                for spec in _iter_filespec_objs(annot.get("/AF")):
+                    name, size = _filespec_name_size(spec)
+                    if name is not None:
+                        _add(name, size)
+
+    if not pairs:
+        return []
+    names = [name for name, _ in pairs]
+    sizes = [size for _, size in pairs]
+    return [
+        RedactionFinding(
+            check="embedded_files",
+            severity="medium",
+            page=None,
+            summary=(
+                f"{len(pairs)} embedded/attached file(s) -- may carry un-redacted "
+                f"source data; enumerated (name local-only), not extracted"
+            ),
+            detail={"count": len(pairs), "sizes": sizes},
+            local_evidence={"names": names},
+        )
+    ]
+
+
+def _iter_filespec_objs(af_value):
+    """Yield filespec objects from an ``/AF`` value (an array of filespecs, or a
+    single filespec, or None)."""
+    if af_value is None:
+        return
+    try:
+        items = list(af_value)
+    except TypeError:
+        items = [af_value]
+    for item in items:
+        if item is not None:
+            yield item
+
+
+def _filespec_name_size(spec) -> tuple[str | None, int]:
+    """Return ``(filename, byte_size)`` for a filespec object; name is ``/UF``
+    (preferred) or ``/F``; size from the embedded stream. ``(None, -1)`` if no
+    name is present."""
+    name = spec.get("/UF") or spec.get("/F")
+    if name is None:
+        return None, -1
+    return str(name), _filespec_size(spec)
+
+
+def _filespec_size(spec) -> int:
+    """Byte size of a filespec's embedded stream (``/EF/F`` or ``/EF/UF``), or
+    -1 if it cannot be read. Reads bytes ONLY to measure length -- the bytes
+    never leave this function."""
+    try:
+        ef = spec.get("/EF")
+        if ef is None:
+            return -1
+        stream = ef.get("/F") or ef.get("/UF")
+        if stream is None:
+            return -1
+        return len(stream.read_bytes())
+    except Exception:  # noqa: BLE001 - size is best-effort; a lead stands regardless
+        return -1

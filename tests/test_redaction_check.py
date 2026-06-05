@@ -199,3 +199,31 @@ def test_check_unapplied_redact_clean_pdf_no_finding(clean_pdf):
     from scripts.redaction_check import check_unapplied_redact
 
     assert check_unapplied_redact(clean_pdf) == []
+
+
+# --------------------------------------------------------------------------- #
+# 3e. embedded_files check (pikepdf attachments + /Names + /AF + /FileAttachment).
+# --------------------------------------------------------------------------- #
+
+
+def test_check_embedded_files_name_local_count_size_detail(embedded_file_pdf):
+    from scripts.redaction_check import check_embedded_files
+
+    findings = check_embedded_files(embedded_file_pdf)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.check == "embedded_files"
+    # the FILENAME can itself leak PII (e.g. John_Doe_DOB.xlsx) -> local_evidence.
+    assert "hidden_notes.txt" in str(f.local_evidence)
+    # detail carries ONLY non-string facts: count + byte sizes. NEVER the name,
+    # NEVER the bytes.
+    assert "hidden_notes.txt" not in str(f.detail)
+    assert "internal only" not in str(f.detail)
+    assert f.detail["count"] == 1
+    assert f.detail["sizes"] == [len(b"internal only")]
+
+
+def test_check_embedded_files_clean_pdf_no_finding(clean_pdf):
+    from scripts.redaction_check import check_embedded_files
+
+    assert check_embedded_files(clean_pdf) == []
