@@ -334,3 +334,37 @@ nomenklatura resolution (3-bucket auto/review/distinct + HITL queue) -> `ftm
 export-cypher`/`export-neo4j-bulk` into Neo4j -> yente cross-ref against watchlists +
 own corpus. entity-extract does NOT import any of that; the bundle + schema_version
 is the entire seam.
+
+## 15. Addendum (2026-06-06): the FtM layer is decoupled (Linux/CI-only)
+
+Research-gate finding: PyICU has NO Windows wheel and `normality` (a `followthemoney`
+dependency) HARD-requires it, so the OpenSanctions/FtM stack (followthemoney,
+nomenklatura, rigour, yente) does NOT pip-install on the Windows venv without building
+ICU from source. It is Linux-native -- and Phase 13 already runs it in Docker. Tim's
+call (2026-06-06): DECOUPLE the FtM layer. This refines sections 3 / 7 / 8 / 13:
+
+- Windows-native pure core (`entity_taxonomy.py` + `entity_extract.py`): GLiNER/GLiREL
+  extraction -> a followthemoney-FREE REVIEWED INTERMEDIATE (plain JSON: nodes, edges,
+  statements, provenance; DETERMINISTIC hashlib IDs computed WITHOUT followthemoney).
+  Fully Windows-testable -- the pure core imports NO followthemoney.
+- The FtM layer is a SEPARATE module `scripts/entity_ftmize.py`: reviewed-intermediate
+  -> followthemoney bundle (`*.entities.ftm.json`) + the `ftm export-cypher` /
+  `export-neo4j-bulk` / nomenklatura contract tests. It imports followthemoney and is
+  gated by a NEW `ftm` pytest marker that SKIPS when followthemoney is not importable
+  (i.e. on Windows). It runs in CI (Ubuntu) and Phase-13 (Docker/Linux), and Phase 13
+  reuses it.
+- The Phase-12 deliverable ON WINDOWS is the reviewed INTERMEDIATE; the FtM bundle is
+  materialized by ftmize at the Phase-12/13 boundary (Linux). Codex's "prove
+  graph-readiness in Phase 12" is satisfied by the `ftm`-marked contract tests running
+  in CI continuously.
+- Deterministic IDs: computed in the pure core as a stable hash over
+  (dataset_namespace, schema, normalized_name) for nodes and
+  (dataset_namespace, edge_schema, head_id, tail_id, span_key) for edges; ftmize sets
+  these exact ids on the FtM proxies (entity.id), so the INTERMEDIATE owns the id and
+  followthemoney's make_id algorithm is not a cross-platform dependency.
+- Deps: gliner/glirel (Windows-ok, heavy, `gliner`-marked) install but DOWNGRADE
+  transformers to <5.2.0 (docling currently uses a newer transformers); pip's resolver
+  found this consistent with docling's declared range, but Task 0 must VERIFY docling's
+  heavy tests still pass at the downgraded transformers. followthemoney/nomenklatura are
+  NOT added to requirements-offline.txt or the Windows bootstrap; they install only in
+  the CI `ftm` job (Ubuntu) and in Phase-13 Docker.
