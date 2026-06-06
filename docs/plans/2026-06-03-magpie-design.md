@@ -142,6 +142,15 @@ phrasing is read as the original conception, not a contradiction with the build.
 | `entity-extract` | Schema entity + **relation** extraction | **GLiNER2** (entities) + **GLiNER-Relex** (joint NER+RE) + **GLiDRE** (document-level relations); FtM mapping via **deterministic functions, not LLM YAML**; per-span provenance (`{doc_id,page,char_start,char_end,model,confidence}`); cap ~15-20 entity types; filter pairs by type compatibility | 2 |
 | `entity-graph` | Resolve → graph → cross-ref | **rigour** (normalize/fingerprint) + **nomenklatura** (resolution; 3-bucket routing >95/70-95/<70) + **followthemoney-graph** → **Neo4j**; **yente** for watchlist + own-corpus cross-ref; **HITL review queue** (the differentiator); pin **FtM 4.0** | 2 |
 
+*Implementation note (Phase 12 -- entity-extract):* the research gate (2026-06-05)
+revised the Track-B engine names. The real build is **GLiNER** (entities, Apache-2.0)
++ **GLiREL** (relations) -- `GLiNER-Relex` is not a real package and **GLiDRE** is
+deferred (no PyPI, no license, preprint). FtM-to-graph export uses the built-in
+`ftm export-cypher` / `ftm export-neo4j-bulk` CLI -- the `followthemoney-graph`
+package is gone. GLiREL's pretrained weights are CC BY-NC-SA (non-commercial); Magpie
+adopts and documents them (Tim's call, the Phase-7 AGPL posture applied to weights).
+See `docs/plans/2026-06-05-magpie-phase12-entity-extract-design.md`.
+
 ### 5.4 FOIA-specific (stay in `magpie`)
 
 | Skill | Purpose | Engine / key heuristics | Layer |
