@@ -1,0 +1,26 @@
+# Trimmed OFFLINE dependency set for the fast default CI job. A strict subset of
+# requirements-dev.txt that EXCLUDES the GB-heavy ML stack (torch, docling, rapidocr,
+# onnxruntime, ocrmypdf, spacy + en_core_web_lg, x-ray/PyMuPDF) but INCLUDES the
+# lightweight deps the UNMARKED offline tests need AT RUNTIME:
+#   - the offline redaction-check tier: pikepdf / pdfminer.six / fpdf2 / Pillow / img2pdf
+#   - the offline archive-evidence edge: rfc3161-client / cryptography
+# requirements-dev.txt stays the full-venv source of truth (the heavy CI job installs
+# that). Versions match the validated dev venv; installing ONLY these is intended to
+# run the offline subset (-m "not docling and not spacy and not xray and not tsa")
+# green.
+pytest==9.0.3
+pandas==3.0.3
+numpy==2.4.6
+duckdb==1.5.3
+pyarrow==24.0.0
+openpyxl==3.1.5
+charset-normalizer==3.4.3
+sqlite-utils==3.39
+PyYAML==6.0.2
+pikepdf==10.7.2
+pdfminer.six==20260107
+fpdf2==2.8.7
+pillow==12.2.0
+img2pdf==0.6.3
+rfc3161-client==1.0.6
+cryptography==48.0.0
