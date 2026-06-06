@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 from tools.build_public_slice import build_slice
 
 def _frame():
@@ -26,3 +27,11 @@ def test_drop_all_empty_rows_only_drops_fully_blank():
     df = pd.DataFrame({"a": ["x", "", " "], "b": ["", "", ""]})
     out = build_slice(df, n=10, drop_all_empty_rows=True)
     assert list(out["a"]) == ["x"]  # rows 2 and 3 are fully blank -> dropped
+
+def test_non_positive_n_raises():
+    df = _frame()
+    # n=0 and n=-1 must fail fast, not silently yield head(0)/head(-1) slices.
+    with pytest.raises(ValueError):
+        build_slice(df, n=0)
+    with pytest.raises(ValueError):
+        build_slice(df, n=-1)

@@ -27,8 +27,10 @@ def build_slice(
     sort_columns: leading sort keys; ALL remaining columns are appended as
     deterministic tiebreakers so the order is total (fully reproducible). Defaults to
     file column order.
-    n: rows to keep -- fixed for file size, NOT tuned to outputs.
+    n: rows to keep -- fixed for file size, NOT tuned to outputs. Must be > 0.
     """
+    if n <= 0:
+        raise ValueError("n must be > 0 (got %r); a non-positive slice size is a bug" % (n,))
     work = df.copy()
     if drop_all_empty_rows:
         nonblank = work.apply(

@@ -38,6 +38,16 @@ def _pump(stream, q):
     q.put(None)
 
 
+def _drain(stream, sink):
+    """Drain stderr into a list so its pipe buffer never fills and blocks the child.
+
+    Kept SEPARATE from stdout (never merged via stderr=STDOUT) so the stdout queue
+    stays pure JSON-RPC and json.loads never chokes on interleaved stderr text.
+    """
+    for line in stream:
+        sink.append(line)
+
+
 def _read_until_id(q, want_id, timeout):
     """Return the JSON-RPC message whose id == want_id, skipping notifications.
 
@@ -79,35 +89,45 @@ def test_mcp_sqlite_serves_canned_query_tools(tmp_path):
         bufsize=1,
     )
     q = queue.Queue()
+    err_lines = []
     threading.Thread(target=_pump, args=(proc.stdout, q), daemon=True).start()
+    threading.Thread(target=_drain, args=(proc.stderr, err_lines), daemon=True).start()
 
     def send(obj):
         proc.stdin.write(json.dumps(obj) + "\n")
         proc.stdin.flush()
 
-    try:
-        send({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "magpie-smoke", "version": "0.1.0"},
-            },
-        })
-        # Generous first-read timeout: uvx may resolve mcp-sqlite on a cold cache.
-        init = _read_until_id(q, 1, timeout=90)
-        assert "result" in init, "initialize failed: %r" % (init,)
+    def _stderr_tail():
+        tail = "".join(err_lines[-20:]).strip()
+        return ("\n--- mcp-sqlite stderr tail ---\n" + tail) if tail else ""
 
-        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        listed = _read_until_id(q, 2, timeout=30)
-        tools = listed.get("result", {}).get("tools", [])
-        names = [t.get("name", "") for t in tools]
-        assert any(n.startswith("ds_") for n in names), (
-            "no ds_ canned-query tools advertised: %r" % (names,)
-        )
+    try:
+        try:
+            send({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "magpie-smoke", "version": "0.1.0"},
+                },
+            })
+            # Generous first-read timeout: uvx may resolve mcp-sqlite on a cold cache.
+            init = _read_until_id(q, 1, timeout=90)
+            assert "result" in init, "initialize failed: %r" % (init,)
+
+            send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+            listed = _read_until_id(q, 2, timeout=30)
+            tools = listed.get("result", {}).get("tools", [])
+            names = [t.get("name", "") for t in tools]
+            assert any(n.startswith("ds_") for n in names), (
+                "no ds_ canned-query tools advertised: %r" % (names,)
+            )
+        except AssertionError as exc:
+            # Surface the stderr tail so a real failure (vs a buffer flake) is debuggable.
+            raise AssertionError(str(exc) + _stderr_tail()) from exc
     finally:
         try:
             proc.stdin.close()
@@ -118,3 +138,4 @@ def test_mcp_sqlite_serves_canned_query_tools(tmp_path):
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()  # reap the hard-killed child so it is not left as a zombie
