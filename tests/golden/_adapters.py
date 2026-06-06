@@ -38,3 +38,12 @@ def reason_category(reason):
     if not isinstance(reason, str):
         return ""
     return reason.split(" - ")[0].strip()
+
+
+def reason_text(reason):
+    """The free-text part of a Flock reason: everything after the FIRST ' - '
+    (stripped); '' when there is no dash or the value is blank/non-str. This is the
+    field that carries PII -- the category prefix is standardized vocabulary."""
+    if not isinstance(reason, str) or " - " not in reason:
+        return ""
+    return reason.split(" - ", 1)[1].strip()

@@ -1,4 +1,4 @@
-from tests.golden._adapters import extract_state, reason_category
+from tests.golden._adapters import extract_state, reason_category, reason_text
 
 
 def test_extract_state_last_token_and_sc_special_case():
@@ -16,3 +16,10 @@ def test_reason_category_splits_on_dash():
     assert reason_category("Traffic Infraction") == "Traffic Infraction"
     assert reason_category("") == ""
     assert reason_category(None) == ""
+
+
+def test_reason_text_after_dash():
+    assert reason_text("Immigration (criminal) - assist re subject") == "assist re subject"
+    assert reason_text("Traffic Infraction") == ""   # no dash -> no free text
+    assert reason_text("Larceny - ") == ""            # empty after the dash
+    assert reason_text(None) == ""
