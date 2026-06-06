@@ -44,8 +44,9 @@ Magpie skill whose output MUST pass a person before it is trusted (design 7).
 - Tokenizer: spaCy (`en_core_web_sm` or the existing `en_core_web_lg`) for the
   GLiNER char-offset -> GLiREL inclusive-token-index conversion. spaCy 3.8.14 is
   already a dependency (pii_sweep).
-- Mapping: `followthemoney` 4.x (pin 4.9.x), MIT, pure-Python (no ML). The
-  deterministic NLP-triple -> FtM entity mapping engine.
+- Mapping: `followthemoney` 4.x (pin 4.9.x), MIT, pure-Python (no ML). The FtM mapping
+  engine -- used by the `ftmize` LAYER (Linux/CI; section 15), NOT the Windows core. The
+  Windows core builds the followthemoney-free intermediate; ftmize realizes it as FtM.
 - GLiDRE (document-level RE): DEFERRED. Not on PyPI, no license, preprint, fragile.
   GLiREL with passage windowing covers relation extraction for v1.
 
@@ -144,6 +145,11 @@ conversational review.
   bundle); pending/rejected stay in the queue record for audit, never in the output.
 
 ## 6. The deterministic NLP -> FtM mapping (the crux)
+
+This section defines the shared FtM target SCHEMA. The Windows core stamps it into the
+followthemoney-FREE intermediate (the FtM schema names + edge endpoint props below, with
+stable_id); the `ftmize` LAYER (Linux/CI; section 15) realizes it via the followthemoney
+API below, setting `proxy.id` to the intermediate's id.
 
 Verified against FtM 4.x docs (Context7 `/alephdata/followthemoney`): create with
 `model.make_entity(schema)`, `entity.make_id(*components)`, `entity.add(prop, value)`
@@ -313,7 +319,8 @@ Locked decisions:
 - Hybrid review gate; statement-level `statement_id` provenance key (Codex).
 - Sidecar carries span provenance; the FtM bundle uses standard EntityProxy
   serialization (StatementEntity is a future option, YAGNI now).
-- Dedup per-corpus by name+type; cross-doc resolution is Phase 13.
+- Dedup PER-DOCUMENT (same name+type in one doc -> one node); NO cross-document merge.
+  ALL entity resolution (cross-doc + homonym disambiguation) is Phase-13 nomenklatura.
 - Generic taxonomy + surveillance/flock preset.
 - `investigation-core` split stays DEFERRED -- Track B is the same vertical, a
   different analysis branch; do not split the spine while crossing the Docker
