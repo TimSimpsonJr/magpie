@@ -65,14 +65,17 @@ The following are explicitly out of scope for this release:
 
 ## Public corpus status
 
-Stated honestly: the public sample corpus may be PARTIAL at tag time.
+Stated honestly: the public sample corpus is NOT bundled in v0.1.0 -- it is a
+fast-follow. The machinery ships (a deterministic, reproducible slice builder; a
+provenance datasheet; a skip-if-absent golden), but no data artifact is included
+yet:
 
-- The Skokie PD Flock FOIA cover-letter PDF ships if it passes PII vetting in
-  time for the tag.
-- The authentic RANGE Media Spokane County Flock-audit slice lands as a
-  fast-follow (or v0.1.1) once two conditions are met: re-host permission is
-  recorded, and the slice passes a clean `pii-sweep`.
+- The authentic RANGE Media Spokane County Flock-audit slice lands once two
+  conditions are met: re-host permission is recorded, and the slice passes a
+  clean `pii-sweep`.
+- The Skokie PD Flock FOIA cover-letter PDF lands once it passes PII vetting.
 
-v0.1.0 does NOT claim the corpus is fully shipped. The provenance datasheet
-(`corpus/public/DATASHEET.md`) records the exact status, source, attribution,
-permission posture, and sha256 of each bundled artifact.
+Both arrive in a fast-follow (likely v0.1.1). The provenance datasheet
+(`corpus/public/DATASHEET.md`) will record the exact source, attribution,
+permission posture, slice rule, PII-scrub method, and sha256 of each artifact
+when it ships.
