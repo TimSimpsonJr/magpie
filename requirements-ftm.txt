@@ -1,0 +1,12 @@
+# Magpie Track-B FtM layer dependencies -- LINUX / CI ONLY.
+#
+# PyICU (a followthemoney -> normality dependency) has NO Windows wheel, so these
+# do NOT install on the Windows dev venv (the source-of-truth requirements-dev.txt
+# deliberately omits them). They are installed ONLY by the CI `ftm` job and the
+# Phase-13 Docker images. The scripts/entity_ftmize.py layer + the `ftm`-marked
+# contract tests import these and SKIP on Windows (importlib.util.find_spec guard).
+#
+# Verified on PyPI (2026-06-05): followthemoney 4.9.0, nomenklatura 4.9.1 (both MIT).
+# nomenklatura also pins scikit-learn; followthemoney pulls rigour + normality(+pyicu).
+followthemoney==4.9.0
+nomenklatura==4.9.1
