@@ -387,6 +387,125 @@ class ReviewQueue:
         return cls(statements)
 
 
+# ---------------------------------------------------------------------------
+# Task 6: Orchestrator + input gate
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExtractResult:
+    """Result of the extract() orchestrator call."""
+    review_queue: ReviewQueue
+    refused: bool
+    warnings: list
+    nodes: list
+    edges: list
+
+
+def extract(
+    doc,
+    *,
+    taxonomy,
+    namespace: str,
+    entity_extractor,
+    relation_extractor,
+    threshold: float = 0.5,
+    entity_model: str = "gliner_medium-v2.1",
+    relation_model: str = "glirel-large-v0",
+) -> ExtractResult:
+    """Orchestrate entity + relation extraction over a normalised doc dict.
+
+    doc shape:
+      {"doc_id": str, "trustworthy_for_extraction": bool,
+       "pages": [{"page_no": int, "text": str}, ...]}
+    """
+    # Input gate: trust seam (Phase 8 pattern)
+    if not doc.get("trustworthy_for_extraction", False):
+        return ExtractResult(
+            review_queue=ReviewQueue([]),
+            refused=True,
+            warnings=["refused: ingest doc is not trustworthy_for_extraction"],
+            nodes=[],
+            edges=[],
+        )
+
+    doc_id = doc["doc_id"]
+    nodes_by_id: dict = {}
+    edges_by_id: dict = {}
+    mentions: list = []
+
+    for page in doc.get("pages", []):
+        page_no = page["page_no"]
+        ptext = page["text"]
+
+        # a. Window -> predict -> re-offset to page coords -> dedup
+        windows = plan_windows(ptext)
+        page_raw_spans: list = []
+        for w in windows:
+            for s in entity_extractor.predict_entities(w.text, taxonomy.entity_labels(), threshold):
+                page_raw_spans.append(
+                    Span(s.text, s.label, s.char_start + w.char_base, s.char_end + w.char_base, s.score)
+                )
+        page_spans = dedup_spans(page_raw_spans)
+
+        # b. Build nodes + span_node lookup for this page
+        span_node: dict = {}
+        for s in page_spans:
+            node = make_node(s, doc_id, namespace, taxonomy)
+            nodes_by_id.setdefault(node.id, node)
+            span_node[(s.char_start, s.char_end, s.label)] = node
+            mentions.append(Mention(
+                target_id=node.id,
+                target_kind="entity",
+                schema=node.schema,
+                prop="name",
+                value=node.name,
+                doc_id=doc_id,
+                page=page_no,
+                char_start=s.char_start,
+                char_end=s.char_end,
+                model=entity_model,
+                confidence=s.score,
+            ))
+
+        # c. Relations over the page
+        for (hs, ts, rel_label, score) in relation_extractor.predict_relations(
+            ptext, page_spans, taxonomy, threshold
+        ):
+            head = span_node.get((hs.char_start, hs.char_end, hs.label))
+            tail = span_node.get((ts.char_start, ts.char_end, ts.label))
+            if head is None or tail is None:
+                continue
+            ev_start = min(hs.char_start, ts.char_start)
+            ev_end = max(hs.char_end, ts.char_end)
+            span_key = stable_id(page_no, ev_start, ev_end, rel_label)
+            edge = make_edge(rel_label, head, tail, span_key, namespace, taxonomy)
+            if edge is None:
+                continue
+            edges_by_id.setdefault(edge.id, edge)
+            mentions.append(Mention(
+                target_id=edge.id,
+                target_kind="edge",
+                schema=edge.schema,
+                prop=edge.label,
+                value=head.name + " -> " + tail.name,
+                doc_id=doc_id,
+                page=page_no,
+                char_start=ev_start,
+                char_end=ev_end,
+                model=relation_model,
+                confidence=score,
+            ))
+
+    statements = build_statements(mentions, namespace)
+    return ExtractResult(
+        review_queue=ReviewQueue(statements),
+        refused=False,
+        warnings=[],
+        nodes=list(nodes_by_id.values()),
+        edges=list(edges_by_id.values()),
+    )
+
+
 def build_intermediate(
     queue: ReviewQueue,
     nodes: list,
