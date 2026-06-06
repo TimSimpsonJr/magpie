@@ -192,17 +192,21 @@ The hand-off bundle (the entity-graph input contract -- get it right NOW):
 Deterministic ID + namespace scheme (Codex: lock now):
 - `dataset_namespace` = the corpus/run name; scopes all IDs (mirrors yente's
   `ftm namespace --dataset` collision-avoidance for Phase 13).
-- node entity_id = make_id(dataset_namespace, schema, normalized_name) -- so the same
-  name+type in one corpus is one node (intra-doc + intra-corpus); cross-DOCUMENT
-  merge of distinct surface forms is DEFERRED to Phase-13 nomenklatura.
+- node entity_id = make_id(dataset_namespace, doc_id, schema, normalized_name) -- PER
+  DOCUMENT: the same name+type in ONE doc is one node, but cross-document homonyms stay
+  DISTINCT nodes. Phase 12 NEVER merges across documents; the FIRST true merge (and
+  homonym disambiguation) is Phase-13 nomenklatura -- collapsing homonyms in Phase 12
+  would be irreversible (plan-review fix: premature-node-merge).
 - edge_id = make_id(dataset_namespace, edge_schema, head_id, tail_id, evidence_span).
 - statement_id = make_id(dataset_namespace, doc_id, page, char_start, char_end,
   target_id, prop) -- unique per mention; never collapses repeats.
 
-Dedup scope (decision): entity-extract dedups WITHIN a corpus run by the
-make_id name+type key only; CROSS-document entity RESOLUTION (the "John Smith in 50
-docs are the same person" merge across surface variants) is Phase-13 nomenklatura's
-job. Keeps the seam clean; entity-extract never imports graph/resolution code.
+Dedup scope (decision, hardened after plan-review): entity-extract dedups only WITHIN
+A SINGLE DOCUMENT (same name+type in one doc -> one node); it NEVER merges across
+documents, so two different "John Smith" persons in different docs remain DISTINCT
+nodes. ALL entity RESOLUTION/merge (cross-doc + homonym disambiguation) is Phase-13
+nomenklatura's job. Keeps the seam clean and avoids an irreversible premature merge;
+entity-extract never imports graph/resolution code.
 
 ## 8. Phase-12 FtM-contract de-risk (Codex's must-have -- no Docker)
 
@@ -358,13 +362,15 @@ call (2026-06-06): DECOUPLE the FtM layer. This refines sections 3 / 7 / 8 / 13:
   graph-readiness in Phase 12" is satisfied by the `ftm`-marked contract tests running
   in CI continuously.
 - Deterministic IDs: computed in the pure core as a stable hash over
-  (dataset_namespace, schema, normalized_name) for nodes and
+  (dataset_namespace, doc_id, schema, normalized_name) for nodes (PER-DOCUMENT scope --
+  no cross-doc merge; Phase 13 does the first true resolution) and
   (dataset_namespace, edge_schema, head_id, tail_id, span_key) for edges; ftmize sets
   these exact ids on the FtM proxies (entity.id), so the INTERMEDIATE owns the id and
   followthemoney's make_id algorithm is not a cross-platform dependency.
 - Deps: gliner/glirel (Windows-ok, heavy, `gliner`-marked) install but DOWNGRADE
   transformers to <5.2.0 (docling currently uses a newer transformers); pip's resolver
-  found this consistent with docling's declared range, but Task 0 must VERIFY docling's
-  heavy tests still pass at the downgraded transformers. followthemoney/nomenklatura are
-  NOT added to requirements-offline.txt or the Windows bootstrap; they install only in
-  the CI `ftm` job (Ubuntu) and in Phase-13 Docker.
+  found this consistent with docling's declared range; once verified, PIN the coexisting
+  transformers in requirements-dev.txt for deterministic rebuilds. followthemoney/
+  nomenklatura go in a SEPARATE requirements-ftm.txt (NOT requirements-dev.txt or
+  requirements-offline.txt -- both install on the Windows venv and would fail on PyICU);
+  only the CI `ftm` job (Ubuntu) and Phase-13 Docker install it.
