@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import dataclasses
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -229,3 +230,227 @@ def make_edge(
         role=role,
         label=rel_label,
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Statements, provenance, review queue, intermediate bundle
+# ---------------------------------------------------------------------------
+
+def statement_id(namespace, doc_id, page, char_start, char_end, target_id, prop) -> str:
+    """Unique per mention: same args -> same id; differ by page -> different ids."""
+    return stable_id(namespace, doc_id, page, char_start, char_end, target_id, prop)
+
+
+@dataclass(frozen=True)
+class Mention:
+    """A raw extracted claim, pre-review."""
+    target_id: str
+    target_kind: str          # "entity" or "edge"
+    schema: str
+    prop: str
+    value: str
+    doc_id: str
+    page: int
+    char_start: int
+    char_end: int
+    model: str
+    confidence: float
+
+
+@dataclass(frozen=True)
+class Statement:
+    """An immutable reviewed (or pending) claim. Mutate via dataclasses.replace."""
+    statement_id: str
+    kind: str                 # "entity" or "relation"
+    target_id: str
+    target_kind: str
+    schema: str
+    prop: str
+    value: str
+    doc_id: str
+    page: int
+    char_start: int
+    char_end: int
+    model: str
+    confidence: float
+    decision: str = "pending"  # "pending" | "accepted" | "rejected" | "edited"
+    reviewer: Optional[str] = None
+    supersedes: Optional[str] = None
+    superseded_by: Optional[str] = None
+
+
+def build_statements(mentions: list, namespace: str) -> list:
+    """Build one pending Statement per Mention."""
+    results = []
+    for m in mentions:
+        sid = statement_id(namespace, m.doc_id, m.page, m.char_start, m.char_end, m.target_id, m.prop)
+        kind = "entity" if m.target_kind == "entity" else "relation"
+        results.append(Statement(
+            statement_id=sid,
+            kind=kind,
+            target_id=m.target_id,
+            target_kind=m.target_kind,
+            schema=m.schema,
+            prop=m.prop,
+            value=m.value,
+            doc_id=m.doc_id,
+            page=m.page,
+            char_start=m.char_start,
+            char_end=m.char_end,
+            model=m.model,
+            confidence=m.confidence,
+            decision="pending",
+        ))
+    return results
+
+
+_VALID_DECIDE = {"accepted", "rejected"}
+
+
+class ReviewQueue:
+    """Ordered, mutable collection of Statements with review operations."""
+
+    def __init__(self, statements: list) -> None:
+        self._statements: list = list(statements)
+
+    # --- read views ---
+
+    def all_statements(self) -> list:
+        return list(self._statements)
+
+    def pending(self) -> list:
+        return [s for s in self._statements if s.decision == "pending"]
+
+    def accepted(self) -> list:
+        return [s for s in self._statements if s.decision == "accepted"]
+
+    def get(self, sid: str) -> Optional[Statement]:
+        for s in self._statements:
+            if s.statement_id == sid:
+                return s
+        return None
+
+    # --- mutations ---
+
+    def decide(self, sid: str, decision: str, reviewer: Optional[str] = None) -> None:
+        if decision not in _VALID_DECIDE:
+            raise ValueError("decision must be 'accepted' or 'rejected', got: %r" % decision)
+        for i, s in enumerate(self._statements):
+            if s.statement_id == sid:
+                self._statements[i] = dataclasses.replace(s, decision=decision, reviewer=reviewer)
+                return
+        raise KeyError(sid)
+
+    def edit(self, sid: str, new_value: str, reviewer: Optional[str] = None) -> Statement:
+        # Find original (raises KeyError if missing)
+        orig = self.get(sid)
+        if orig is None:
+            raise KeyError(sid)
+
+        # Ordinal = 1 + number of existing statements whose supersedes == sid
+        ordinal = 1 + sum(1 for s in self._statements if s.supersedes == sid)
+        new_id = stable_id(sid, "edit", ordinal)
+
+        # Mark original as edited
+        for i, s in enumerate(self._statements):
+            if s.statement_id == sid:
+                self._statements[i] = dataclasses.replace(s, decision="edited", superseded_by=new_id)
+                break
+
+        # Build and append the replacement
+        replacement = dataclasses.replace(
+            orig,
+            statement_id=new_id,
+            value=new_value,
+            decision="accepted",
+            reviewer=reviewer,
+            supersedes=sid,
+            superseded_by=None,
+        )
+        self._statements.append(replacement)
+        return replacement
+
+    # --- serialization ---
+
+    def to_jsonl(self) -> str:
+        lines = [json.dumps(dataclasses.asdict(s)) for s in self._statements]
+        return "\n".join(lines)
+
+    @classmethod
+    def from_jsonl(cls, text: str) -> "ReviewQueue":
+        statements = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            statements.append(Statement(**obj))
+        return cls(statements)
+
+
+def build_intermediate(
+    queue: ReviewQueue,
+    nodes: list,
+    edges: list,
+    *,
+    namespace: str,
+    source_doc_ids: list,
+    schema_version: str = "1.0",
+    created_with: Optional[dict] = None,
+) -> tuple:
+    """Build a reviewed intermediate bundle with graph-closure enforcement.
+
+    Returns (bundle_dict, warnings_list).
+    """
+    accepted_stmts = queue.accepted()
+    accepted_ids = {s.target_id for s in accepted_stmts}
+
+    # Accepted nodes
+    accepted_nodes = [n for n in nodes if n.id in accepted_ids]
+    node_ids = {n.id for n in accepted_nodes}
+
+    # Accepted edges with closure check
+    warnings = []
+    accepted_edges = []
+    for edge in edges:
+        if edge.id not in accepted_ids:
+            continue
+        if edge.head_id in node_ids and edge.tail_id in node_ids:
+            accepted_edges.append(edge)
+        else:
+            warnings.append(
+                "dropped edge %s (%s): endpoint not accepted" % (edge.id, edge.label)
+            )
+
+    # Provenance rows
+    provenance = []
+    for s in accepted_stmts:
+        provenance.append({
+            "statement_id": s.statement_id,
+            "target_id": s.target_id,
+            "target_kind": s.target_kind,
+            "prop": s.prop,
+            "value": s.value,
+            "doc_id": s.doc_id,
+            "page": s.page,
+            "char_start": s.char_start,
+            "char_end": s.char_end,
+            "model": s.model,
+            "confidence": s.confidence,
+            "reviewed": True,
+        })
+
+    bundle = {
+        "schema_version": schema_version,
+        "dataset_namespace": namespace,
+        "source_doc_ids": list(source_doc_ids),
+        "nodes": [dataclasses.asdict(n) for n in accepted_nodes],
+        "edges": [dataclasses.asdict(e) for e in accepted_edges],
+        "provenance": provenance,
+        "counts": {
+            "nodes": len(accepted_nodes),
+            "edges": len(accepted_edges),
+            "provenance": len(provenance),
+        },
+        "created_with": created_with or {},
+    }
+    return (bundle, warnings)
