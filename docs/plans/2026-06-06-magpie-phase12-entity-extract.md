@@ -231,8 +231,11 @@ Implement, green, commit.
   `accepted()`; JSONL persist/load. **Statements are IMMUTABLE (plan-review fix --
   edit-path):** an EDIT does not mutate. `edit(statement_id, new_value, reviewer)` marks
   the original `decision="edited"` + `superseded_by=<new id>`, and APPENDS a new
-  statement (fresh statement_id, `decision="accepted"`, `supersedes=<original id>`)
-  carrying the corrected value. Auditable; ids stay stable per record.
+  statement carrying the corrected value with `decision="accepted"`,
+  `supersedes=<original id>`, and a DERIVED id = stable_id(original_id, "edit", ordinal)
+  -- the base statement_id excludes value, so an edit of the same span/target/prop MUST
+  use this revision-discriminated id to avoid colliding with the original (plan-review
+  fix: edit-id-collision). Auditable lineage.
 - `build_intermediate(accepted_statements, nodes, edges, manifest_meta) -> dict` ->
   the reviewed INTERMEDIATE bundle (plain JSON). **GRAPH-CLOSURE RULE (plan-review fix
   -- graph-closure):** an accepted EDGE is emitted ONLY if BOTH endpoint nodes are

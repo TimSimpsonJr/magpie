@@ -57,20 +57,25 @@ Same split as `pii_sweep` (pure tally + lazy spaCy edge), `ingest_gate`/`ingest`
 (pure gate + lazy Docling edge), `citation` (pure resolver), `detect_tier` (pure
 aggregator + IO edge):
 
-- `scripts/entity_extract.py` -- the PURE CORE. Imports stdlib + `followthemoney`
-  ONLY (no torch/gliner/glirel). Holds: the taxonomy config model, the deterministic
-  triple -> FtM mapping, the type-compatibility pair filter, the page-windowing +
-  offset math, the cross-window span dedup, the statement/review-queue assembly, the
-  provenance sidecar, the FtM-bundle serialization, and the accepted-output builder.
-  Golden-testable with a FAKE extractor -- no 2.6 GB of model weights to test the
-  logic. (followthemoney is light, pure-Python; importing the core stays ML-free,
-  exactly like `citation.py` importing stdlib.)
+- `scripts/entity_extract.py` -- the PURE CORE. Imports stdlib ONLY (NO followthemoney,
+  no torch/gliner/glirel). Holds: the type-compatibility pair filter, the page-windowing
+  + offset math, the cross-window span dedup, the deterministic triple -> INTERMEDIATE
+  (followthemoney-FREE nodes/edges with stable hashlib IDs), the statement/review-queue
+  assembly, the provenance sidecar, and the reviewed-INTERMEDIATE builder. Golden-testable
+  with a FAKE extractor -- no model weights. Importing the core stays ML-free AND
+  followthemoney-free, so it runs on Windows (where followthemoney does NOT install --
+  PyICU; see section 15). The taxonomy lives in `scripts/entity_taxonomy.py` (pure).
 - `scripts/entity_models.py` -- the LAZY MODEL EDGE. Imports `gliner` / `glirel` /
   `torch` / spaCy ONLY inside the lazy loader (like `pii_sweep.SpacyPersonClassifier._load`
   and `ingest._docling_imports`), so importing the module stays cheap. Exposes an
   injectable `EntityExtractor` / `RelationExtractor` protocol; the real
   `GlinerEntityExtractor` / `GlirelRelationExtractor` load the HF weights on first
   call (first-run download, like Docling/spaCy weights). Tests inject a fake.
+- `scripts/entity_ftmize.py` -- the FtM LAYER (Linux/CI ONLY). Imports `followthemoney`;
+  turns the reviewed INTERMEDIATE into the FtM bundle (`*.entities.ftm.json`) and runs
+  the export-cypher / nomenklatura contract tests. `ftm`-marked: SKIPS on Windows
+  (followthemoney/PyICU does not install there), runs in the CI `ftm` job and Phase-13
+  Docker, and is reused by Phase 13 (see section 15).
 
 ## 4. The pipeline (skill orchestration)
 
@@ -95,16 +100,17 @@ aggregator + IO edge):
    type constraints. The pair filter is BOTH a precision guard AND the load-bearing
    CPU-tractability guard (naive all-pairs enumeration is too slow). -> relation
    triples {head, tail, label, score}.
-7. MAP (pure). Deterministically map each entity -> an FtM node (Person / Company /
-   Organization / LegalEntity fallback) and each relation -> an FtM edge entity
-   (section 6). Assemble STATEMENTS (section 5) -- the atomic reviewable claims --
-   each with provenance.
+7. MAP (pure). Deterministically map each entity -> an INTERMEDIATE node (FtM-shaped:
+   Person / Company / Organization / LegalEntity fallback) and each relation -> an
+   INTERMEDIATE edge (section 6) -- followthemoney-FREE, with stable hashlib IDs.
+   Assemble STATEMENTS (section 5) -- the atomic reviewable claims -- each with provenance.
 8. HUMAN GATE (section 5). Drain the statement review queue; only ACCEPTED
-   statements are assembled into the reviewed FtM bundle.
-9. OUTPUT. Write the reviewed FtM bundle (`*.ftm.json`, newline-delimited
-   `EntityProxy.to_dict()`) + the provenance sidecar (section 7). Emit a Librarian
-   findings note with AGGREGATE counts only (raw spans stay local; any PII in
-   surfaced entities routes through `redact-output`).
+   statements are assembled into the reviewed INTERMEDIATE.
+9. OUTPUT. Write the reviewed INTERMEDIATE (`*.intermediate.json` + `*.provenance.jsonl`
+   + `*.manifest.json`; followthemoney-free; section 7) -- the WINDOWS deliverable. The
+   Linux/CI `ftmize` layer (section 15) turns it into the FtM bundle
+   (`*.entities.ftm.json`). Emit a Librarian findings note with AGGREGATE counts only
+   (raw spans stay local; any PII in surfaced entities routes through `redact-output`).
 
 ## 5. The human review gate -- hybrid statement queue (Tim's call)
 
@@ -175,10 +181,14 @@ and latency degrade).
 
 ## 7. Provenance and the Phase-13 hand-off contract (Codex-hardened)
 
-The hand-off bundle (the entity-graph input contract -- get it right NOW):
+The WINDOWS deliverable is the reviewed INTERMEDIATE (followthemoney-free); the Linux/CI
+`ftmize` layer (section 15) turns it into the FtM bundle Phase-13 consumes. Both, plus the
+schema_version, are the entity-graph input contract -- get it right NOW:
 
-- `<name>.entities.ftm.json` -- newline-delimited reviewed FtM entities (nodes +
-  edges), each an `EntityProxy.to_dict()` line. Deterministic IDs.
+- `<name>.intermediate.json` -- the reviewed INTERMEDIATE (WINDOWS output): nodes + edges
+  (FtM-shaped, followthemoney-free, stable hashlib IDs). ftmize maps this to
+  `<name>.entities.ftm.json` (newline-delimited `EntityProxy.to_dict()`, ids preserved)
+  in CI/Phase-13.
 - `<name>.provenance.jsonl` -- the provenance sidecar, one row PER STATEMENT:
   {statement_id, target_id (the entity_id or edge_id this statement supports),
   target_kind (entity|edge), prop, value, doc_id, page, char_start, char_end, model,
@@ -189,17 +199,22 @@ The hand-off bundle (the entity-graph input contract -- get it right NOW):
   source_doc_ids, entity_count, edge_count, created_with (model + prompt versions),
   ftm_version}. EXPLICIT `schema_version` so Phase 13 can detect drift (Codex).
 
-Deterministic ID + namespace scheme (Codex: lock now):
+Deterministic ID + namespace scheme (Codex: lock now). The INTERMEDIATE owns the IDs:
+they are stable hashlib hashes (`stable_id`), NOT followthemoney's make_id, so the core
+computes them WITHOUT followthemoney on Windows; ftmize later sets `proxy.id` to these
+exact values.
 - `dataset_namespace` = the corpus/run name; scopes all IDs (mirrors yente's
   `ftm namespace --dataset` collision-avoidance for Phase 13).
-- node entity_id = make_id(dataset_namespace, doc_id, schema, normalized_name) -- PER
+- node entity_id = stable_id(dataset_namespace, doc_id, schema, normalized_name) -- PER
   DOCUMENT: the same name+type in ONE doc is one node, but cross-document homonyms stay
   DISTINCT nodes. Phase 12 NEVER merges across documents; the FIRST true merge (and
   homonym disambiguation) is Phase-13 nomenklatura -- collapsing homonyms in Phase 12
   would be irreversible (plan-review fix: premature-node-merge).
-- edge_id = make_id(dataset_namespace, edge_schema, head_id, tail_id, evidence_span).
-- statement_id = make_id(dataset_namespace, doc_id, page, char_start, char_end,
-  target_id, prop) -- unique per mention; never collapses repeats.
+- edge_id = stable_id(dataset_namespace, edge_schema, head_id, tail_id, evidence_span).
+- statement_id = stable_id(dataset_namespace, doc_id, page, char_start, char_end,
+  target_id, prop) -- unique per mention. An EDITED statement's replacement id is
+  stable_id(original_statement_id, "edit", ordinal), so it never collides with the
+  original (plan-review fix: edit-id-collision).
 
 Dedup scope (decision, hardened after plan-review): entity-extract dedups only WITHIN
 A SINGLE DOCUMENT (same name+type in one doc -> one node); it NEVER merges across
@@ -210,9 +225,10 @@ entity-extract never imports graph/resolution code.
 
 ## 8. Phase-12 FtM-contract de-risk (Codex's must-have -- no Docker)
 
-`followthemoney` and `nomenklatura` are pip packages (no Docker, no models), so
-Phase 12 PROVES its output is graph-ready in-tests, closing the loop the absent
-Phase-13 infra would otherwise leave open:
+The `ftmize` layer + these contract tests are `ftm`-marked: they import followthemoney/
+nomenklatura (Linux/CI ONLY -- PyICU blocks Windows), run in the CI `ftm` job (Ubuntu)
+and Phase-13 Docker, and SKIP on Windows. They PROVE the reviewed intermediate is
+graph-ready -- closing the loop the absent Phase-13 infra would otherwise leave open:
 
 1. Validate EVERY reviewed entity/edge against its FtM schema (followthemoney
    validation) -- no invalid property, no dangling edge endpoint.
@@ -226,8 +242,8 @@ Phase-13 infra would otherwise leave open:
 5. Assert that exact bundle is consumed UNCHANGED by the Phase-13 contract (a
    contract test that Phase 13 will re-use).
 
-These run in the DEFAULT offline suite (pure Python, no models), so CI guards the
-hand-off contract continuously.
+These do NOT run in the default offline suite (followthemoney does not install on
+Windows); the CI `ftm` job guards the hand-off contract continuously on Ubuntu.
 
 ## 9. Taxonomy -- generic default + surveillance/flock preset (Tim's call)
 
