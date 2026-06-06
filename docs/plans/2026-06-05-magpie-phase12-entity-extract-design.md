@@ -13,11 +13,12 @@ date: 2026-06-05
 
 `entity-extract` is the FIRST skill of Track B. It reads an already-ingested,
 trustworthy document (the Phase-6 `ingest` DoclingDocument JSON), extracts named
-ENTITIES and the RELATIONS between them, maps them DETERMINISTICALLY (no LLM) into
-FollowTheMoney (FtM) entities with per-claim provenance, gates every extracted
-claim through a MANDATORY human review, and emits a bundle of REVIEWED FtM
-entities plus a provenance sidecar. That bundle is the hand-off contract to
-Phase-13 `entity-graph` (resolution + graph + watchlist cross-reference).
+ENTITIES and the RELATIONS between them, maps them DETERMINISTICALLY (no LLM) to an
+FtM-shaped representation with per-claim provenance, gates every extracted claim through
+a MANDATORY human review, and emits a REVIEWED INTERMEDIATE (followthemoney-free) plus a
+provenance sidecar. A Linux/CI `ftmize` layer turns that intermediate into the
+FollowTheMoney bundle (section 15) -- the hand-off to Phase-13 `entity-graph`
+(resolution + graph + watchlist cross-reference).
 
 Scope of THIS phase: entity-extract only. NO Docker, NO graph, NO yente. The graph
 half is Phase 13 (13a resolution + Neo4j import/export; 13b yente cross-ref +
@@ -139,8 +140,8 @@ conversational review.
   HITL resolution queue (nomenklatura get_candidates -> human -> resolver.decide),
   so both Track-B human-in-the-loop steps share one review surface.
 - ACCEPTED OUTPUT vs UNRESOLVED QUEUE are distinct (Codex): only accepted statements
-  enter `*.ftm.json` + the sidecar; pending/rejected stay in the queue record for
-  audit, never in the output bundle.
+  enter the reviewed INTERMEDIATE + the sidecar (which ftmize later realizes as the FtM
+  bundle); pending/rejected stay in the queue record for audit, never in the output.
 
 ## 6. The deterministic NLP -> FtM mapping (the crux)
 
@@ -271,10 +272,11 @@ documents `vehicle` covers it and `redact-output` handles plate PII if it surfac
 
 - Pure-core golden tests (the bulk): inject a FAKE EntityExtractor/RelationExtractor
   (deterministic span/relation fixtures), so the mapping, pair-filter, windowing,
-  dedup, statement/queue, provenance, and FtM serialization are tested with NO model
-  weights. Mirrors pii_sweep's fake-classifier suite.
-- FtM-contract tests (section 8): offline, real `followthemoney`/`nomenklatura`,
-  no models, no Docker -- in the default CI offline job.
+  dedup, statement/queue, provenance, and INTERMEDIATE serialization are tested with NO
+  model weights. Mirrors pii_sweep's fake-classifier suite.
+- FtM-contract tests (section 8): `ftm`-marked (Linux/CI ONLY -- followthemoney does not
+  install on Windows), real `followthemoney`/`nomenklatura`, no models, no Docker -- in
+  the CI `ftm` job (Ubuntu), NOT the default offline job.
 - `gliner` pytest marker (like spacy/docling/xray/tsa): model-gated integration that
   loads real GLiNER + GLiREL weights, runs the actual extract over a small fixture,
   asserts the pipeline shape. Excluded from the offline subset; runs in the heavy job.
