@@ -1,0 +1,45 @@
+# Magpie Layer-2 entity-graph infrastructure (Phase 13a).
+#
+# Neo4j lives under the `graph` profile so the journalist / Track-A onramp (no
+# Docker) is never affected. Bring it up with:
+#
+#     docker compose -f infra/docker-compose.yml --env-file infra/.env --profile graph up -d
+#
+# Neo4j Community Edition is GPLv3. Magpie talks to it over Bolt/TCP across a
+# process boundary and ships THIS compose file + docs, NEVER the image -- the
+# operator pulls neo4j:5.26.26-community from Docker Hub themselves.
+#
+# 13b will extend this file with `index` (OpenSearch) + `yente` services on the
+# default profile; Neo4j stays the `graph` profile.
+
+services:
+  neo4j:
+    # Pinned LTS Community image. Digest (verified 2026-06-07):
+    #   sha256:0b5d3ab6ec1b866890dbfb53bf4fe1cf039f9e03c96165599a403005b7e7bcc3
+    image: neo4j:5.26.26-community
+    profiles: ["graph"]
+    environment:
+      # Initial password from infra/.env (gitignored). Form: user/password.
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in infra/.env (copy infra/.env.example)}"
+      # Conservative 1G heap + 1G pagecache -- Layer-2 laptop-friendly.
+      NEO4J_server_memory_heap_initial__size: "1G"
+      NEO4J_server_memory_heap_max__size: "1G"
+      NEO4J_server_memory_pagecache_size: "1G"
+    ports:
+      # Bind to localhost ONLY -- never expose the graph to the network.
+      - "127.0.0.1:7474:7474"   # HTTP browser
+      - "127.0.0.1:7687:7687"   # Bolt (the neo4j driver connects here)
+    volumes:
+      - magpie_neo4j_data:/data
+    healthcheck:
+      # wget ships in the image (curl does not). 7474 answers once the HTTP
+      # connector is up; the writer's real readiness gate is a Bolt connect.
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: "10s"
+      timeout: "5s"
+      retries: 12
+      start_period: "40s"
+    restart: "unless-stopped"
+
+volumes:
+  magpie_neo4j_data:

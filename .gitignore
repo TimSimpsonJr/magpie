@@ -51,6 +51,9 @@ docs/handoffs/
 nomenklatura.db
 *.nomenklatura.db
 
+# --- Phase 13a infra secrets (commit infra/.env.example, never infra/.env) ---
+infra/.env
+
 # --- Local preview/dev-server config (Claude preview) ---
 .claude/launch.json
 
