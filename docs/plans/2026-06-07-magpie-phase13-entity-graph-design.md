@@ -110,10 +110,11 @@ STABLE, content-addressed canonical id:
 - Members are the Phase-12 sha256 node ids (preserved through the bundle).
 - A SINGLETON (no merge) uses the same rule over its one member id -> stable from
   day one; every node has a canonical_id immediately.
-- The Neo4j node is keyed (MERGE) on `canonical_id` and tagged with
-  `investigation_id` (D4); member sha256 ids are stored as a `member_ids` property
-  (+ optional `:Mention` alias nodes); the nomenklatura `NK-` id is stored as
-  `resolver_id` METADATA only.
+- The Neo4j node is keyed (MERGE) COMPOSITE-IN-SCOPE on `(investigation_id,
+  canonical_id)` (D4) -- never the bare canonical_id, so two investigations can
+  never collide on a shared id; member sha256 ids are stored as a `member_ids`
+  property (+ optional `:Mention` alias nodes); the nomenklatura `NK-` id is stored
+  as `resolver_id` METADATA only.
 - Reproducible: the same (bundle + accepted verdicts) always yields the same
   graph, independent of resolver-DB churn. A membership change yields a NEW
   canonical_id -- correct, it is a genuinely different cluster; the snapshot is the
@@ -161,13 +162,17 @@ bootstrap, not the production path. Production write = direct driver `session.ru
 `entity_graph_neo4j.write(snapshot)` is an investigation-SCOPED REPLACE, NOT a
 blind prune (Codex CRITICAL): every node/edge/alias/provenance row carries the
 snapshot's `investigation_id`; the writer (a) MERGEs the snapshot's current
-entities + edges (keyed on `canonical_id` / `edge_id`), then (b) DELETEs only the
+entities + edges keyed COMPOSITE-IN-SCOPE on `(investigation_id, canonical_id)` /
+`(investigation_id, edge_id)` (never a bare id, so two investigations cannot
+collide on a shared id), then (b) DELETEs only the
 entities / relationships / aliases / provenance rows whose `investigation_id`
 matches AND that are ABSENT from the current snapshot. It never reads or deletes
 another investigation's subgraph, and it leaves no stale edges on surviving nodes.
 So a re-run with changed cluster membership (a new canonical_id) cleanly REPLACES
-the prior graph for THAT investigation and is idempotent. Uniqueness constraint on
-`:Entity(canonical_id)`; index on `:Entity(investigation_id)`.
+the prior graph for THAT investigation and is idempotent. A composite NODE-KEY
+constraint on `:Entity(investigation_id, canonical_id)` enforces the scoped
+identity (the scoped MERGE matches the scoped DELETE); relationships keyed on
+`(investigation_id, edge_id)`.
 
 ### D5. Cross-corpus resolution, per-investigation resolver DB, single writer
 Resolve ACROSS the whole investigation corpus (all docs' bundles loaded into one
@@ -191,7 +196,7 @@ The review band drains from the LIVE resolver via `get_candidates()` (NOT from
    candidate-snapshot HASH.
    - SNIPPET HYDRATION (Codex IMPORTANT): Phase-12 provenance carries OFFSETS
      ({doc_id, page, char_start, char_end}), NOT snippet text. Packet generation
-     takes an injected `snippet_resolver(doc_id, char_start, char_end) -> text`
+     takes an injected `snippet_resolver(doc_id, page, char_start, char_end) -> text` (Phase-12 offsets are PAGE-LOCAL, so `page` is required)
      built over the Phase-6 ingest DoclingDocument JSONs (the source page text),
      hydrating each card's snippet at render time. Injected, so the renderer is
      Windows-golden-testable with a fake; snippets are LOCAL-only raw source text
@@ -356,10 +361,11 @@ INSTRUCTS the operator to install Docker + run the WSL2 `vm.max_map_count` step
 - Exact module APIs + dataclasses (`Candidate`, `Verdict`, `ResolvedEntity`,
   `ResolvedEdge`, `ResolutionConfig`); the `canonical_id` + `edge_id` helper
   signatures.
-- The `snippet_resolver` contract (doc_id + char range -> source text over the
-  Phase-6 DoclingDocument JSONs) + its injection into the packet renderer.
-- The investigation-scoped REPLACE Cypher (MERGE + scoped DELETE) +
-  `:Entity(investigation_id)` index; how member/provenance/edge rows are scoped.
+- The `snippet_resolver(doc_id, page, char_start, char_end)` contract (page-local
+  offsets -> Phase-6 reconstructed page text) + its injection into the renderer.
+- The investigation-scoped REPLACE Cypher (composite-key MERGE + scoped DELETE) +
+  the `:Entity(investigation_id, canonical_id)` node-key constraint; how
+  member/provenance/edge rows are scoped.
 - The HTML packet template (to be MOCKED UP for Tim's sign-off before building).
 - The Neo4j schema (labels, constraints, the member/provenance/edge Cypher).
 - The exact `ftm`-contract + Neo4j-service CI job YAML.
