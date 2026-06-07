@@ -29,7 +29,7 @@ jobs:
       - name: Offline suite + smoke (mcp-sqlite smoke runs -- uvx is on PATH)
         run: |
           . .venv/bin/activate
-          python -m pytest -m "not docling and not spacy and not xray and not tsa and not gliner and not ftm" -q
+          python -m pytest -m "not docling and not spacy and not xray and not tsa and not gliner and not ftm and not neo4j and not compose" -q
   heavy:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.heavy }}
     runs-on: ubuntu-latest
