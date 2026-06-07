@@ -79,10 +79,10 @@ class FakeClient:
     returns one dataset. Mirrors the YenteClient surface run_crossref uses."""
 
     def __init__(self):
-        self.match_calls = []  # list of (scope, body)
+        self.match_calls = []  # list of (scope, body, kw)
 
     def match(self, scope, body, **kw):
-        self.match_calls.append((scope, body))
+        self.match_calls.append((scope, body, kw))
         # Build one self-hit per query id in the body: each query echoes a
         # result that points back at its own canonical id (datasets carry the
         # data-scope name 'magpie_corpus', score 1.0, match True).
@@ -144,6 +144,15 @@ def test_run_crossref_batches_per_scope():
     assert len(fake.match_calls) == 2
     # Each call targets the data-scope name, not the friendly name.
     assert all(call[0] == "magpie_corpus" for call in fake.match_calls)
+    # run_crossref passes limit=cap (default 25) so yente returns up to `cap`
+    # candidates per query (else the client default of 5 would silently govern).
+    assert all(call[2].get("limit") == 25 for call in fake.match_calls)
+
+
+def test_run_crossref_passes_explicit_cap_as_limit():
+    fake = FakeClient()
+    yc.run_crossref(_snapshot(1), ["own_corpus"], fake, batch=100, cap=10)
+    assert fake.match_calls[0][2].get("limit") == 10
 
 
 def test_run_crossref_report_has_requested_scopes_and_hits():

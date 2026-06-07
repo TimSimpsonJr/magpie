@@ -80,7 +80,9 @@ def run_crossref(snapshot, scopes, client, *, threshold=0.7, cap=25, algorithm="
         scope_hits = []
         for i in range(0, len(ents), batch):
             body = xref.build_match_body(ents[i:i+batch])
-            resp = client.match(ds_scope, body, algorithm=algorithm, threshold=threshold)
+            # limit=cap so yente returns up to `cap` candidates PER QUERY -- without
+            # it the client default (5) would silently govern and the cap be dead.
+            resp = client.match(ds_scope, body, algorithm=algorithm, threshold=threshold, limit=cap)
             scope_hits += xref.parse_match_response(resp, scope=scope, threshold=threshold, cap=cap)
         hits_by_scope[scope] = scope_hits
     prov = dict(index_provenance or {})
