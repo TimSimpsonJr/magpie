@@ -28,10 +28,12 @@ it). 13b (yente cross-ref + yente-mcp) is a SEPARATE later PR.
   excludes unknown markers via the explicit `-m "not ..."` list -> ADD
   `and not neo4j and not compose` to the offline command + the CI offline job.
 - **Module skip guards:** `entity_nomenklatura` guards with
-  `importlib.util.find_spec("nomenklatura")` (like `entity_ftmize`);
-  `entity_graph_neo4j` guards its TESTS with the `neo4j` marker + a live-DB env
-  check, but the module imports the driver at top (driver present via
-  requirements-graph; only a live Neo4j is gated).
+  `importlib.util.find_spec("nomenklatura")` (like `entity_ftmize`).
+  `entity_graph_neo4j` imports the neo4j driver at top (Windows-safe via
+  requirements-graph), BUT its TEST module imports the driver + the graph module
+  INSIDE test bodies, is `neo4j`-marked, and skips when the driver / live DB is
+  absent -- so the offline CI job (which does NOT install requirements-graph)
+  COLLECTS the tests without ImportError (the `test_entity_ftmize` pattern).
 
 Pure-core modules (Tasks 1-3) import NONE of the above -> Windows-golden-testable.
 
@@ -98,48 +100,70 @@ The HITL packet generator + verdict handback (design D6). Stdlib + html.escape.
 
 ### Task 4 -- `scripts/entity_nomenklatura.py` (LINUX/CI edge; only nomenklatura importer)
 Runs resolution against the real resolver. `ftm`-marked tests; SKIPS on Windows.
-- `resolve(bundle_paths, scratch_dir, config) -> ResolveResult(candidate_snapshot,
-  packet_hash, auto_merge_log)`: set `NOMENKLATURA_DB_URL` to
-  `sqlite:///<scratch>/resolver.db`; `Resolver.make_default()`; `begin()`;
-  `load_entity_file_store(each bundle, resolver)`; `xref(resolver, store, index_dir,
-  algorithm=LogicV2, auto_threshold=config.auto_threshold)`; record the POSITIVE
-  auto-merges (pair, score, evidence) to `auto_merge_log`; drain
-  `get_candidates()` for `score in [review_floor, auto_threshold)` -> Candidates
-  (hydrate display fields + provenance from the store); `commit()`. Build the
-  candidate snapshot (Task 3) for the review packet.
-- `apply_verdicts(verdict_json, scratch_dir, config) -> ApplyResult(applied,
-  skipped, aborted_reason)`: FAIL-CLOSED (design D6) -- recompute the LIVE
-  candidate-snapshot hash; if `!=` the verdict file's packet_hash, RETURN
-  aborted("regenerate the packet"), apply nothing. Else `begin()`; per pair
-  re-check it is still a live NO_JUDGEMENT candidate at the packet's score; if so
-  `resolver.decide(left, right, Judgement.POSITIVE|NEGATIVE)` (unsure -> skip);
-  else record skipped; `commit()`.
-- `build_resolved_snapshot(scratch_dir, investigation_id, store) -> dict`: for every
-  member id, `resolver.get_canonical(id)` -> group members by canonical cluster;
-  per cluster derive `canonical_id` (Task 1) from the member ids, collect
-  caption/aliases/properties (from the store proxies) + the `resolver_id` (the NK-
-  canonical) + provenance; map edges' endpoints member->canonical; call
-  `entity_resolved_snapshot.build_snapshot`.
+The resolve -> human-review -> apply -> snapshot flow spans SEPARATE process
+invocations (the human reviews the HTML offline between them), so EVERYTHING
+persists to `scratch_dir` and each entry point RELOADS from disk -- no in-memory
+store is carried across the roundtrip. `load_entity_file_store(path, resolver,
+cleaned=True) -> SimpleMemoryStore` is per-PATH + IN-MEMORY (it persists nothing
+itself); only the resolver SQLite (`NOMENKLATURA_DB_URL`) persists the judgements.
+A `_load_store(entities_paths, resolver)` helper loads EACH bundle path into one
+combined store; `resolve` records `{entities_paths, config}` to `scratch/run.json`
+so the later steps reload the same inputs.
+- `resolve(entities_paths: list[Path], scratch_dir, config) -> ResolveResult(
+  candidate_snapshot_path, packet_hash, auto_merge_log_path)`: set
+  `NOMENKLATURA_DB_URL=sqlite:///<scratch>/resolver.db`; `Resolver.make_default()`;
+  `begin()`; `store = _load_store(entities_paths, resolver)`; `xref(resolver, store,
+  index_dir, algorithm=LogicV2, auto_threshold=config.auto_threshold)`; `commit()`.
+  AUTO-MERGE LOG source = the POSITIVE edges this xref created (iterate the resolver
+  edge table for `judgement==POSITIVE` with a non-human `user`), each hydrated with
+  score + the two captions + provenance from the store -> `scratch/auto_merge_log
+  .jsonl`. REVIEW band = `get_candidates()` filtered to `score in [review_floor,
+  auto_threshold)`, hydrated to Candidates (display fields + snippet provenance refs)
+  -> `entity_review_packet.build_candidate_snapshot` -> `scratch/candidate_snapshot
+  .json` (its hash IS packet_hash). Write `scratch/run.json`.
+- `apply_verdicts(verdict_json_path, scratch_dir, config) -> ApplyResult(applied,
+  skipped, aborted_reason)`: FAIL-CLOSED (design D6) -- reopen the resolver + reload
+  the store (from `run.json`); RECOMPUTE the live candidate-snapshot hash; if it
+  `!=` the verdict file's packet_hash, RETURN aborted("resolver moved -- regenerate
+  the packet"), applying NOTHING. Else `begin()`; per pair re-check it is STILL a
+  live NO_JUDGEMENT candidate at the packet's score before `resolver.decide(left,
+  right, Judgement.POSITIVE|NEGATIVE)` (unsure -> skip; a drifted pair -> skipped +
+  reported); `commit()`.
+- `build_resolved_snapshot(scratch_dir, investigation_id, config) -> dict`: reopen
+  the resolver + reload the store from `run.json` (NOT an in-memory arg). For every
+  member id `resolver.get_canonical(id)` -> group members into clusters; per cluster
+  derive `canonical_id` (Task 1) from its member ids + collect caption/aliases/
+  properties from the store proxies + `resolver_id` (the NK- canonical) + provenance.
+  Remap EACH member edge's endpoints member->canonical, then COALESCE: group remapped
+  edges by `edge_id` (Task 1), emitting ONE `ResolvedEdge` per canonical edge with
+  UNIONED provenance_refs + merged properties (many member edges can collapse onto
+  one canonical edge). Call `entity_resolved_snapshot.build_snapshot`.
 - TESTS (`ftm`-marked, CI; EXTENDS `test_entity_ftmize.test_nomenklatura_xref_candidate_smoke`):
-  load the `reviewed_intermediate_sample` bundle -> `resolve(LogicV2)` -> the two
-  same-name Persons surface in the review band; apply a `merge` verdict ->
-  `build_resolved_snapshot` -> ONE cluster, 2 members, a derived canonical_id, a
-  resolver_id; the FAIL-CLOSED abort on a wrong packet_hash; the auto_merge_log
-  shape. (Reuse the Phase-12 fixture; add a 2nd fixture with a clear-merge pair if
-  the sample's threshold lands outside the band under logic-v2.)
+  load the `reviewed_intermediate_sample` bundle -> `resolve(LogicV2)` writes the
+  scratch artifacts + the two same-name Persons surface in the review band; apply a
+  `merge` verdict -> `build_resolved_snapshot` (a SEPARATE call that RELOADS from
+  `run.json`, no store arg) -> ONE cluster, 2 members, a derived canonical_id, a
+  resolver_id; an EDGE-COALESCE case (two member edges collapsing onto one canonical
+  edge -> one ResolvedEdge, unioned provenance); the FAIL-CLOSED abort on a wrong
+  packet_hash; the auto_merge_log shape. (Reuse the Phase-12 fixture; add a 2nd
+  fixture with a clear-merge pair if the sample lands outside the band under logic-v2.)
 
 ### Task 5 -- `scripts/entity_graph_neo4j.py` (DOCKER edge; only neo4j importer)
 Writes the resolved snapshot to Neo4j. `neo4j`-marked tests (service container).
-- `ensure_schema(driver) -> None`: composite NODE-KEY constraint
-  `FOR (e:Entity) REQUIRE (e.investigation_id, e.canonical_id) IS NODE KEY`;
-  supporting indexes.
+- `ensure_schema(driver) -> None`: a SINGLE-property UNIQUENESS constraint `FOR
+  (e:Entity) REQUIRE e.scoped_id IS UNIQUE` on a synthesized `scoped_id =
+  investigation_id + ":" + canonical_id` (single-property uniqueness is Neo4j
+  COMMUNITY-supported; a composite NODE KEY is Enterprise-only, so we do NOT use it).
+  Relationships carry `edge_scoped_id = investigation_id + ":" + edge_id`. Plus a
+  supporting index on `:Entity(investigation_id)`.
 - `write(driver, snapshot) -> WriteStats`: investigation-SCOPED REPLACE (design D4)
-  in one managed transaction: (a) MERGE each `:Entity {investigation_id,
-  canonical_id}` SET props/member_ids/aliases/resolver_id; MERGE each relationship
-  keyed `(investigation_id, edge_id)` between its canonical endpoints; (b) DELETE
-  `:Entity {investigation_id: $inv}` (and its rels) whose canonical_id is NOT in
-  the snapshot's id set, and in-scope rels whose edge_id is NOT in the snapshot.
-  Idempotent (re-running the same snapshot is a no-op net of MERGE).
+  in one managed transaction: (a) MERGE each `:Entity {scoped_id}` SET
+  investigation_id/canonical_id/props/member_ids/aliases/resolver_id; MERGE each
+  relationship on `edge_scoped_id` between its canonical endpoints; (b) DELETE
+  `:Entity {investigation_id:$inv}` (+ its rels) whose canonical_id is NOT in the
+  snapshot's id set, and in-scope rels whose edge_id is NOT in the snapshot.
+  MERGE-on-scoped_id is idempotent and the DELETE stays investigation-scoped (the
+  D4 isolation, with no Enterprise dependency).
 - TESTS (`neo4j`-marked, service container; CANNED snapshot fixtures -- NO
   nomenklatura needed): ensure_schema; write a snapshot TWICE -> identical
   node/rel counts (idempotent); write a snapshot with one cluster + its edge
@@ -183,9 +207,16 @@ PyYAML frontmatter+body smoke (mirrors the other skill smokes).
 - `ftm` job: unchanged install (requirements-offline + requirements-ftm); it now
   also runs the Task-4 `ftm`-marked resolution-contract tests (same `-m ftm`).
 - `graph` job (NEW): a `neo4j:5.26.26-community` SERVICE container + install
-  requirements-graph; run `-m neo4j` (Task-5 writer tests against the live DB).
-- `compose` job (NEW): `docker compose config` + `docker compose --profile graph
-  up -d` + a Bolt connect smoke (`-m compose`), then `down`.
+  `requirements-offline.txt + requirements-graph.txt` (the offline base gives pytest
+  + the test helpers; requirements-graph gives the driver); run `-m neo4j` (Task-5
+  writer tests against the live DB).
+- `compose` job (NEW): install `requirements-offline.txt + requirements-graph.txt`;
+  `docker compose config` + `docker compose --profile graph up -d` + a Bolt connect
+  smoke (`-m compose`), then `down`.
+- COLLECTION-CLEAN: the `neo4j`/`compose` test modules import `scripts
+  .entity_graph_neo4j` + `neo4j` INSIDE test bodies (or via `importorskip`) and
+  carry `pytestmark` + a driver skipif, so the offline job (no requirements-graph)
+  collects them without ImportError (the `test_entity_ftmize` pattern).
 - RULE (Phase-12 lesson, restated): gate the PR merge on `ftm` + `graph` + `compose`,
   never on Windows-green + Codex-green alone.
 
@@ -243,9 +274,9 @@ Tim responds.
 - Does the `reviewed_intermediate_sample` pair land in the [0.70, 0.98) band under
   LogicV2, or do we need a 2nd fixture tuned to the band? (Empirical -- the CI ftm
   job answers it; Task 4 may add a fixture.)
-- Neo4j composite NODE KEY needs Enterprise in some versions -- CONFIRM Community
-  5.26 supports a composite node-key constraint; if not, fall back to a uniqueness
-  constraint on a synthesized `scoped_id = investigation_id + ":" + canonical_id`
-  property (MERGE on `scoped_id`). (Verify at impl time / in the `graph` CI job.)
+- (RESOLVED at plan-review) Neo4j graph identity = a SINGLE-property UNIQUENESS
+  constraint on a synthesized `scoped_id` / `edge_scoped_id` (Community-supported),
+  NOT a composite NODE KEY (Enterprise-only). Settled in Task 5 -- no impl-time
+  branching; the `graph` CI job verifies the constraint + scoped isolation.
 - The auto_merge_log persistence format + where the skill surfaces "review the N
   auto-merges" (a second, optional packet?).

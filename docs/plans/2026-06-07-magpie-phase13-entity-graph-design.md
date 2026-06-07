@@ -172,7 +172,10 @@ So a re-run with changed cluster membership (a new canonical_id) cleanly REPLACE
 the prior graph for THAT investigation and is idempotent. A composite NODE-KEY
 constraint on `:Entity(investigation_id, canonical_id)` enforces the scoped
 identity (the scoped MERGE matches the scoped DELETE); relationships keyed on
-`(investigation_id, edge_id)`.
+`(investigation_id, edge_id)`. (13a realizes this as a single-property uniqueness
+constraint on a synthesized `scoped_id = investigation_id + ":" + canonical_id`,
+since a composite NODE KEY is Neo4j-Enterprise-only -- same scoped-identity
+guarantee, Community-safe.)
 
 ### D5. Cross-corpus resolution, per-investigation resolver DB, single writer
 Resolve ACROSS the whole investigation corpus (all docs' bundles loaded into one
