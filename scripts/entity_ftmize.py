@@ -116,7 +116,10 @@ def write_bundle(intermediate: dict, out_dir, name: Optional[str] = None) -> dic
 
     manifest = {
         "schema_version": intermediate["schema_version"],
-        "dataset_namespace": name,
+        # The dataset_namespace is the corpus/run identity from the intermediate;
+        # `name` is only a file-prefix override and must NOT rewrite it (a caller
+        # choosing a different output prefix keeps the true namespace).
+        "dataset_namespace": intermediate["dataset_namespace"],
         "source_doc_ids": intermediate.get("source_doc_ids", []),
         "entity_count": len(nodes),
         "edge_count": len(edges),

@@ -119,6 +119,29 @@ def test_write_bundle_emits_three_files(tmp_path):
 
 
 @ftm
+def test_write_bundle_custom_name_keeps_true_namespace(tmp_path):
+    """A custom `name` is a FILE-PREFIX only; it must NOT rewrite the manifest's
+    dataset_namespace (the corpus/run identity stays the intermediate's)."""
+    import scripts.entity_ftmize as ftmize
+
+    intermediate = _load_intermediate()
+    true_ns = intermediate["dataset_namespace"]
+    paths = ftmize.write_bundle(intermediate, tmp_path, name="custom_prefix")
+
+    # Files use the custom prefix...
+    assert pathlib.Path(paths["entities"]).name == "custom_prefix.entities.ftm.json"
+    assert pathlib.Path(paths["manifest"]).name == "custom_prefix.manifest.json"
+
+    # ...but the manifest namespace is the intermediate's, not the file prefix.
+    manifest = json.loads(pathlib.Path(paths["manifest"]).read_text(encoding="utf-8"))
+    assert manifest["dataset_namespace"] == true_ns
+    assert manifest["dataset_namespace"] != "custom_prefix"
+
+    # The contract helper resolves files by the same `name` prefix.
+    ftmize.assert_phase13_consumable(tmp_path, "custom_prefix")
+
+
+@ftm
 def test_ftm_export_cypher(tmp_path):
     import scripts.entity_ftmize as ftmize
 
