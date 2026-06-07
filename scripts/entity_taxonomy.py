@@ -168,12 +168,16 @@ _GENERIC_RELATIONS = [
     ),
     RelationSpec(
         label="party to contract/procurement",
-        ftm_edge="ContractAward",
-        head_prop="authority",
-        tail_prop="supplier",
+        # FtM's ContractAward models a Contract -> supplier (it has NO agency/
+        # "authority" endpoint), so an agency<->vendor procurement relation maps to
+        # the generic UnknownLink with a descriptive role -- the deterministic
+        # catch-all -- not ContractAward. The procurement signal is kept as the role.
+        ftm_edge="UnknownLink",
+        head_prop="subject",
+        tail_prop="object",
         allowed_head=frozenset({"government agency", "organization"}),
         allowed_tail=frozenset({"company", "organization"}),
-        role=None,
+        role="party to contract/procurement",
     ),
     RelationSpec(
         label="affiliated/linked",

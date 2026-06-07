@@ -30,12 +30,12 @@
   ],
   "edges": [
     {
-      "id": "edge_award_deadbeef00112233445566778899aabbccddeeff",
-      "schema": "ContractAward",
-      "head_id": "node_org_gc_aabbccddeeff00112233445566778899a0b1c2d3",
-      "tail_id": "node_co_acme_1122334455667788990011223344556677889900",
+      "id": "edge_member_deadbeef00112233445566778899aabbccddeeff",
+      "schema": "Membership",
+      "head_id": "node_js_doc1_0a1b2c3d4e5f60718293a4b5c6d7e8f900112233",
+      "tail_id": "node_org_gc_aabbccddeeff00112233445566778899a0b1c2d3",
       "role": null,
-      "label": "party to contract/procurement"
+      "label": "member of"
     },
     {
       "id": "edge_link_0123456789abcdef0123456789abcdef01234567",
@@ -105,10 +105,10 @@
     },
     {
       "statement_id": "stmt_e1_7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e",
-      "target_id": "edge_award_deadbeef00112233445566778899aabbccddeeff",
+      "target_id": "edge_member_deadbeef00112233445566778899aabbccddeeff",
       "target_kind": "edge",
-      "prop": "party to contract/procurement",
-      "value": "Greenville County -> Acme Surveillance LLC",
+      "prop": "member of",
+      "value": "John Smith -> Greenville County",
       "doc_id": "doc1",
       "page": 1,
       "char_start": 40,

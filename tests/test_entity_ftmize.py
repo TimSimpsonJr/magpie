@@ -60,16 +60,16 @@ def test_to_ftm_schema_validity():
         assert rt.id == p.id
         assert rt.schema == p.schema
 
-    # Partition into node proxies (have "name") and edge proxies (an FtM edge schema).
-    node_ids = {n["id"] for n in intermediate["nodes"]}
-    edge_schemas = set(ftmize._EDGE_PROPS)
-
     # No dangling edge endpoint: every edge proxy's endpoint id values are node ids.
-    # Node proxies (the else branch) must positively carry a non-empty name.
+    # Edges are identified by FtM's OWN schema.edge flag, and their endpoint props
+    # come from schema.edge_source / schema.edge_target (authoritative -- the same
+    # source of truth to_ftm uses). Node proxies (the else branch) must carry a name.
+    node_ids = {n["id"] for n in intermediate["nodes"]}
     for p in proxies:
-        if p.schema.name in edge_schemas:
-            src_prop, tgt_prop = ftmize._EDGE_PROPS[p.schema.name]
-            endpoint_ids = list(p.get(src_prop)) + list(p.get(tgt_prop))
+        if p.schema.edge:
+            endpoint_ids = (
+                list(p.get(p.schema.edge_source)) + list(p.get(p.schema.edge_target))
+            )
             assert endpoint_ids, "edge %s has no endpoints" % p.id
             for eid in endpoint_ids:
                 assert eid in node_ids, (

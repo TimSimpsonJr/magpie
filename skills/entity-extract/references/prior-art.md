@@ -136,10 +136,16 @@ Edge entities (FtM "interval" entities) + their endpoint property names:
 - Employment(employee, employer), Membership(member, organization),
   Directorship(director, organization), Ownership(owner, asset),
   Representation(agent, client), Family(person, relative),
-  Associate(person, associate), ContractAward(authority, supplier),
+  Associate(person, associate),
+  ContractAward(contract, supplier)  <- NOTE: it links a Contract->supplier, NOT
+    agency->vendor (it has no "authority"/agency endpoint), so the taxonomy maps
+    "party to contract/procurement" to UnknownLink with a role, NOT ContractAward.
   UnknownLink(subject, object)  <- the deterministic catch-all fallback.
 All inherit Interval (sourceUrl, proof->Document, startDate, endDate, recordId,
 summary). Char-level provenance lives in the sidecar, not in FtM props.
+ftmize reads each edge's endpoint prop names from FtM's OWN
+schema.edge_source / schema.edge_target (authoritative -- never a hardcoded dict),
+so an edge schema's real endpoint properties can never drift from a guess.
 
 ## 8. ftm export CLI + nomenklatura (ftmize contract tests; Linux/CI)
 

@@ -23,20 +23,6 @@ from typing import Optional
 from followthemoney import model
 
 
-# Edge endpoint property names, keyed by FtM edge schema (fixed FtM standard).
-_EDGE_PROPS = {
-    "Employment": ("employee", "employer"),
-    "Membership": ("member", "organization"),
-    "Directorship": ("director", "organization"),
-    "Ownership": ("owner", "asset"),
-    "Representation": ("agent", "client"),
-    "Family": ("person", "relative"),
-    "Associate": ("person", "associate"),
-    "ContractAward": ("authority", "supplier"),
-    "UnknownLink": ("subject", "object"),
-}
-
-
 def _ftm_version() -> str:
     """Best-effort followthemoney version string (empty if unavailable)."""
     try:
@@ -62,19 +48,20 @@ def to_ftm(intermediate: dict) -> list:
         proxies.append(e)
 
     for edge in intermediate.get("edges", []):
-        if edge["schema"] not in _EDGE_PROPS:
-            raise ValueError(
-                "unmapped edge schema %r (not in _EDGE_PROPS)" % edge["schema"]
-            )
         e = model.make_entity(edge["schema"])
+        if not e.schema.edge:
+            raise ValueError(
+                "schema %r is not an FtM edge schema" % edge["schema"]
+            )
         e.id = edge["id"]
-        src_prop, tgt_prop = _EDGE_PROPS[edge["schema"]]
-        e.add(src_prop, edge["head_id"])
-        e.add(tgt_prop, edge["tail_id"])
+        # Use FollowTheMoney's OWN edge endpoint property names -- authoritative,
+        # never a hardcoded guess: schema.edge_source / schema.edge_target.
+        e.add(e.schema.edge_source, edge["head_id"])
+        e.add(e.schema.edge_target, edge["tail_id"])
         if edge.get("role"):
-            role_prop = "relationship" if edge["schema"] in ("Family", "Associate") else "role"
-            # quiet: silently skip if this schema lacks the prop
-            e.add(role_prop, edge["role"], quiet=True)
+            # most FtM edges (UnknownLink/Membership/...) carry a "role" prop;
+            # quiet skips it on a schema that lacks one.
+            e.add("role", edge["role"], quiet=True)
         proxies.append(e)
 
     return proxies
