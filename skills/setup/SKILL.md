@@ -54,7 +54,24 @@ c. Instruct for the system binaries. The binaries pip cannot manage are uv/uvx,
      (Windows), `brew install ghostscript` (macOS), `apt install ghostscript`
      (Debian/Ubuntu).
 
-d. Re-probe and report. Run `scripts/detect_tier.py` again and report the
+d. Layer 2 (entity-graph): Docker. The Layer-2 "build an entity graph" capability
+   is operator-tier and Docker-gated; the journalist onramp stays Docker-free.
+   Setup NEVER auto-installs Docker -- it points the operator to the official
+   installer and INSTRUCTS them to run it themselves:
+   - Install Docker Desktop from the official installer
+     (https://www.docker.com/products/docker-desktop), then start it. The
+     entity-graph compose pulls neo4j:5.26.26-community on first run; Magpie ships
+     the compose + docs and never the image.
+   - On Windows, Docker Desktop runs on the WSL2 backend. Persist the kernel
+     setting `vm.max_map_count=262144` so it survives a reboot -- add
+     `vm.max_map_count=262144` to `/etc/sysctl.conf` inside the WSL2 distro (or set
+     `kernelCommandLine = sysctl.vm.max_map_count=262144` under `[wsl2]` in
+     `%UserProfile%\.wslconfig`, or `sysctl.vm.max_map_count=262144` via
+     `/etc/wsl.conf`). It is harmless for Neo4j now and is REQUIRED for the 13b
+     OpenSearch service; setting it once during setup avoids the reboot trap later.
+   This step INSTRUCTS only: setup never installs Docker for the operator.
+
+e. Re-probe and report. Run `scripts/detect_tier.py` again and report the
    now-current capability map so the operator can see exactly what each install
    unlocked and what (if anything) is still reduced.
 

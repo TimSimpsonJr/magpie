@@ -1,0 +1,12 @@
+# Magpie Track-B Layer-2 GRAPH dependencies (Phase 13a entity-graph).
+#
+# The Neo4j Python driver is pure-Python, Apache-2.0, and CROSS-PLATFORM (unlike
+# the Linux-only FtM stack in requirements-ftm.txt -- PyICU). It is kept OUT of the
+# Layer 0-1 requirements-dev.txt so a laptop-local Track-A user never installs it;
+# it is installed only for the entity-graph workflow + the CI `graph`/`compose`
+# jobs. scripts/entity_graph_neo4j.py imports it at top (Windows-safe), but its
+# tests are `neo4j`-marked and import the driver INSIDE test bodies, so the offline
+# suite collects clean without this file installed (the test_entity_ftmize pattern).
+#
+# Verified on PyPI (2026-06-07): neo4j 6.2.0 (Apache-2.0 + Python-2.0), Python >=3.10.
+neo4j==6.2.0

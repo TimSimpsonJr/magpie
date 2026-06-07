@@ -11,4 +11,6 @@ markers = [
     "mcp: served-DB smoke that launches uvx mcp-sqlite (skipped if uvx absent)",
     "gliner: model-gated GLiNER/GLiREL integration that loads real weights (Track B entity-extract); select with -m gliner",
     "ftm: followthemoney/nomenklatura FtM-contract tests (Track B; Linux/CI only, skip when followthemoney absent); select with -m ftm",
+    "neo4j: Neo4j graph-writer tests that need a live Neo4j (service container; Track B Phase 13a); select with -m neo4j",
+    "compose: docker-compose graph-profile smoke -- config + up + Bolt connect (Track B Phase 13a); select with -m compose",
 ]

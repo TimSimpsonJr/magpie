@@ -44,6 +44,19 @@ immigration_exhibit.csv
 # --- Session handoffs (local-only: internal process notes + local paths; public repo) ---
 docs/handoffs/
 
+# --- Phase 13a entity-graph: nomenklatura resolver scratch DB ---
+# The per-investigation resolver SQLite lives under a gitignored scratch dir
+# (NOMENKLATURA_DB_URL). This is a defensive rule against the library's default
+# ./nomenklatura.db fallback path ever leaking into the tree.
+nomenklatura.db
+*.nomenklatura.db
+
+# --- Phase 13a infra secrets (commit infra/.env.example, never infra/.env) ---
+infra/.env
+
+# --- Local preview/dev-server config (Claude preview) ---
+.claude/launch.json
+
 # --- OS / editor noise ---
 .DS_Store
 Thumbs.db

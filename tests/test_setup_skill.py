@@ -32,5 +32,9 @@ def test_body_documents_setup_contract():
     assert "operator" in low
     # setup MAY install; doctor is the read-only sibling -- the asymmetry is stated
     assert "doctor" in low
-    # no Docker anywhere in Layer 0-1
-    assert "docker" not in low
+    # Layer 2 (Phase 13a): setup INSTRUCTS for Docker (entity-graph) but NEVER
+    # auto-installs it -- it points the operator to the official installer. (The
+    # Layer 0-1 no-Docker framing now applies only to the journalist/operator
+    # ONRAMP docs; that is pinned by test_onramp_docs.py.)
+    assert "docker" in low                             # Layer-2 entity-graph section
+    assert "never auto-installs" in low or "never silently installs" in low

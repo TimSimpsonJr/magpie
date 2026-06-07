@@ -31,4 +31,11 @@ def test_body_documents_read_only_contract():
     # never installs / never runs setup / never starts the server
     assert "never" in low
     assert "setup" in low                              # points back to setup/operator
-    assert "docker" not in low
+    # Layer 2 (Phase 13a): doctor now reports the entity-graph capability via a
+    # strictly READ-ONLY Docker probe -- which + `docker version`/`docker compose
+    # version` rc only, NEVER a run/pull/start. The read-only contract is the pin;
+    # installing Docker is setup's job, not doctor's. (The Layer 0-1 no-Docker
+    # framing now applies only to the ONRAMP docs, pinned by test_onramp_docs.py.)
+    assert "docker" in low                             # Layer-2 read-only probe
+    assert "read-only" in low                          # the Docker probe is read-only
+    assert "pull" in low or "starts a container" in low  # spells out what it never does
