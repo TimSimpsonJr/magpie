@@ -16,6 +16,7 @@ intentional and load-bearing -- do not flag it.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -54,6 +55,10 @@ def canonical_id(member_ids: list[str]) -> str:
     its one member, so every node has a canonical_id immediately. Two different
     member-sets always yield different ids; a membership change yields a NEW id
     (a genuinely different cluster).
+
+    Delegates to entity_extract.stable_id, which is the authoritative formula;
+    the equation above documents its current behavior (kept honest by the
+    singleton golden test, which pins the exact hex).
     """
     members = sorted(set(member_ids))
     if not members:
@@ -86,8 +91,12 @@ def bucket(score: float, config: ResolutionConfig) -> str:
 
     Both thresholds are INCLUSIVE: score >= auto_threshold -> "auto";
     score >= review_floor -> "review"; otherwise "distinct". Exactly the
-    auto_threshold is "auto"; exactly the review_floor is "review".
+    auto_threshold is "auto"; exactly the review_floor is "review". A NaN score
+    is a pipeline bug (an uninitialized matcher float) -> raise rather than
+    silently bucket it "distinct" (nan >= x is always False).
     """
+    if math.isnan(score):
+        raise ValueError("bucket() received a NaN score")
     if score >= config.auto_threshold:
         return "auto"
     if score >= config.review_floor:
@@ -129,8 +138,8 @@ class CandidateSide:
     caption: str
     schema: str
     aliases: list[str] = field(default_factory=list)
-    properties: dict = field(default_factory=dict)
-    mentions: list = field(default_factory=list)
+    properties: dict[str, list[str]] = field(default_factory=dict)
+    mentions: list[Mention] = field(default_factory=list)
 
 
 @dataclass

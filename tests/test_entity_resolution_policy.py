@@ -7,6 +7,7 @@ and the Candidate/CandidateSide/Mention/Verdict dataclasses.
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import re
 import subprocess
@@ -52,7 +53,7 @@ def test_resolution_config_overridable():
 
 def test_resolution_config_is_frozen():
     config = ResolutionConfig()
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         config.auto_threshold = 0.5  # type: ignore[misc]
 
 
@@ -82,6 +83,9 @@ def test_canonical_id_dedup_safe():
 
 def test_canonical_id_singleton_equals_stable_id_of_member():
     assert canonical_id(["x"]) == stable_id("x")
+    # Hard golden: pins the exact sha256[:40] so a change in the underlying
+    # stable_id algorithm (delimiter or hash) fails loudly here.
+    assert canonical_id(["x"]) == "2d711642b726b04401627ca9fbac32f5c8530fb1"
 
 
 def test_canonical_id_distinct_member_sets_differ():
@@ -161,6 +165,14 @@ def test_bucket_config_driven_with_custom_thresholds():
     assert bucket(0.98, strict) == "review"
 
 
+def test_bucket_rejects_nan_score():
+    # A NaN score is a pipeline bug; bucket must raise, not silently return
+    # "distinct" (nan >= x is always False).
+    config = ResolutionConfig()
+    with pytest.raises(ValueError):
+        bucket(float("nan"), config)
+
+
 # ---------------------------------------------------------------------------
 # Mention / CandidateSide / Candidate
 # ---------------------------------------------------------------------------
@@ -180,7 +192,7 @@ def test_mention_fields_and_defaults():
 
 def test_mention_is_frozen():
     mention = Mention(doc_id="doc1", page=1, char_start=0, char_end=1)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         mention.page = 99  # type: ignore[misc]
 
 
@@ -266,7 +278,7 @@ def test_verdict_rejects_junk():
 
 def test_verdict_is_frozen():
     verdict = Verdict(left_id="L", right_id="R", verdict="merge")
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         verdict.verdict = "distinct"  # type: ignore[misc]
 
 
