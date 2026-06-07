@@ -45,6 +45,8 @@ from dataclasses import dataclass
 
 from neo4j import GraphDatabase  # noqa: F401  (the only neo4j-driver import surface)
 
+from scripts import entity_resolved_snapshot  # pure stdlib; does NOT taint the neo4j-only-importer status
+
 
 @dataclass
 class WriteStats:
@@ -198,7 +200,17 @@ def write(driver, snapshot: dict) -> WriteStats:
     Every MATCH/MERGE/DELETE is scoped to investigation_id=$inv, so a DIFFERENT
     investigation's subgraph is never read or deleted (the D4 isolation). The tx
     counters are summed into WriteStats. Takes an injected driver.
+
+    Ordering contract: ensure_schema(driver) MUST have been called before the
+    first write() (the skill orchestrates this) -- the scoped_id uniqueness
+    constraint is what makes the MERGE upsert idempotent.
+
+    Fails fast: the snapshot is validated via
+    entity_resolved_snapshot.assert_snapshot_consumable BEFORE any DB round-trip,
+    so an inconsistent snapshot (e.g. a dangling edge endpoint) raises a clear
+    AssertionError instead of silently producing a partial write.
     """
+    entity_resolved_snapshot.assert_snapshot_consumable(snapshot)
     investigation_id = snapshot["metadata"]["investigation_id"]
     entities = _entity_rows(investigation_id, snapshot)
     edges = _edge_rows(investigation_id, snapshot)
@@ -233,7 +245,11 @@ def write(driver, snapshot: dict) -> WriteStats:
         )
         counters = result.consume().counters
         stats.nodes_deleted += counters.nodes_deleted
-        # DETACH DELETE may also drop rels of removed nodes; account for them.
+        # No double count: step (c) already pre-cleaned every in-scope stale rel,
+        # so for a CONSISTENT snapshot this DETACH only removes rels of the nodes
+        # being deleted here that survived step (c) -- which is none (any rel of a
+        # to-be-deleted node is in-scope and was dropped by (c)). The += is the
+        # honest tx-counter sum; the two steps cannot count the same rel twice.
         stats.relationships_deleted += counters.relationships_deleted
 
         return stats

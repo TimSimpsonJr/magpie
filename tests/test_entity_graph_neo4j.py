@@ -121,8 +121,9 @@ def _rel_count(driver, investigation_id):
     return rec["n"]
 
 
-def test_ensure_schema_idempotent_and_constraint_exists():
-    """ensure_schema twice raises nothing and the scoped_id constraint exists."""
+def test_ensure_schema_idempotent_and_constraint_and_index_exist():
+    """ensure_schema twice raises nothing; the scoped_id constraint AND the
+    entity_investigation index both exist."""
     import scripts.entity_graph_neo4j as graph
 
     driver = _driver_or_skip()
@@ -130,8 +131,12 @@ def test_ensure_schema_idempotent_and_constraint_exists():
         graph.ensure_schema(driver)
         graph.ensure_schema(driver)  # idempotent -- second call must not error.
         with driver.session(database="neo4j") as session:
-            names = [r["name"] for r in session.run("SHOW CONSTRAINTS YIELD name")]
-        assert "entity_scoped_id" in names
+            constraint_names = [
+                r["name"] for r in session.run("SHOW CONSTRAINTS YIELD name")
+            ]
+            index_names = [r["name"] for r in session.run("SHOW INDEXES YIELD name")]
+        assert "entity_scoped_id" in constraint_names
+        assert "entity_investigation" in index_names
     finally:
         driver.close()
 
@@ -249,7 +254,105 @@ def test_scoped_isolation_across_investigations():
                 b=inv_b,
             ).single()
         assert rec["n"] == 2
+
+        # CONTENT isolation: A's shared-canonical node keeps its ORIGINAL caption
+        # ("Alice"), not B's "Alice-in-B" -- proving the MERGE keys on scoped_id
+        # (inv + ":" + canonical), not on the bare canonical_id.
+        with driver.session(database="neo4j") as session:
+            rec = session.run(
+                "MATCH (e:Entity {scoped_id: $sid}) RETURN e.caption AS caption",
+                sid=inv_a + ":c_alice",
+            ).single()
+        assert rec["caption"] == "Alice"
     finally:
         _clean_investigation(driver, inv_a)
         _clean_investigation(driver, inv_b)
+        driver.close()
+
+
+def test_empty_snapshot_wipes_investigation():
+    """The snapshot is the source of truth: writing an EMPTY snapshot (no
+    entities, no edges) for an investigation deletes ALL of its nodes. Pins the
+    "empty snapshot wipes the investigation" REPLACE semantics. An empty snapshot
+    is consumable (no edges -> nothing can dangle)."""
+    import scripts.entity_graph_neo4j as graph
+
+    inv = "test_empty_snapshot_wipes_investigation_1"
+    driver = _driver_or_skip()
+    try:
+        graph.ensure_schema(driver)
+        _clean_investigation(driver, inv)
+
+        graph.write(driver, _two_entity_one_edge(inv))
+        assert _entity_count(driver, inv) == 2
+        assert _rel_count(driver, inv) == 1
+
+        # An EMPTY snapshot for the SAME investigation wipes it entirely.
+        graph.write(driver, _canned_snapshot(inv, entities=[], edges=[]))
+        assert _entity_count(driver, inv) == 0
+        assert _rel_count(driver, inv) == 0
+    finally:
+        _clean_investigation(driver, inv)
+        driver.close()
+
+
+def test_write_rejects_dangling_edge():
+    """write() fails fast (AssertionError) on a snapshot whose edge references a
+    canonical_id absent from entities, BEFORE any partial DB write (fix: the
+    assert_snapshot_consumable guard at the top of write)."""
+    import scripts.entity_graph_neo4j as graph
+
+    inv = "test_write_rejects_dangling_edge_1"
+    driver = _driver_or_skip()
+    try:
+        graph.ensure_schema(driver)
+        _clean_investigation(driver, inv)
+
+        # Edge tail "c_ghost" is NOT among the entities -> dangling.
+        bad = _canned_snapshot(
+            inv,
+            entities=[_entity("c_alice", caption="Alice")],
+            edges=[_edge("e_bad", "c_alice", "c_ghost")],
+        )
+        with pytest.raises(AssertionError):
+            graph.write(driver, bad)
+
+        # Fail-fast: nothing was written (the guard runs before any round-trip).
+        assert _entity_count(driver, inv) == 0
+    finally:
+        _clean_investigation(driver, inv)
+        driver.close()
+
+
+def test_null_role_edge_is_stored():
+    """An edge with role=None is written without crashing and is queryable with
+    a null r.role (role may legitimately be absent)."""
+    import scripts.entity_graph_neo4j as graph
+
+    inv = "test_null_role_edge_is_stored_1"
+    driver = _driver_or_skip()
+    try:
+        graph.ensure_schema(driver)
+        _clean_investigation(driver, inv)
+
+        snap = _canned_snapshot(
+            inv,
+            entities=[
+                _entity("c_alice", caption="Alice"),
+                _entity("c_bob", caption="Bob"),
+            ],
+            edges=[_edge("e_ab", "c_alice", "c_bob", role=None)],
+        )
+        graph.write(driver, snap)
+
+        assert _rel_count(driver, inv) == 1
+        with driver.session(database="neo4j") as session:
+            rec = session.run(
+                "MATCH (:Entity {investigation_id: $inv})"
+                "-[r:REL {edge_id: 'e_ab'}]->() RETURN r.role AS role",
+                inv=inv,
+            ).single()
+        assert rec["role"] is None
+    finally:
+        _clean_investigation(driver, inv)
         driver.close()
