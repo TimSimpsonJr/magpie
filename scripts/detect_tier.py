@@ -39,10 +39,15 @@ _XRAY_DIST = "x-ray"
 _OCRMYPDF_DIST = "ocrmypdf"
 _SPACY_DIST = "spacy"
 _SPACY_MODEL = "en_core_web_lg"
+# Track B (Phase 12) entity-extract: GLiNER entities + GLiREL relations. The
+# glirel relation-model WEIGHTS are CC BY-NC-SA 4.0 (non-commercial); the user
+# downloads them on first use (not vendored). The FtM/graph layer
+# (followthemoney/nomenklatura) is a LATER phase and is Linux/CI only.
+_ENTITY_DISTS = ["gliner", "glirel"]
 
 _ALL_DISTS = sorted(set(
     _CORE_DISTS + _INGEST_DISTS + _REDACT_OFFLINE_DISTS + _EVIDENCE_DISTS
-    + [_XRAY_DIST, _OCRMYPDF_DIST, _SPACY_DIST]
+    + _ENTITY_DISTS + [_XRAY_DIST, _OCRMYPDF_DIST, _SPACY_DIST]
 ))
 
 _DOC_CAPS = ["ingest native PDFs", "PII scan", "redaction QA", "citation verify",
@@ -166,6 +171,18 @@ def build_capability_map(probes):
         degraded_note="timestamping and verify-on-store work; the openssl second-tool cross-check is unavailable",
         fix="run setup (mise run bootstrap)",
         optional_fix="install OpenSSL providing the 'ts' subcommand; see OPERATOR_GUIDE.md",
+    )
+
+    # Track B (Phase 12). Independent of the Track-A document workflows above, so
+    # it is NOT in the document-workflows rollup -- a missing entity stack never
+    # touches the core/document headline.
+    caps["extract entities (Track B)"] = _cap(
+        requires=_ENTITY_DISTS,
+        missing=_missing(dists, _ENTITY_DISTS),
+        optional_missing=[],
+        blocks="Building a person/organization entity-and-relationship network from a document (GLiNER entities + GLiREL relations), gated by a mandatory human review.",
+        fix="run setup (mise run bootstrap) installs gliner + glirel; NOTE the GLiREL relation-model weights are CC BY-NC-SA 4.0 (non-commercial) and download on first use",
+        unavailable_note="Track B; the FtM/graph layer (followthemoney/nomenklatura) is a later phase and runs on Linux/CI only",
     )
 
     return caps

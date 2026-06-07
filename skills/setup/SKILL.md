@@ -28,9 +28,15 @@ a. Probe first. Run `scripts/detect_tier.py` and SHOW the operator what is prese
 b. Bootstrap the Python side. With the operator present and consenting, run
    `mise run bootstrap`. That installs the pinned pip dependencies and the
    en_core_web_lg spaCy wheel into the project venv. (The Docling and RapidOCR model
-   weights are not downloaded here; they fetch on the first ingest run.) In the
-   -NoProfile PowerShell shell, bare `python` is the wrong interpreter, so the
-   fallback that does the same install is:
+   weights are not downloaded here; they fetch on the first ingest run.) Bootstrap
+   also installs the Track-B entity-extract models gliner and glirel; like Docling,
+   their weights download on first use. NOTE the license: the GLiREL relation-model
+   weights are CC BY-NC-SA 4.0 (non-commercial) -- the user downloads them (not
+   vendored) and Magpie's MIT code is unaffected. The FtM/graph layer
+   (followthemoney/nomenklatura) is Linux/CI only and is NOT installed on Windows
+   (PyICU has no Windows wheel), so on Windows the entity-extract deliverable is the
+   reviewed intermediate. In the -NoProfile PowerShell shell, bare `python` is the
+   wrong interpreter, so the fallback that does the same install is:
    `& .venv\Scripts\python.exe -m pip install -r requirements-dev.txt`
 
 c. Instruct for the system binaries. The binaries pip cannot manage are uv/uvx,

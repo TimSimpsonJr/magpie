@@ -21,8 +21,9 @@ anytime, by anyone, as often as you like: it only reads the state of the machine
 
 Doctor renders the capability map in user verbs (analyze datasets, ingest native
 PDFs, OCR preprocessing for scans, PII scan, redaction QA, citation verify, evidence
-timestamp), plus the subordinate two-line headline (core structured-data analysis,
-and the document-workflows rollup). For each gap it shows what that gap blocks and the
+timestamp, and extract entities (Track B)), plus the subordinate two-line headline
+(core structured-data analysis, and the document-workflows rollup; the Track-B
+entity-extract capability is independent of both). For each gap it shows what that gap blocks and the
 single next instruction: ask your operator to run setup, or, for a missing system
 binary, the one-line hint naming the binary to install. Doctor reports a capability
 map, never a single linear tier score.
