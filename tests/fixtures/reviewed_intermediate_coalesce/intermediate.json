@@ -1,0 +1,125 @@
+{
+  "schema_version": "1.0",
+  "dataset_namespace": "greenville_flock_coalesce",
+  "source_doc_ids": ["doc1", "doc2"],
+  "nodes": [
+    {
+      "id": "node_js_doc1_0a1b2c3d4e5f60718293a4b5c6d7e8f900112233",
+      "schema": "Person",
+      "name": "John Smith",
+      "label": "person"
+    },
+    {
+      "id": "node_js_doc2_99887766554433221100ffeeddccbbaa0a1b2c3d",
+      "schema": "Person",
+      "name": "John Smith",
+      "label": "person"
+    },
+    {
+      "id": "node_org_gc_aabbccddeeff00112233445566778899a0b1c2d3",
+      "schema": "Organization",
+      "name": "Greenville County",
+      "label": "government agency"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_member_d1_deadbeef00112233445566778899aabbccddeeff",
+      "schema": "Membership",
+      "head_id": "node_js_doc1_0a1b2c3d4e5f60718293a4b5c6d7e8f900112233",
+      "tail_id": "node_org_gc_aabbccddeeff00112233445566778899a0b1c2d3",
+      "role": null,
+      "label": "member of"
+    },
+    {
+      "id": "edge_member_d2_cafef00d00112233445566778899aabbccddeeff",
+      "schema": "Membership",
+      "head_id": "node_js_doc2_99887766554433221100ffeeddccbbaa0a1b2c3d",
+      "tail_id": "node_org_gc_aabbccddeeff00112233445566778899a0b1c2d3",
+      "role": null,
+      "label": "member of"
+    }
+  ],
+  "provenance": [
+    {
+      "statement_id": "stmt_n1_3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a",
+      "target_id": "node_js_doc1_0a1b2c3d4e5f60718293a4b5c6d7e8f900112233",
+      "target_kind": "entity",
+      "prop": "name",
+      "value": "John Smith",
+      "doc_id": "doc1",
+      "page": 1,
+      "char_start": 10,
+      "char_end": 20,
+      "model": "gliner_medium-v2.1",
+      "confidence": 0.91,
+      "reviewed": true
+    },
+    {
+      "statement_id": "stmt_n2_4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+      "target_id": "node_js_doc2_99887766554433221100ffeeddccbbaa0a1b2c3d",
+      "target_kind": "entity",
+      "prop": "name",
+      "value": "John Smith",
+      "doc_id": "doc2",
+      "page": 1,
+      "char_start": 5,
+      "char_end": 15,
+      "model": "gliner_medium-v2.1",
+      "confidence": 0.88,
+      "reviewed": true
+    },
+    {
+      "statement_id": "stmt_n3_5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
+      "target_id": "node_org_gc_aabbccddeeff00112233445566778899a0b1c2d3",
+      "target_kind": "entity",
+      "prop": "name",
+      "value": "Greenville County",
+      "doc_id": "doc1",
+      "page": 1,
+      "char_start": 40,
+      "char_end": 57,
+      "model": "gliner_medium-v2.1",
+      "confidence": 0.95,
+      "reviewed": true
+    },
+    {
+      "statement_id": "stmt_e1_7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e",
+      "target_id": "edge_member_d1_deadbeef00112233445566778899aabbccddeeff",
+      "target_kind": "edge",
+      "prop": "member of",
+      "value": "John Smith -> Greenville County",
+      "doc_id": "doc1",
+      "page": 1,
+      "char_start": 40,
+      "char_end": 91,
+      "model": "glirel-large-v0",
+      "confidence": 0.31,
+      "reviewed": true
+    },
+    {
+      "statement_id": "stmt_e2_8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f",
+      "target_id": "edge_member_d2_cafef00d00112233445566778899aabbccddeeff",
+      "target_kind": "edge",
+      "prop": "member of",
+      "value": "John Smith -> Greenville County",
+      "doc_id": "doc2",
+      "page": 1,
+      "char_start": 30,
+      "char_end": 80,
+      "model": "glirel-large-v0",
+      "confidence": 0.29,
+      "reviewed": true
+    }
+  ],
+  "counts": {
+    "nodes": 3,
+    "edges": 2,
+    "provenance": 5
+  },
+  "created_with": {
+    "entity_model": "gliner_medium-v2.1",
+    "relation_model": "glirel-large-v0",
+    "taxonomy": "surveillance/flock"
+  }
+}
