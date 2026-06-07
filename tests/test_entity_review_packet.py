@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -129,7 +130,9 @@ def test_packet_hash_is_deterministic():
     _, h1 = build_candidate_snapshot([c1, c2], **_META)
     _, h2 = build_candidate_snapshot([c1, c2], **_META)
     assert h1 == h2
-    assert len(h1) == 64  # sha256 hexdigest
+    # Canonical form: "sha256:" + 64-char hexdigest.
+    assert h1.startswith("sha256:")
+    assert len(h1) == len("sha256:") + 64
 
 
 def test_packet_hash_stable_under_candidate_input_order():
@@ -245,6 +248,13 @@ def test_render_html_embeds_real_packet_hash_and_investigation():
     assert packet_hash in html_out
     assert "3f9c1a...d2" not in html_out  # the mockup demo hash is gone
     assert "simpsonville_alpr" in html_out
+    # REGRESSION (the bug a substring check missed): the embedded PACKET_HASH must
+    # EQUAL build's returned packet_hash exactly. A bare-vs-"sha256:"-prefixed
+    # mismatch would make Task 4's apply_verdicts always abort. Extract + compare
+    # for equality, not mere containment.
+    m = re.search(r'var PACKET_HASH = "([^"]+)"', html_out)
+    assert m is not None, "PACKET_HASH not found in rendered script"
+    assert m.group(1) == packet_hash
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +359,47 @@ def test_render_html_escapes_injected_script_in_caption():
     # The escaped form is present; the live tag is NOT.
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_out
     assert "<script>alert(1)</script>" not in html_out
+
+
+def test_render_html_escapes_injected_script_in_alias_and_property_key():
+    # Injection via an ALIAS and via a property KEY (not just caption/value).
+    payload = "<script>alert(1)</script>"
+    side_l = CandidateSide(
+        id="n_l",
+        caption="Plain",
+        schema="Person",
+        aliases=[payload],
+        properties={payload: ["v"]},  # the KEY is attacker-controlled too
+        mentions=[_mk_mention("d.pdf", 1, 0, 5, "Smith")],
+    )
+    side_r = CandidateSide(
+        id="n_r",
+        caption="Other",
+        schema="Person",
+        aliases=[],
+        properties={},
+        mentions=[_mk_mention("e.pdf", 1, 0, 5, "Smith")],
+    )
+    cand = Candidate(left=side_l, right=side_r, score=0.80)
+    snap, _ = build_candidate_snapshot([cand], **_META)
+    html_out = render_html(snap, _resolver_for(cand))
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_out
+    assert "<script>alert(1)</script>" not in html_out
+
+
+def test_render_html_neutralizes_script_breakout_in_investigation_id():
+    # investigation_id is embedded in the JS via _js_string (json-encode + replace
+    # "</" -> "<\/"), and html.escape'd in the meta header, so a "</script>" in it
+    # cannot break out of the packet's own <script> element.
+    c1, _ = _two_candidate_snapshot_inputs()
+    meta = dict(_META)
+    meta["investigation_id"] = "inv</script><script>alert(1)</script>"
+    snap, _ = build_candidate_snapshot([c1], **meta)
+    html_out = render_html(snap, _resolver_for(c1))
+    # Exactly one raw closing tag: the packet's own. The injected ones are
+    # neutralized (escaped in meta, "<\/script>" in the JS literal).
+    assert html_out.count("</script>") == 1
+    assert "<\\/script>" in html_out
 
 
 def test_render_html_marks_mention_in_snippet():
@@ -496,6 +547,31 @@ def test_parse_verdicts_rejects_bad_verdict_value():
             "investigation_id": "x",
             "packet_hash": "h",
             "verdicts": [{"left": "a", "right": "b", "verdict": "bogus"}],
+        }
+    )
+    with pytest.raises(ValueError):
+        parse_verdicts(export)
+
+
+def test_parse_verdicts_rejects_non_object_top_level():
+    with pytest.raises(ValueError):
+        parse_verdicts(json.dumps([1, 2, 3]))
+
+
+def test_parse_verdicts_rejects_numeric_packet_hash():
+    export = json.dumps(
+        {"investigation_id": "x", "packet_hash": 42, "verdicts": []}
+    )
+    with pytest.raises(ValueError):
+        parse_verdicts(export)
+
+
+def test_parse_verdicts_rejects_row_that_is_a_list():
+    export = json.dumps(
+        {
+            "investigation_id": "x",
+            "packet_hash": "h",
+            "verdicts": [["a", "b", "merge"]],  # a row must be an object
         }
     )
     with pytest.raises(ValueError):

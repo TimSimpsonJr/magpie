@@ -113,10 +113,20 @@ def build_candidate_snapshot(
 
 
 def _packet_hash(candidates_payload: list) -> str:
-    """sha256 of the canonical-JSON candidates payload (metadata excluded)."""
-    return hashlib.sha256(
+    """The canonical packet_hash: "sha256:" + sha256 hexdigest of the
+    canonical-JSON candidates payload (metadata excluded).
+
+    The "sha256:" prefix is the SINGLE canonical form used everywhere -- the
+    value build_candidate_snapshot returns, the value render_html embeds into the
+    export script, and the value Task 4's apply_verdicts recomputes + compares --
+    so the three can never drift. (A bare-vs-prefixed mismatch would make the
+    fail-closed guard ALWAYS abort.) It also matches the repo's hash-string
+    convention, e.g. resolver_db_hash.
+    """
+    digest = hashlib.sha256(
         canonical_json(candidates_payload).encode("utf-8")
     ).hexdigest()
+    return "sha256:" + digest
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +469,9 @@ def _render_script(investigation_id: str, packet_hash: str) -> str:
     # escapes any </script> sequence as <\/script> via the slash, but to be safe
     # we additionally guard the closing-tag breakout below.
     inv_literal = _js_string(investigation_id)
-    hash_literal = _js_string("sha256:" + packet_hash)
+    # packet_hash already carries the canonical "sha256:" prefix (see _packet_hash);
+    # embed it VERBATIM so the export matches build_candidate_snapshot exactly.
+    hash_literal = _js_string(packet_hash)
     return (
         "<script>\n"
         "(function(){\n"
