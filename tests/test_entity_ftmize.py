@@ -65,6 +65,7 @@ def test_to_ftm_schema_validity():
     edge_schemas = set(ftmize._EDGE_PROPS)
 
     # No dangling edge endpoint: every edge proxy's endpoint id values are node ids.
+    # Node proxies (the else branch) must positively carry a non-empty name.
     for p in proxies:
         if p.schema.name in edge_schemas:
             src_prop, tgt_prop = ftmize._EDGE_PROPS[p.schema.name]
@@ -74,6 +75,9 @@ def test_to_ftm_schema_validity():
                 assert eid in node_ids, (
                     "dangling edge endpoint %r on edge %s" % (eid, p.id)
                 )
+        else:
+            assert p.id in node_ids, "node proxy %s not a known node id" % p.id
+            assert list(p.get("name")), "node proxy %s has no name" % p.id
 
     # The two same-name Person ids are BOTH present and DISTINCT.
     proxy_ids = {p.id for p in proxies}

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from typing import Optional
 
 from followthemoney import model
 
@@ -61,6 +62,10 @@ def to_ftm(intermediate: dict) -> list:
         proxies.append(e)
 
     for edge in intermediate.get("edges", []):
+        if edge["schema"] not in _EDGE_PROPS:
+            raise ValueError(
+                "unmapped edge schema %r (not in _EDGE_PROPS)" % edge["schema"]
+            )
         e = model.make_entity(edge["schema"])
         e.id = edge["id"]
         src_prop, tgt_prop = _EDGE_PROPS[edge["schema"]]
@@ -75,7 +80,7 @@ def to_ftm(intermediate: dict) -> list:
     return proxies
 
 
-def write_bundle(intermediate: dict, out_dir, name: str = None) -> dict:
+def write_bundle(intermediate: dict, out_dir, name: Optional[str] = None) -> dict:
     """Write the three Phase-13 hand-off files and return their paths.
 
     Files (design section 7):
@@ -165,3 +170,16 @@ def assert_phase13_consumable(bundle_dir, name: str) -> None:
         "entities file has %d non-empty lines, expected %d (entity_count %d + edge_count %d)"
         % (len(non_empty), expected_lines, entity_count, edge_count)
     )
+
+    # Provenance is one of the three hand-off files; validate it too (parseable
+    # JSON rows, count consistent with the manifest when it records one).
+    with provenance_path.open("r", encoding="utf-8") as fh:
+        prov_lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+    for ln in prov_lines:
+        json.loads(ln)  # each provenance row must be valid JSON
+    expected_prov = manifest.get("counts", {}).get("provenance")
+    if expected_prov is not None:
+        assert len(prov_lines) == expected_prov, (
+            "provenance file has %d rows, expected %d (manifest counts.provenance)"
+            % (len(prov_lines), expected_prov)
+        )
