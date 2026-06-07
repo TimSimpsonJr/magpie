@@ -142,4 +142,7 @@ jobs:
           python -m pytest -m compose -rs -q
       - name: Tear down
         if: always()
+        # `down` still interpolates the compose file's ${NEO4J_PASSWORD:?...}, so
+        # this step needs the var too (each step's env is isolated in Actions).
+        env: { NEO4J_PASSWORD: testpassword }
         run: docker compose -f infra/docker-compose.yml --profile graph down -v
