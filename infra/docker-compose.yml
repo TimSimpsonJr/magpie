@@ -9,8 +9,8 @@
 # process boundary and ships THIS compose file + docs, NEVER the image -- the
 # operator pulls neo4j:5.26.26-community from Docker Hub themselves.
 #
-# 13b will extend this file with `index` (OpenSearch) + `yente` services on the
-# default profile; Neo4j stays the `graph` profile.
+# 13b extends this file with `index` (OpenSearch) + `yente` services under the
+# `crossref` profile; Neo4j stays the `graph` profile.
 
 services:
   neo4j:
@@ -41,5 +41,73 @@ services:
       start_period: "40s"
     restart: "unless-stopped"
 
+  # --- Phase 13b cross-ref (crossref profile): OpenSearch index + yente. ---
+  # Bring up with:
+  #   docker compose -f infra/docker-compose.yml --env-file infra/.env --profile crossref up -d --wait
+  # then build the index explicitly (AUTO_REINDEX is false -- yente does NOT
+  # auto-index on startup):
+  #   docker compose -f infra/docker-compose.yml --env-file infra/.env --profile crossref exec -T yente yente reindex
+  # The operator/skill renders data/magpie_corpus/{entities.ftm.json,manifest.yml}
+  # (gitignored) BEFORE up. OpenSearch 2.19.5 + yente 5.4.0; localhost-bound.
+  index:
+    image: opensearchproject/opensearch:2.19.5
+    profiles: ["crossref"]
+    environment:
+      - node.name=magpie-index
+      - cluster.name=magpie-index
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      - "OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_ADMIN_PASSWORD:?set OPENSEARCH_ADMIN_PASSWORD in infra/.env (copy infra/.env.example)}"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - magpie_index_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:9200/_cluster/health || exit 1"]
+      interval: "10s"
+      timeout: "10s"
+      retries: 30
+      start_period: "40s"
+    restart: "unless-stopped"
+  yente:
+    image: ghcr.io/opensanctions/yente:5.4.0
+    profiles: ["crossref"]
+    depends_on:
+      index:
+        condition: service_healthy
+    environment:
+      YENTE_INDEX_TYPE: "opensearch"
+      YENTE_INDEX_URL: "http://index:9200"
+      YENTE_INDEX_NAME: "yente"
+      # The LIVE version-stamped manifest is rendered into the gitignored data dir
+      # (data/magpie_corpus/manifest.yml). The committed infra/yente/*.yml are
+      # TEMPLATES only and are NOT mounted. To opt INTO watchlists, render the
+      # manifest with the watchlist catalog (same /data/manifest.yml path).
+      YENTE_MANIFEST: "/data/manifest.yml"
+      YENTE_AUTO_REINDEX: "false"
+      YENTE_UPDATE_TOKEN: "${YENTE_UPDATE_TOKEN:?set YENTE_UPDATE_TOKEN in infra/.env (copy infra/.env.example)}"
+    volumes:
+      # Relative bind-mount paths resolve against the COMPOSE FILE's dir (infra/),
+      # so `../data/magpie_corpus` is the repo-root data/magpie_corpus the emitter
+      # writes to (and .gitignore blocks). `./data/...` would wrongly resolve to
+      # infra/data and leave /data empty -- caught by the local re-smoke.
+      - ../data/magpie_corpus:/data:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: "15s"
+      timeout: "10s"
+      retries: 30
+      start_period: "30s"
+    restart: "unless-stopped"
+
 volumes:
   magpie_neo4j_data:
+  magpie_index_data:

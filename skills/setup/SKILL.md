@@ -69,6 +69,10 @@ d. Layer 2 (entity-graph): Docker. The Layer-2 "build an entity graph" capabilit
      `%UserProfile%\.wslconfig`, or `sysctl.vm.max_map_count=262144` via
      `/etc/wsl.conf`). It is harmless for Neo4j now and is REQUIRED for the 13b
      OpenSearch service; setting it once during setup avoids the reboot trap later.
+   - The Layer-2 "cross-reference entities" capability (Phase 13b) is the SECOND
+     Docker-gated capability, gated on the SAME Docker check; its crossref compose
+     pulls opensearchproject/opensearch:2.19.5 + ghcr.io/opensanctions/yente:5.4.0,
+     and OpenSearch needs the same WSL2 vm.max_map_count=262144 step above.
    This step INSTRUCTS only: setup never installs Docker for the operator.
 
 e. Re-probe and report. Run `scripts/detect_tier.py` again and report the

@@ -60,3 +60,6 @@ infra/.env
 # --- OS / editor noise ---
 .DS_Store
 Thumbs.db
+
+# --- Phase 13b: emitted own-corpus yente dataset (PII-derived; never commit) ---
+/data/

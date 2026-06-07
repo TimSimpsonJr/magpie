@@ -29,7 +29,7 @@ jobs:
       - name: Offline suite + smoke (mcp-sqlite smoke runs -- uvx is on PATH)
         run: |
           . .venv/bin/activate
-          python -m pytest -m "not docling and not spacy and not xray and not tsa and not gliner and not ftm and not neo4j and not compose" -q
+          python -m pytest -m "not docling and not spacy and not xray and not tsa and not gliner and not ftm and not neo4j and not compose and not yente" -q
   heavy:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.heavy }}
     runs-on: ubuntu-latest
@@ -127,10 +127,10 @@ jobs:
           python -m pip install -U pip
           python -m pip install -r requirements-offline.txt -r requirements-graph.txt
       - name: Validate the compose config
-        env: { NEO4J_PASSWORD: testpassword }
+        env: { NEO4J_PASSWORD: testpassword, OPENSEARCH_ADMIN_PASSWORD: "Magpie-CI-pw-1A", YENTE_UPDATE_TOKEN: "ci-token" }
         run: docker compose -f infra/docker-compose.yml --profile graph config
       - name: Bring the graph profile up (wait for the healthcheck)
-        env: { NEO4J_PASSWORD: testpassword }
+        env: { NEO4J_PASSWORD: testpassword, OPENSEARCH_ADMIN_PASSWORD: "Magpie-CI-pw-1A", YENTE_UPDATE_TOKEN: "ci-token" }
         run: docker compose -f infra/docker-compose.yml --profile graph up -d --wait
       - name: Compose Bolt-connect smoke (-m compose; the DB is healthy via --wait, so it RUNS, not skips)
         env:
@@ -142,7 +142,48 @@ jobs:
           python -m pytest -m compose -rs -q
       - name: Tear down
         if: always()
-        # `down` still interpolates the compose file's ${NEO4J_PASSWORD:?...}, so
-        # this step needs the var too (each step's env is isolated in Actions).
-        env: { NEO4J_PASSWORD: testpassword }
+        # `down` still interpolates the compose file's ${NEO4J_PASSWORD:?...} (and
+        # now the index/yente ${VAR:?} guards too), so this step needs all three
+        # vars (each step's env is isolated in Actions).
+        env: { NEO4J_PASSWORD: testpassword, OPENSEARCH_ADMIN_PASSWORD: "Magpie-CI-pw-1A", YENTE_UPDATE_TOKEN: "ci-token" }
         run: docker compose -f infra/docker-compose.yml --profile graph down -v
+  crossref:
+    # Track B (Phase 13b). The ONLY real surface for the yente+OpenSearch edges
+    # (invisible on Windows). config -> up --wait -> explicit reindex (AUTO_REINDEX
+    # is false) -> readyz/catalog -> live -m yente tests (self-hit attribution
+    # survives namespacing + catalog-own-corpus-only + a yente-mcp wiring smoke).
+    # NEVER pulls the CC-BY-NC watchlist (own-corpus only). Every compose step gets
+    # all three secrets (the file-wide ${VAR:?} interpolation needs them).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Create venv + install the offline base + the crossref deps
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install -U pip
+          python -m pip install -r requirements-offline.txt -r requirements-crossref.txt
+      - name: Emit a tiny synthetic own-corpus dataset + render the live manifest
+        run: |
+          . .venv/bin/activate
+          python -m tests.helpers.emit_smoke_dataset
+      - name: Validate the crossref compose config
+        env: { OPENSEARCH_ADMIN_PASSWORD: "Magpie-CI-pw-1A", YENTE_UPDATE_TOKEN: "ci-token", NEO4J_PASSWORD: "ci-neo" }
+        run: docker compose -f infra/docker-compose.yml --profile crossref config
+      - name: Bring up index + yente (wait for health)
+        env: { OPENSEARCH_ADMIN_PASSWORD: "Magpie-CI-pw-1A", YENTE_UPDATE_TOKEN: "ci-token", NEO4J_PASSWORD: "ci-neo" }
+        run: docker compose -f infra/docker-compose.yml --profile crossref up -d --wait
+      - name: Explicit reindex (AUTO_REINDEX=false does not auto-index)
+        env: { OPENSEARCH_ADMIN_PASSWORD: "Magpie-CI-pw-1A", YENTE_UPDATE_TOKEN: "ci-token", NEO4J_PASSWORD: "ci-neo" }
+        run: docker compose -f infra/docker-compose.yml --profile crossref exec -T yente yente reindex
+      - name: Live yente cross-ref tests (-m yente)
+        env: { YENTE_BASE_URL: "http://127.0.0.1:8000", YENTE_MCP_BASE_URL: "http://127.0.0.1:8000" }
+        run: |
+          . .venv/bin/activate
+          python -m pytest -m yente -rs -q
+      - name: Tear down
+        if: always()
+        env: { OPENSEARCH_ADMIN_PASSWORD: "Magpie-CI-pw-1A", YENTE_UPDATE_TOKEN: "ci-token", NEO4J_PASSWORD: "ci-neo" }
+        run: docker compose -f infra/docker-compose.yml --profile crossref down -v

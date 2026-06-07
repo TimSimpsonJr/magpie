@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "magpie-yente": {
+      "command": "python",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/yente_mcp_server.py"],
+      "env": { "YENTE_MCP_BASE_URL": "http://127.0.0.1:8000" }
+    }
+  }
+}

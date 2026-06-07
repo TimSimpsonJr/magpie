@@ -13,4 +13,5 @@ markers = [
     "ftm: followthemoney/nomenklatura FtM-contract tests (Track B; Linux/CI only, skip when followthemoney absent); select with -m ftm",
     "neo4j: Neo4j graph-writer tests that need a live Neo4j (service container; Track B Phase 13a); select with -m neo4j",
     "compose: docker-compose graph-profile smoke -- config + up + Bolt connect (Track B Phase 13a); select with -m compose",
+    "yente: live yente + OpenSearch cross-ref tests (Track B Phase 13b; need the crossref compose up); select with -m yente",
 ]
