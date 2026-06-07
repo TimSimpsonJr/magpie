@@ -53,8 +53,10 @@ The deterministic policy + id layer. Stdlib only (hashlib/dataclasses).
   `sha256("|".join([schema, head_canonical, tail_canonical, role or ""]))[:40]`.
 - `bucket(score: float, config) -> "auto" | "review" | "distinct"`:
   `>= auto_threshold` -> auto; `>= review_floor` -> review; else distinct.
-- `@dataclass Candidate` (left_id, right_id, score, plus the two entities'
-  display fields + member/provenance refs for the packet).
+- `@dataclass Candidate` (left_id, right_id, score; and PER SIDE: caption, schema,
+  aliases, `properties: dict[str,list[str]]` [address/dob/badge/... for
+  disambiguation], and a LIST of `mentions` [provenance refs: doc_id/page/char_start/
+  char_end] -- NOT just one -- so the packet can surface MORE EVIDENCE on demand, D6).
 - `@dataclass(frozen=True) Verdict` (left_id, right_id, verdict in
   {"merge","distinct","unsure"}); `VALID_VERDICTS` set.
 - TESTS (golden, Windows): canonical_id determinism + order-independence + dedup +
@@ -80,21 +82,28 @@ The portable resolved-snapshot schema + serializer (the 13a/13b seam, design D3)
 
 ### Task 3 -- `scripts/entity_review_packet.py` (PURE core)
 The HITL packet generator + verdict handback (design D6). Stdlib + html.escape.
-- `SnippetResolver = Callable[[str, int, int, int], str]`  # (doc_id, page,
-  char_start, char_end) -> source text. INJECTED (Windows-testable with a fake).
+- `SnippetResolver = Callable[..., str]`  # (doc_id, page, char_start, char_end, *,
+  context_chars=0) -> source text; `context_chars` widens the window for the
+  expanded more-evidence view. INJECTED (Windows-testable with a fake).
 - `build_candidate_snapshot(candidates, *, investigation_id, algorithm, thresholds,
   resolver_db_hash, generated_at) -> tuple[dict, str]` -> (candidate_snapshot,
   packet_hash). `packet_hash = sha256(canonical_json(candidate_snapshot))`.
 - `render_html(candidate_snapshot, snippet_resolver) -> str` -> the self-contained
-  HTML packet (NO external CSS/JS/fonts; matches the signed-off mockup
-  `docs/plans/2026-06-07-phase13a-review-packet-mockup.html`). Hydrates each card's
-  snippets via `snippet_resolver`; ALL user text `html.escape`d. Embeds
-  `packet_hash` + `investigation_id` into the exported-verdict JS.
+  HTML packet (NO external CSS/JS/fonts; THEME follows the OS via
+  prefers-color-scheme [light+dark]; matches the signed-off mockup
+  `docs/plans/2026-06-07-phase13a-review-packet-mockup.html`). Per card: the TOP
+  mention collapsed + an expandable MORE-EVIDENCE panel (D6) -- each side's
+  ADDITIONAL mentions, WIDER-window snippets (snippet_resolver context_chars>0), and
+  `properties` as key/value pills (the disambiguators a thin low-confidence pair
+  needs). Hydrates every snippet via `snippet_resolver`; ALL user text
+  `html.escape`d. Embeds `packet_hash` + `investigation_id` into the
+  exported-verdict JS.
 - `parse_verdicts(verdict_json_text) -> tuple[str, list[Verdict]]` -> (packet_hash,
   verdicts); raises on malformed JSON / bad verdict value / missing packet_hash.
 - TESTS (golden, Windows, fake snippet_resolver): packet_hash deterministic +
   stable under key order; render_html is self-contained (assert no `http`/`src=`
-  external refs; contains each pair + the hydrated snippet + escapes an injected
+  external refs; contains each pair + the hydrated snippet + the more-evidence panel
+  (extra mentions + properties when present) + a prefers-color-scheme dark block + escapes an injected
   `<script>` in a name); parse_verdicts round-trips + rejects junk + extracts the
   hash. NOTE: the exact HTML/CSS is the MOCKUP, pending Tim's sign-off -- match it.
 

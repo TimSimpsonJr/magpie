@@ -204,6 +204,12 @@ The review band drains from the LIVE resolver via `get_candidates()` (NOT from
      hydrating each card's snippet at render time. Injected, so the renderer is
      Windows-golden-testable with a fake; snippets are LOCAL-only raw source text
      (never published -- the local-exhibit posture).
+   - MORE-EVIDENCE (expandable): a candidate carries ALL of each entity's mentions +
+     its `properties`, so each card shows the top mention collapsed plus an expandable
+     panel of additional mentions, WIDER-window snippets (snippet_resolver
+     context_chars>0), and disambiguating properties (address/dob/...). A thin
+     low-confidence pair (e.g. a 0.73 name match) becomes decidable when a shared
+     address surfaces. The packet THEME follows the OS (prefers-color-scheme).
 3. The human reviews in-browser, exports a verdict JSON `[{left, right, verdict}]`.
 4. `entity_nomenklatura.apply_verdicts(...)` is FAIL-CLOSED (Codex IMPORTANT):
    - If the verdict file's packet-hash != the CURRENT live candidate-snapshot hash,
