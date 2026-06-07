@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 
 @dataclass
@@ -52,7 +52,7 @@ def build_snapshot(
     investigation_id: str,
     algorithm: str,
     thresholds: dict,
-    generated_at: Any,
+    generated_at: str | int | float,
     snapshot_version: str = "1.0",
 ) -> dict:
     """Serialize the resolved graph to the durable snapshot dict (design D3).
@@ -98,9 +98,18 @@ def assert_snapshot_consumable(snapshot: dict) -> None:
     investigation_id = metadata.get("investigation_id")
     assert investigation_id, "snapshot metadata has a missing/empty investigation_id"
 
-    # (c) edge endpoints reference a known canonical_id.
+    # (c) edge endpoints reference a known canonical_id. Guard the keys the
+    # check reads first, so a hand-built malformed snapshot (e.g. a truncated
+    # JSON loaded from disk by 13b) fails with a clear AssertionError, never a
+    # bare KeyError.
+    for entity in snapshot["entities"]:
+        assert "canonical_id" in entity, (
+            "snapshot entity entry missing canonical_id: %r" % (entity,)
+        )
     known = {e["canonical_id"] for e in snapshot["entities"]}
     for edge in snapshot["edges"]:
+        for req in ("edge_id", "head_canonical", "tail_canonical"):
+            assert req in edge, "snapshot edge entry missing %s: %r" % (req, edge)
         assert edge["head_canonical"] in known, (
             "edge %s has a dangling head_canonical: %s"
             % (edge["edge_id"], edge["head_canonical"])
@@ -111,15 +120,17 @@ def assert_snapshot_consumable(snapshot: dict) -> None:
         )
 
     # (d) provenance_refs resolve to a known ref_id.
+    for p in snapshot["provenance"]:
+        assert "ref_id" in p, "snapshot provenance row missing ref_id: %r" % (p,)
     known_refs = {p["ref_id"] for p in snapshot["provenance"]}
     for entity in snapshot["entities"]:
-        for ref in entity["provenance_refs"]:
+        for ref in entity.get("provenance_refs", []):
             assert ref in known_refs, (
                 "entity %s has an unresolved provenance_ref: %s"
                 % (entity["canonical_id"], ref)
             )
     for edge in snapshot["edges"]:
-        for ref in edge["provenance_refs"]:
+        for ref in edge.get("provenance_refs", []):
             assert ref in known_refs, (
                 "edge %s has an unresolved provenance_ref: %s"
                 % (edge["edge_id"], ref)

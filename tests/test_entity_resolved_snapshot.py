@@ -189,6 +189,59 @@ def test_provenance_passed_through_unchanged():
     assert snap["provenance"] == _provenance()
 
 
+def test_build_and_consume_empty_graph():
+    # An investigation that resolved to nothing is valid: empty lists -> a
+    # well-formed snapshot whose consumable check is a no-op pass.
+    snap = build_snapshot(
+        [],
+        [],
+        [],
+        investigation_id="inv-empty",
+        algorithm="logic-v2",
+        thresholds={},
+        generated_at="t",
+    )
+    assert snap["entities"] == []
+    assert snap["edges"] == []
+    assert snap["provenance"] == []
+    assert assert_snapshot_consumable(snap) is None  # must not raise
+
+
+def test_consumable_raises_assertionerror_not_keyerror_on_malformed_entity():
+    # The contract guard must fail with a clear AssertionError (never a bare
+    # KeyError) on a hand-built snapshot whose entity row lacks canonical_id.
+    snap = {
+        "metadata": {"investigation_id": "inv"},
+        "entities": [{"schema": "Person"}],  # no canonical_id
+        "edges": [],
+        "provenance": [],
+    }
+    with pytest.raises(AssertionError):
+        assert_snapshot_consumable(snap)
+
+
+def test_consumable_raises_assertionerror_on_malformed_edge_and_provenance():
+    # A missing edge_id/endpoints, or a provenance row missing ref_id, are
+    # clean AssertionErrors, not KeyErrors.
+    bad_edge = {
+        "metadata": {"investigation_id": "inv"},
+        "entities": [{"canonical_id": "c1", "provenance_refs": []}],
+        "edges": [{"schema": "Directorship"}],  # no edge_id/head/tail
+        "provenance": [],
+    }
+    with pytest.raises(AssertionError):
+        assert_snapshot_consumable(bad_edge)
+
+    bad_prov = {
+        "metadata": {"investigation_id": "inv"},
+        "entities": [],
+        "edges": [],
+        "provenance": [{"doc_id": "d"}],  # no ref_id
+    }
+    with pytest.raises(AssertionError):
+        assert_snapshot_consumable(bad_prov)
+
+
 # --------------------------------------------------------------------------
 # generated_at is INJECTED (no clock). Two builds differ ONLY in that field.
 # --------------------------------------------------------------------------
