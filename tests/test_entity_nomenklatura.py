@@ -229,6 +229,29 @@ def test_build_resolved_snapshot_one_cluster_after_merge(tmp_path):
 
 
 @ftm
+def test_build_resolved_snapshot_rejects_mismatched_investigation_id(tmp_path):
+    """Codex impl-review: build_resolved_snapshot uses run.json's investigation_id
+    as the source of truth. A caller passing a DIFFERENT investigation_id is a
+    wrong-scope call (it would write this run's resolved membership into another
+    investigation's Neo4j scope) and must fail fast; a matching/empty value uses
+    run.json's."""
+    import scripts.entity_nomenklatura as en
+
+    entities_path = _bundle_entities_path(tmp_path)
+    scratch = tmp_path / "scratch"
+    config = _config()
+    en.resolve([entities_path], scratch, config)  # run.json records greenville_flock_rfp
+
+    with pytest.raises(ValueError):
+        en.build_resolved_snapshot(scratch, "a_different_investigation", config)
+
+    snap = en.build_resolved_snapshot(scratch, "greenville_flock_rfp", config)
+    assert snap["metadata"]["investigation_id"] == "greenville_flock_rfp"
+
+    _drop_resolver_table(scratch)
+
+
+@ftm
 def test_edge_coalesce_after_merge(tmp_path):
     import scripts.entity_nomenklatura as en
     from scripts.entity_resolution_policy import canonical_id

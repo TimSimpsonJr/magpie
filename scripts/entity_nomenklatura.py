@@ -670,8 +670,25 @@ def build_resolved_snapshot(
     scratch = pathlib.Path(scratch_dir)
     run = _read_run_json(scratch)
     entities_paths = run["entities_paths"]
-    # run.json is the source of truth for the resolve-time config; snapshot
-    # metadata (algorithm/thresholds) MUST reflect what resolve actually used.
+    # run.json is the source of truth for BOTH the resolve-time IDENTITY and
+    # config. The snapshot's investigation_id MUST be the one resolve persisted,
+    # never a caller-supplied relabel -- mislabeling would write this run's
+    # resolved membership into the WRONG Neo4j investigation scope (the scoped_id
+    # is investigation_id + ":" + canonical_id). A passed value that disagrees is
+    # a wrong-scope call and fails fast.
+    run_investigation_id = run.get("investigation_id")
+    if (
+        investigation_id
+        and run_investigation_id
+        and investigation_id != run_investigation_id
+    ):
+        raise ValueError(
+            "build_resolved_snapshot investigation_id %r does not match run.json's"
+            " %r -- the snapshot is scoped to the resolve-time investigation; do"
+            " not relabel it" % (investigation_id, run_investigation_id)
+        )
+    investigation_id = run_investigation_id or investigation_id
+    # Snapshot metadata (algorithm/thresholds) MUST reflect what resolve used.
     snapshot_config = _config_from_run(run, config)
 
     entity_dicts = _read_entity_lines(entities_paths)

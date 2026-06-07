@@ -116,21 +116,29 @@ _MERGE_EDGES = (
 )
 
 # (c) DELETE in-scope relationships absent from the snapshot. Both endpoints'
-# nodes may SURVIVE; only the stale edge is removed. Scoped to $inv on BOTH the
-# source node and the relationship so no other investigation is touched.
+# nodes may SURVIVE; only the stale edge is removed. Scoped to $inv on the
+# relationship AND BOTH endpoint nodes, so a (contaminating) cross-investigation
+# relationship is never matched -- no other investigation is read or touched.
 _DELETE_ORPHAN_EDGES = (
-    "MATCH (:Entity {investigation_id: $inv})-[r:REL {investigation_id: $inv}]->() "
+    "MATCH (:Entity {investigation_id: $inv})-[r:REL {investigation_id: $inv}]->"
+    "(:Entity {investigation_id: $inv}) "
     "WHERE NOT r.edge_id IN $keep_edge_ids "
     "DELETE r"
 )
 
-# (d) DETACH DELETE in-scope entities absent from the snapshot (DETACH removes
-# any of their remaining rels too). Scoped to $inv, so a different
-# investigation's nodes are never read or deleted (the D4 isolation).
+# (d) DELETE in-scope entities absent from the snapshot. After step (c) an
+# in-scope orphan has no remaining IN-SCOPE rels, and for a CONSISTENT snapshot
+# none at all (its edges connected only same-investigation entities, all dropped
+# by (c)). The DELETE is deliberately NON-detaching: if a foreign
+# cross-investigation relationship were ever attached to an in-scope node,
+# DETACH DELETE would silently delete that other investigation's edge, whereas a
+# plain DELETE FAILS FAST -- surfacing the contamination instead of corrupting a
+# neighbour's subgraph. Scoped to $inv, so a different investigation's nodes are
+# never read or deleted (the D4 isolation).
 _DELETE_ORPHAN_ENTITIES = (
     "MATCH (e:Entity {investigation_id: $inv}) "
     "WHERE NOT e.canonical_id IN $keep_canonical_ids "
-    "DETACH DELETE e"
+    "DELETE e"
 )
 
 
@@ -245,11 +253,10 @@ def write(driver, snapshot: dict) -> WriteStats:
         )
         counters = result.consume().counters
         stats.nodes_deleted += counters.nodes_deleted
-        # No double count: step (c) already pre-cleaned every in-scope stale rel,
-        # so for a CONSISTENT snapshot this DETACH only removes rels of the nodes
-        # being deleted here that survived step (c) -- which is none (any rel of a
-        # to-be-deleted node is in-scope and was dropped by (c)). The += is the
-        # honest tx-counter sum; the two steps cannot count the same rel twice.
+        # Step (d) is a NON-detaching DELETE, so it removes no relationships (a
+        # consistent in-scope orphan has none after step (c); a contaminated node
+        # makes the DELETE fail fast rather than delete a foreign edge). This +=
+        # therefore adds 0 -- all rel deletions are counted once, in step (c).
         stats.relationships_deleted += counters.relationships_deleted
 
         return stats
