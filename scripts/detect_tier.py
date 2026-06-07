@@ -92,6 +92,7 @@ def build_capability_map(probes):
     tess = probes.get("tesseract", {})
     gs = probes.get("ghostscript", {})
     ossl = probes.get("openssl_ts", {})
+    docker = probes.get("docker", {})
     mcp = probes.get("mcp", {})
 
     caps = {}
@@ -185,6 +186,29 @@ def build_capability_map(probes):
         unavailable_note="Track B; the FtM/graph layer (followthemoney/nomenklatura) is a later phase and runs on Linux/CI only",
     )
 
+    # Layer 2 (Phase 13a) entity-graph. Operator-tier, Docker-gated. Like Track B
+    # above it is INDEPENDENT of the Track-A document workflows and is NOT in
+    # _DOC_CAPS -- a missing/unstarted Docker never touches the core/document
+    # headline. The probe is READ-ONLY (which + `docker version`/`docker compose
+    # version` rc); the most-specific missing item gives a precise message
+    # (binary -> compose plugin -> a running daemon).
+    if not docker.get("present"):
+        docker_missing = ["docker (system binary)"]
+    elif not docker.get("compose_ok"):
+        docker_missing = ["docker compose (the v2 plugin)"]
+    elif not docker.get("daemon_ok"):
+        docker_missing = ["a running Docker daemon"]
+    else:
+        docker_missing = []
+    caps["build an entity graph (Layer 2)"] = _cap(
+        requires=["docker", "docker compose"],
+        missing=docker_missing,
+        optional_missing=[],
+        blocks="Resolving entities across documents into a Neo4j graph after a mandatory human review (Layer 2, operator-tier, Docker-gated).",
+        fix="install Docker Desktop (the setup skill INSTRUCTS; it never auto-installs), then start it; the entity-graph compose pulls neo4j:5.26.26-community",
+        unavailable_note="Layer 2, operator-tier; the journalist onramp stays Docker-free",
+    )
+
     return caps
 
 
@@ -249,6 +273,34 @@ def check_openssl_ts(timeout=10):
         return {"present": True, "path": path, "ts_subcommand": False}
 
 
+def check_docker(timeout=10):
+    """READ-ONLY Docker probe: docker on PATH + a bounded `docker version` /
+    `docker compose version` rc check. These are status-only commands; this NEVER
+    runs `docker run`/`pull`/`up`/`start` (no images pulled, no containers started),
+    so doctor stays side-effect-free. Mirrors check_openssl_ts.
+    """
+    path = shutil.which("docker")
+    if not path:
+        return {"present": False, "path": None, "daemon_ok": False,
+                "compose_ok": False}
+    daemon_ok = False
+    compose_ok = False
+    try:
+        p = subprocess.run([path, "version"], capture_output=True,
+                           text=True, timeout=timeout)
+        daemon_ok = p.returncode == 0
+    except Exception:
+        daemon_ok = False
+    try:
+        p = subprocess.run([path, "compose", "version"], capture_output=True,
+                           text=True, timeout=timeout)
+        compose_ok = p.returncode == 0
+    except Exception:
+        compose_ok = False
+    return {"present": True, "path": path, "daemon_ok": daemon_ok,
+            "compose_ok": compose_ok}
+
+
 def check_mcp_wiring(mcp_json_path):
     """READ-ONLY: uvx on PATH + .mcp.json TEXT references the mcp-sqlite server.
     Does NOT execute uvx and does NOT start the server (no side effects, no network).
@@ -275,6 +327,7 @@ def run_probes(mcp_json_path, repo_root=None):
         "tesseract": check_binary("tesseract"),
         "ghostscript": check_binary(["gswin64c", "gswin32c", "gs"]),
         "openssl_ts": check_openssl_ts(),
+        "docker": check_docker(),
         "mcp": check_mcp_wiring(mcp_json_path),
         "platform": {"os": platform.system().lower(), "arch": platform.machine()},
     }

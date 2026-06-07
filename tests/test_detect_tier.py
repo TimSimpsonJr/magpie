@@ -36,6 +36,8 @@ def all_present_probes():
         "tesseract": {"present": True, "path": "/usr/bin/tesseract", "name": "tesseract"},
         "ghostscript": {"present": True, "path": "/usr/bin/gs", "name": "gs"},
         "openssl_ts": {"present": True, "path": "/usr/bin/openssl", "ts_subcommand": True},
+        "docker": {"present": True, "path": "/usr/bin/docker",
+                   "daemon_ok": True, "compose_ok": True},
         "mcp": {"uvx_present": True, "uvx_path": "/usr/bin/uvx",
                 "mcp_json_present": True, "declares_mcp_sqlite": True},
         "platform": {"os": "linux", "arch": "x86_64"},
@@ -47,7 +49,7 @@ def test_all_present_every_capability_ready():
     assert set(cm) == {
         "analyze datasets", "ingest native PDFs", "OCR preprocessing for scans",
         "PII scan", "redaction QA", "citation verify", "evidence timestamp",
-        "extract entities (Track B)",
+        "extract entities (Track B)", "build an entity graph (Layer 2)",
     }
     for name, cap in cm.items():
         assert cap["status"] == dt.READY, name
@@ -63,6 +65,8 @@ def test_all_absent_required_caps_unavailable():
     probes["tesseract"] = {"present": False, "path": None, "name": None}
     probes["ghostscript"] = {"present": False, "path": None, "name": None}
     probes["openssl_ts"] = {"present": False, "path": None, "ts_subcommand": False}
+    probes["docker"] = {"present": False, "path": None,
+                        "daemon_ok": False, "compose_ok": False}
     probes["mcp"] = {"uvx_present": False, "uvx_path": None,
                      "mcp_json_present": False, "declares_mcp_sqlite": False}
     cm = dt.build_capability_map(probes)
@@ -168,6 +172,122 @@ def test_extract_entities_does_not_touch_the_document_headline():
     s = dt.summarize(dt.build_capability_map(probes))
     assert s["core_structured_data"] == dt.READY
     assert s["document_workflows"] == "READY"  # unchanged by the Track-B gap
+
+
+def test_entity_graph_ready_when_docker_compose_daemon_present():
+    cm = dt.build_capability_map(all_present_probes())
+    assert cm["build an entity graph (Layer 2)"]["status"] == dt.READY
+
+
+def test_entity_graph_unavailable_when_docker_absent_names_binary_and_setup_fix():
+    probes = all_present_probes()
+    probes["docker"] = {"present": False, "path": None,
+                        "daemon_ok": False, "compose_ok": False}
+    cm = dt.build_capability_map(probes)
+    cap = cm["build an entity graph (Layer 2)"]
+    assert cap["status"] == dt.UNAVAILABLE
+    assert "docker (system binary)" in cap["missing"]
+    # the fix is a setup pointer that mentions Docker (setup INSTRUCTS, never installs)
+    assert "docker" in cap["fix"].lower()
+
+
+def test_entity_graph_unavailable_when_compose_plugin_missing():
+    """docker present but the v2 compose plugin absent -> UNAVAILABLE, most-specific
+    missing item names the compose plugin (not the bare binary)."""
+    probes = all_present_probes()
+    probes["docker"] = {"present": True, "path": "/usr/bin/docker",
+                        "daemon_ok": True, "compose_ok": False}
+    cm = dt.build_capability_map(probes)
+    cap = cm["build an entity graph (Layer 2)"]
+    assert cap["status"] == dt.UNAVAILABLE
+    assert "docker compose (the v2 plugin)" in cap["missing"]
+
+
+def test_entity_graph_unavailable_when_daemon_not_running():
+    """docker + compose present but the daemon is not running -> UNAVAILABLE with a
+    precise 'a running Docker daemon' message (installed-but-not-started case)."""
+    probes = all_present_probes()
+    probes["docker"] = {"present": True, "path": "/usr/bin/docker",
+                        "daemon_ok": False, "compose_ok": True}
+    cm = dt.build_capability_map(probes)
+    cap = cm["build an entity graph (Layer 2)"]
+    assert cap["status"] == dt.UNAVAILABLE
+    assert "a running Docker daemon" in cap["missing"]
+
+
+def test_entity_graph_does_not_touch_the_core_or_document_headline():
+    """Layer 2 is independent: toggling ONLY the docker probe (all Track-A deps
+    present) must NOT change the core or document-workflows headline. The Layer-2 cap
+    is not in _DOC_CAPS and must never move summarize()."""
+    base = all_present_probes()  # everything Track-A present
+    s_with = dt.summarize(dt.build_capability_map(base))
+    no_docker = all_present_probes()
+    no_docker["docker"] = {"present": False, "path": None,
+                           "daemon_ok": False, "compose_ok": False}
+    s_without = dt.summarize(dt.build_capability_map(no_docker))
+    # the Track-A core summary is IDENTICAL regardless of the docker probe value
+    assert s_with == s_without
+    assert s_without["core_structured_data"] == dt.READY
+    assert s_without["document_workflows"] == "READY"
+    # and the Layer-2 cap is NOT part of the document-workflows rollup
+    assert "build an entity graph (Layer 2)" not in dt._DOC_CAPS
+
+
+def test_check_docker_absent(monkeypatch):
+    monkeypatch.setattr(dt.shutil, "which", lambda n: None)
+    r = dt.check_docker()
+    assert r == {"present": False, "path": None,
+                 "daemon_ok": False, "compose_ok": False}
+
+
+def test_check_docker_present_reads_only_no_run(monkeypatch):
+    """check_docker probes status (version/compose version) ONLY -- it must never
+    issue `docker run`/`pull`/`up`/`start` (read-only, like check_openssl_ts)."""
+    monkeypatch.setattr(dt.shutil, "which", lambda n: "/usr/bin/docker")
+    seen = []
+
+    def fake_run(args, *a, **k):
+        seen.append(args)
+        return type("P", (), {"returncode": 0})()
+
+    monkeypatch.setattr(dt.subprocess, "run", fake_run)
+    r = dt.check_docker()
+    assert r["present"] and r["daemon_ok"] is True and r["compose_ok"] is True
+    # only status subcommands were invoked; NEVER a side-effecting docker verb
+    forbidden = {"run", "pull", "up", "start", "create", "exec", "build"}
+    for args in seen:
+        assert not (forbidden & set(args)), args
+    # the two probes we DO expect
+    assert ["/usr/bin/docker", "version"] in seen
+    assert ["/usr/bin/docker", "compose", "version"] in seen
+
+
+def test_check_docker_daemon_down_compose_ok(monkeypatch):
+    """`docker version` rc!=0 (daemon down) -> daemon_ok False; compose still probed."""
+    monkeypatch.setattr(dt.shutil, "which", lambda n: "/usr/bin/docker")
+
+    def fake_run(args, *a, **k):
+        rc = 1 if args[1] == "version" else 0  # version fails, compose version ok
+        return type("P", (), {"returncode": rc})()
+
+    monkeypatch.setattr(dt.subprocess, "run", fake_run)
+    r = dt.check_docker()
+    assert r["present"] is True
+    assert r["daemon_ok"] is False
+    assert r["compose_ok"] is True
+
+
+def test_check_docker_subprocess_exception_is_swallowed(monkeypatch):
+    """Any subprocess exception (timeout, OSError) -> that flag False, never raises."""
+    monkeypatch.setattr(dt.shutil, "which", lambda n: "/usr/bin/docker")
+
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="docker", timeout=10)
+
+    monkeypatch.setattr(dt.subprocess, "run", boom)
+    r = dt.check_docker()
+    assert r["present"] is True
+    assert r["daemon_ok"] is False and r["compose_ok"] is False
 
 
 def test_openssl_ts_absent_evidence_degraded():

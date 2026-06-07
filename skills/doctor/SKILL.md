@@ -23,10 +23,14 @@ Doctor renders the capability map in user verbs (analyze datasets, ingest native
 PDFs, OCR preprocessing for scans, PII scan, redaction QA, citation verify, evidence
 timestamp, and extract entities (Track B)), plus the subordinate two-line headline
 (core structured-data analysis, and the document-workflows rollup; the Track-B
-entity-extract capability is independent of both). For each gap it shows what that gap blocks and the
-single next instruction: ask your operator to run setup, or, for a missing system
-binary, the one-line hint naming the binary to install. Doctor reports a capability
-map, never a single linear tier score.
+entity-extract capability is independent of both). Doctor also reports the Layer-2
+"build an entity graph" capability via a READ-ONLY Docker probe -- it runs
+`shutil.which("docker")` plus `docker version` / `docker compose version` for their
+return codes only, and NEVER pulls an image or starts a container. (Installing Docker
+for that capability is setup's job, not doctor's; doctor only reports it.) For each
+gap it shows what that gap blocks and the single next instruction: ask your operator
+to run setup, or, for a missing system binary, the one-line hint naming the binary to
+install. Doctor reports a capability map, never a single linear tier score.
 
 ## 3. The read-only contract
 
@@ -34,9 +38,12 @@ Doctor is strictly read-only. Doctor NEVER installs anything, NEVER runs
 `mise run bootstrap`, NEVER invokes setup, and NEVER starts the mcp-sqlite server. For
 the conversational query surface it only checks that uvx exists on PATH and that the
 project .mcp.json declares the mcp-sqlite server; it does not execute uvx and does not
-launch the server. Anything that changes the machine is the job of the setup skill and
-a present operator, not doctor. If doctor reports something missing, the fix is to ask
-whoever set this up to run setup.
+launch the server. For the Layer-2 entity-graph capability it only probes Docker
+read-only -- which plus the `docker version` / `docker compose version` return codes;
+it NEVER runs `docker run`/`pull`/`up`/`start`, pulls an image, or starts a container.
+Anything that changes the machine is the job of the setup skill and a present operator,
+not doctor. If doctor reports something missing, the fix is to ask whoever set this up
+to run setup.
 
 ## 4. Honest limit
 
