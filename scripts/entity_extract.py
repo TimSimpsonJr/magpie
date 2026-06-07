@@ -388,6 +388,48 @@ class ReviewQueue:
 
 
 # ---------------------------------------------------------------------------
+# Task 8: DoclingDocument -> extract() input adapter (pure; stdlib only)
+# ---------------------------------------------------------------------------
+
+def docling_to_extraction_input(docling_document, *, doc_id, trustworthy_for_extraction):
+    """Normalize a Phase-6 ingest DoclingDocument JSON dict into the shape
+    extract() consumes: {doc_id, trustworthy_for_extraction, pages:[{page_no, text}]}.
+
+    Per-page text is reconstructed from the DoclingDocument's `texts` items,
+    grouped by each item's prov[0].page_no, concatenated in document order with
+    newline separators. The caller supplies doc_id (e.g. the ingest
+    source_sha256) and trustworthy_for_extraction (the ingest IngestResult
+    boolean) -- this adapter does not parse the IngestResult itself, keeping it
+    decoupled from that (non-ASCII) module's shape.
+
+    Stdlib only: no docling import -- it parses the already-saved DoclingDocument
+    JSON dict (the subset scripts/ingest.py save_as_json writes).
+    """
+    by_page: dict = {}
+    for item in docling_document.get("texts", []):
+        text = item.get("text") or ""
+        if not text.strip():
+            continue
+        prov = item.get("prov") or []
+        if not prov:
+            continue
+        page_no = prov[0].get("page_no")
+        if page_no is None:
+            continue
+        by_page.setdefault(page_no, []).append(text)
+
+    pages = [
+        {"page_no": pn, "text": "\n".join(parts)}
+        for pn, parts in sorted(by_page.items())
+    ]
+    return {
+        "doc_id": doc_id,
+        "trustworthy_for_extraction": bool(trustworthy_for_extraction),
+        "pages": pages,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Task 6: Orchestrator + input gate
 # ---------------------------------------------------------------------------
 
