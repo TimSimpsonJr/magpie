@@ -20,7 +20,8 @@ INGEST = ["docling", "rapidocr", "onnxruntime", "torch"]
 REDACT_OFFLINE = ["pikepdf", "pdfminer.six"]
 EVIDENCE = ["rfc3161-client", "requests", "cryptography"]
 EXTRA = ["x-ray", "ocrmypdf", "spacy"]
-ALL_DISTS = CORE + INGEST + REDACT_OFFLINE + EVIDENCE + EXTRA
+ENTITY = ["gliner", "glirel"]  # Track B (Phase 12) entity-extract
+ALL_DISTS = CORE + INGEST + REDACT_OFFLINE + EVIDENCE + EXTRA + ENTITY
 
 
 def _present(version="9.9.9"):
@@ -46,6 +47,7 @@ def test_all_present_every_capability_ready():
     assert set(cm) == {
         "analyze datasets", "ingest native PDFs", "OCR preprocessing for scans",
         "PII scan", "redaction QA", "citation verify", "evidence timestamp",
+        "extract entities (Track B)",
     }
     for name, cap in cm.items():
         assert cap["status"] == dt.READY, name
@@ -137,6 +139,35 @@ def test_optional_fix_for_system_binaries_is_not_bootstrap():
     probes2["dists"]["docling"] = {"present": False, "version": None}
     cm2 = dt.build_capability_map(probes2)
     assert "bootstrap" in cm2["ingest native PDFs"]["fix"].lower()
+
+
+def test_extract_entities_ready_when_gliner_glirel_present():
+    cm = dt.build_capability_map(all_present_probes())
+    assert cm["extract entities (Track B)"]["status"] == dt.READY
+
+
+def test_extract_entities_unavailable_when_models_absent_names_nc_weights():
+    probes = all_present_probes()
+    probes["dists"]["gliner"] = {"present": False, "version": None}
+    probes["dists"]["glirel"] = {"present": False, "version": None}
+    cm = dt.build_capability_map(probes)
+    cap = cm["extract entities (Track B)"]
+    assert cap["status"] == dt.UNAVAILABLE
+    assert any("gliner" in m for m in cap["missing"])
+    # the CC BY-NC-SA non-commercial weights restriction is surfaced in the fix
+    fix = cap["fix"].lower()
+    assert "non-commercial" in fix or "cc by-nc-sa" in fix
+
+
+def test_extract_entities_does_not_touch_the_document_headline():
+    """Track B is independent: a missing entity stack must NOT change the core or
+    document-workflows headline (entity-extract is not a Track-A document workflow)."""
+    probes = all_present_probes()
+    probes["dists"]["gliner"] = {"present": False, "version": None}
+    probes["dists"]["glirel"] = {"present": False, "version": None}
+    s = dt.summarize(dt.build_capability_map(probes))
+    assert s["core_structured_data"] == dt.READY
+    assert s["document_workflows"] == "READY"  # unchanged by the Track-B gap
 
 
 def test_openssl_ts_absent_evidence_degraded():

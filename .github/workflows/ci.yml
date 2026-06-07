@@ -29,7 +29,7 @@ jobs:
       - name: Offline suite + smoke (mcp-sqlite smoke runs -- uvx is on PATH)
         run: |
           . .venv/bin/activate
-          python -m pytest -m "not docling and not spacy and not xray and not tsa" -q
+          python -m pytest -m "not docling and not spacy and not xray and not tsa and not gliner and not ftm" -q
   heavy:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.heavy }}
     runs-on: ubuntu-latest
@@ -43,7 +43,29 @@ jobs:
           . .venv/bin/activate
           python -m pip install -U pip
           python -m pip install -r requirements-dev.txt  # full stack incl. en_core_web_lg (pinned by URL)
-      - name: Heavy suite (docling/spacy/xray)
+      - name: Heavy suite (docling/spacy/xray/gliner)
         run: |
           . .venv/bin/activate
-          python -m pytest -m "docling or spacy or xray" -q
+          python -m pytest -m "docling or spacy or xray or gliner" -q
+  ftm:
+    # Track B (Phase 12) FtM-contract job. followthemoney/nomenklatura are
+    # Linux-only (PyICU has no Windows wheel), so these tests SKIP on the Windows
+    # dev box and run here continuously on push/PR to guard the Phase-13 hand-off
+    # contract (design section 8). Not the 2 GB model stack -- just the FtM stack.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: System deps for PyICU (followthemoney -> normality -> PyICU)
+        run: sudo apt-get update && sudo apt-get install -y libicu-dev pkg-config
+      - name: Create venv + install the offline base + the FtM stack
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install -U pip
+          python -m pip install -r requirements-offline.txt -r requirements-ftm.txt
+      - name: FtM contract tests (intermediate -> FtM bundle, export-cypher/neo4j-bulk, nomenklatura xref)
+        run: |
+          . .venv/bin/activate
+          python -m pytest -m ftm -q

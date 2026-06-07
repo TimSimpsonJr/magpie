@@ -105,3 +105,28 @@ x-ray==0.3.6
 #                     gate (skills/archive-evidence/references/prior-art.md), incl. a
 #                     live freeTSA round-trip + an `openssl ts -verify` cross-check.
 rfc3161-client==1.0.6
+
+# Phase 12 entity-extract (Track B) -- GLiNER entity NER + GLiREL relation extraction.
+# Heavy ML, CPU-only, `gliner`-marked tests; weights download lazily on first use.
+#   gliner -- zero-shot NER (model urchade/gliner_medium-v2.1, Apache-2.0, ~781 MB).
+#             Apache-2.0 package.
+#   glirel -- zero-shot RELATION extraction (model jackboyla/glirel-large-v0, ~1.87 GB).
+#             The PACKAGE is Apache-2.0 but the WEIGHTS are CC BY-NC-SA 4.0
+#             (NON-COMMERCIAL) -- adopted + documented (Tim's call); the user downloads
+#             the weights, Magpie's MIT code is unaffected (the Phase-7 AGPL posture).
+#   loguru -- glirel imports it but FORGETS to declare it; pinned explicitly here.
+#   transformers / typer -- PINNED to the GLiNER<->Docling coexistence overlap. GLiNER
+#             needs transformers >=4.51.3,<5.2; docling-ibm-models needs transformers
+#             !=5.0/5.1/5.2/5.3; docling-core needs typer <0.25. The clean overlap is
+#             transformers 4.57.6 + typer 0.24.2 (`pip check` clean; the docling heavy
+#             suite passes; gliner/glirel import). WITHOUT these pins a rebuild resolves
+#             transformers 5.1.x (gliner's default) and breaks a fresh
+#             `pip install -r requirements-dev.txt` (docling-ibm-models excludes 5.1).
+#             numpy/pandas/torch/spacy pins UNTOUCHED.
+#   NOTE: the FtM mapping stack (followthemoney + nomenklatura) is LINUX/CI ONLY and
+#   lives in requirements-ftm.txt (PyICU has no Windows wheel) -- NOT here.
+transformers==4.57.6
+typer==0.24.2
+gliner==0.2.26
+glirel==1.2.1
+loguru==0.7.3

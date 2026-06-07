@@ -96,6 +96,14 @@ bandwidth and time on a first install:
   ingest therefore takes noticeably longer (often a minute or two) while every
   ingest after that is fast. If you want the first real ingest to be quick, run one
   throwaway ingest yourself after setup to warm the cache.
+- **Track B entity-extract weights (GLiNER + GLiREL)** -- `mise run bootstrap`
+  installs the `gliner` and `glirel` packages; their model weights (about 2.6 GB
+  total) download lazily on first use, like Docling's. NOTE the license: the GLiREL
+  relation-model weights are CC BY-NC-SA 4.0 (non-commercial); the user downloads
+  them (not vendored) and Magpie's MIT code is unaffected. The FtM/graph layer
+  (`followthemoney` / `nomenklatura`) is Linux/CI only -- it is NOT installed on
+  Windows (PyICU has no Windows wheel), so on Windows the entity-extract deliverable
+  is the reviewed intermediate and the FtM bundle is produced on Linux/CI.
 
 Both downloads are one-time per machine. There is no recurring download and nothing
 to refresh on a schedule.
@@ -113,7 +121,8 @@ After install, confirm what the machine can actually do. Run the **`setup`** ski
 
 That prints a capability map in the investigator's own verbs (analyze datasets,
 ingest native PDFs, PII scan, redaction QA, citation verify, evidence timestamp,
-OCR preprocessing for scans) with each one marked READY, DEGRADED, or UNAVAILABLE,
+OCR preprocessing for scans, extract entities (Track B)) with each one marked READY,
+DEGRADED, or UNAVAILABLE,
 plus a two-line headline (core structured-data analysis, and the document-workflow
 rollup). Add `--json` for a machine-readable report:
 

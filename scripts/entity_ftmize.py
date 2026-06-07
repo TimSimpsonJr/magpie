@@ -1,0 +1,178 @@
+"""FtM layer: reviewed intermediate -> FollowTheMoney bundle (Linux/CI only).
+
+This is the ONLY followthemoney importer in the repo. followthemoney does NOT
+install on Windows (PyICU/ICU has no Windows wheel), so importing this module
+fails on the Windows dev venv -- by design. It runs in the CI `ftm` job (Ubuntu)
+and Phase-13 Docker, and is reused by Phase 13.
+
+It consumes the followthemoney-FREE reviewed INTERMEDIATE produced by
+`scripts.entity_extract.build_intermediate` (a plain dict) and:
+  - to_ftm(intermediate) -> list of FtM proxies (ids PRESERVED from the
+    intermediate -- Phase 12 owns the ids; ftmize never re-mints or re-merges).
+  - write_bundle(intermediate, out_dir, name=None) -> writes the three Phase-13
+    hand-off files and returns their paths.
+  - assert_phase13_consumable(bundle_dir, name) -> pure file/JSON contract check
+    Phase 13 imports (no followthemoney needed for the check itself).
+"""
+from __future__ import annotations
+
+import json
+import pathlib
+from typing import Optional
+
+from followthemoney import model
+
+
+def _ftm_version() -> str:
+    """Best-effort followthemoney version string (empty if unavailable)."""
+    try:
+        import followthemoney
+
+        return getattr(followthemoney, "__version__", "") or ""
+    except Exception:
+        return ""
+
+
+def to_ftm(intermediate: dict) -> list:
+    """Map a reviewed intermediate bundle to a list of FtM proxies.
+
+    Nodes first, then edges. The intermediate's stable ids are PRESERVED on the
+    proxies (entity.id) -- Phase 12 owns the ids; ftmize never re-mints them.
+    """
+    proxies = []
+
+    for node in intermediate.get("nodes", []):
+        e = model.make_entity(node["schema"])
+        e.id = node["id"]
+        e.add("name", node["name"])
+        proxies.append(e)
+
+    for edge in intermediate.get("edges", []):
+        e = model.make_entity(edge["schema"])
+        if not e.schema.edge:
+            raise ValueError(
+                "schema %r is not an FtM edge schema" % edge["schema"]
+            )
+        e.id = edge["id"]
+        # Use FollowTheMoney's OWN edge endpoint property names -- authoritative,
+        # never a hardcoded guess: schema.edge_source / schema.edge_target.
+        # cleaned=True stores our canonical intermediate ids VERBATIM as the
+        # endpoint refs -- the entity-type clean would otherwise reformat or drop
+        # them. e.id is assigned verbatim too, so endpoints match the node ids exactly.
+        e.add(e.schema.edge_source, edge["head_id"], cleaned=True)
+        e.add(e.schema.edge_target, edge["tail_id"], cleaned=True)
+        if edge.get("role"):
+            # most FtM edges (UnknownLink/Membership/...) carry a "role" prop;
+            # quiet skips it on a schema that lacks one.
+            e.add("role", edge["role"], quiet=True)
+        proxies.append(e)
+
+    return proxies
+
+
+def write_bundle(intermediate: dict, out_dir, name: Optional[str] = None) -> dict:
+    """Write the three Phase-13 hand-off files and return their paths.
+
+    Files (design section 7):
+      <name>.entities.ftm.json -- newline-delimited json, one proxy.to_dict() per
+        line (nodes then edges).
+      <name>.provenance.jsonl  -- newline-delimited json, one row per intermediate
+        provenance entry.
+      <name>.manifest.json     -- the bundle header.
+
+    Returns {"entities": <path>, "provenance": <path>, "manifest": <path>}.
+    """
+    if name is None:
+        name = intermediate["dataset_namespace"]
+
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    nodes = intermediate.get("nodes", [])
+    edges = intermediate.get("edges", [])
+
+    proxies = to_ftm(intermediate)
+    entities_path = out / (name + ".entities.ftm.json")
+    with entities_path.open("w", encoding="utf-8") as fh:
+        for proxy in proxies:
+            fh.write(json.dumps(proxy.to_dict()))
+            fh.write("\n")
+
+    provenance_path = out / (name + ".provenance.jsonl")
+    with provenance_path.open("w", encoding="utf-8") as fh:
+        for row in intermediate.get("provenance", []):
+            fh.write(json.dumps(row))
+            fh.write("\n")
+
+    manifest = {
+        "schema_version": intermediate["schema_version"],
+        # The dataset_namespace is the corpus/run identity from the intermediate;
+        # `name` is only a file-prefix override and must NOT rewrite it (a caller
+        # choosing a different output prefix keeps the true namespace).
+        "dataset_namespace": intermediate["dataset_namespace"],
+        "source_doc_ids": intermediate.get("source_doc_ids", []),
+        "entity_count": len(nodes),
+        "edge_count": len(edges),
+        "counts": intermediate.get("counts", {}),
+        "ftm_version": _ftm_version(),
+    }
+    manifest_path = out / (name + ".manifest.json")
+    with manifest_path.open("w", encoding="utf-8") as fh:
+        json.dump(manifest, fh)
+
+    return {
+        "entities": str(entities_path),
+        "provenance": str(provenance_path),
+        "manifest": str(manifest_path),
+    }
+
+
+def assert_phase13_consumable(bundle_dir, name: str) -> None:
+    """Assert a written bundle satisfies the Phase-13 input contract.
+
+    Pure file/JSON checks (no followthemoney needed for the check itself), so
+    Phase 13 can call it cheaply. Raises AssertionError with a clear message on
+    any violation.
+    """
+    out = pathlib.Path(bundle_dir)
+    entities_path = out / (name + ".entities.ftm.json")
+    provenance_path = out / (name + ".provenance.jsonl")
+    manifest_path = out / (name + ".manifest.json")
+
+    assert entities_path.exists(), "missing entities file: %s" % entities_path
+    assert provenance_path.exists(), "missing provenance file: %s" % provenance_path
+    assert manifest_path.exists(), "missing manifest file: %s" % manifest_path
+
+    with manifest_path.open("r", encoding="utf-8") as fh:
+        manifest = json.load(fh)
+
+    assert manifest.get("schema_version"), (
+        "manifest schema_version is missing or empty: %r" % manifest.get("schema_version")
+    )
+    assert isinstance(manifest.get("counts"), dict), (
+        "manifest counts must be a dict, got: %r" % type(manifest.get("counts"))
+    )
+
+    entity_count = manifest.get("entity_count", 0)
+    edge_count = manifest.get("edge_count", 0)
+    expected_lines = entity_count + edge_count
+
+    with entities_path.open("r", encoding="utf-8") as fh:
+        non_empty = [ln for ln in fh.read().splitlines() if ln.strip()]
+    assert len(non_empty) == expected_lines, (
+        "entities file has %d non-empty lines, expected %d (entity_count %d + edge_count %d)"
+        % (len(non_empty), expected_lines, entity_count, edge_count)
+    )
+
+    # Provenance is one of the three hand-off files; validate it too (parseable
+    # JSON rows, count consistent with the manifest when it records one).
+    with provenance_path.open("r", encoding="utf-8") as fh:
+        prov_lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+    for ln in prov_lines:
+        json.loads(ln)  # each provenance row must be valid JSON
+    expected_prov = manifest.get("counts", {}).get("provenance")
+    if expected_prov is not None:
+        assert len(prov_lines) == expected_prov, (
+            "provenance file has %d rows, expected %d (manifest counts.provenance)"
+            % (len(prov_lines), expected_prov)
+        )
