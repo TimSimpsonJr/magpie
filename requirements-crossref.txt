@@ -1,0 +1,5 @@
+# Phase 13b cross-ref runtime (Layer-2; cross-platform). The yente HTTP client
+# (httpx) + the yente-mcp server (mcp / FastMCP). Lazy-imported by the edges, so
+# the offline suite does NOT need these; install for cross-ref + the CI crossref job.
+httpx==0.28.1
+mcp==1.27.2
