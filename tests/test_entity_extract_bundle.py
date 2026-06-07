@@ -305,6 +305,26 @@ class TestReviewQueueEdit:
         # total statements = 2 original + 1 appended replacement
         assert len(q.all_statements()) == 3
 
+    def test_edit_relation_statement_raises_value_error(self):
+        """v1: relation statements are accept/reject only -- edit() must raise."""
+        m = _mention(target_kind="edge", schema="Relation", prop="member of", value="A -> B")
+        stmts = build_statements([m], "test-ns")
+        q = ReviewQueue(stmts)
+        with pytest.raises(ValueError):
+            q.edit(stmts[0].statement_id, "anything")
+
+    def test_edit_relation_leaves_queue_unchanged(self):
+        """A rejected edit() on a relation must not mutate or append anything."""
+        m = _mention(target_kind="edge", schema="Relation", prop="member of", value="A -> B")
+        stmts = build_statements([m], "test-ns")
+        q = ReviewQueue(stmts)
+        with pytest.raises(ValueError):
+            q.edit(stmts[0].statement_id, "anything")
+        # original untouched (still pending, no superseded_by), nothing appended
+        assert len(q.all_statements()) == 1
+        assert q.get(stmts[0].statement_id).decision == "pending"
+        assert q.get(stmts[0].statement_id).superseded_by is None
+
 
 class TestReviewQueueJsonl:
     def test_round_trip(self):
@@ -476,3 +496,91 @@ class TestBuildIntermediate:
             namespace="test-ns", source_doc_ids=["doc-1"]
         )
         assert bundle["created_with"] == {}
+
+    # --- FIX 1 (reviewgate): human edits reach the emitted bundle ---
+
+    def test_plain_accept_emits_original_name(self):
+        """An un-edited accepted entity emits the node's original name."""
+        q, stmts, node_a, node_b, edge_ab = self._setup()
+        q.decide(stmts[0].statement_id, "accepted")  # node_a, value "Alice"
+        bundle, _ = build_intermediate(
+            q, [node_a, node_b], [],
+            namespace="test-ns", source_doc_ids=["doc-1"]
+        )
+        emitted = {n["id"]: n["name"] for n in bundle["nodes"]}
+        assert emitted[node_a.id] == "Alice"
+
+    def test_accepted_entity_edit_value_becomes_emitted_node_name(self):
+        """An accepted ENTITY edit's corrected value is the emitted node name."""
+        q, stmts, node_a, node_b, edge_ab = self._setup()
+        # Edit node_a's name-statement: "Alice" -> "Alice Smith"
+        q.edit(stmts[0].statement_id, "Alice Smith", reviewer="tim")
+        bundle, _ = build_intermediate(
+            q, [node_a, node_b], [],
+            namespace="test-ns", source_doc_ids=["doc-1"]
+        )
+        emitted = {n["id"]: n["name"] for n in bundle["nodes"]}
+        # node_a is still emitted (its target was accepted via the edit)
+        assert node_a.id in emitted
+        # the corrected value flows to the emitted node, NOT the stale "Alice"
+        assert emitted[node_a.id] == "Alice Smith"
+
+    def test_accepted_entity_edit_value_in_provenance(self):
+        """The corrected value also appears in the provenance row."""
+        q, stmts, node_a, node_b, edge_ab = self._setup()
+        q.edit(stmts[0].statement_id, "Alice Smith", reviewer="tim")
+        bundle, _ = build_intermediate(
+            q, [node_a, node_b], [],
+            namespace="test-ns", source_doc_ids=["doc-1"]
+        )
+        a_prov = [p for p in bundle["provenance"] if p["target_id"] == node_a.id]
+        assert len(a_prov) == 1
+        assert a_prov[0]["value"] == "Alice Smith"
+
+    # --- FIX 3 (closure): dropped-edge provenance must not leak ---
+
+    def test_dropped_edge_provenance_absent(self):
+        """A dropped edge's provenance row is ABSENT from the bundle."""
+        q, stmts, node_a, node_b, edge_ab = self._setup()
+        q.decide(stmts[0].statement_id, "accepted")  # node_a accepted
+        # stmts[1] (node_b) NOT accepted -> edge_ab will be dropped by closure
+        q.decide(stmts[2].statement_id, "accepted")  # edge_ab accepted
+        bundle, warnings = build_intermediate(
+            q, [node_a, node_b], [edge_ab],
+            namespace="test-ns", source_doc_ids=["doc-1"]
+        )
+        # edge dropped + warned
+        assert len(bundle["edges"]) == 0
+        assert len(warnings) == 1
+        # its provenance row is gone
+        prov_targets = {p["target_id"] for p in bundle["provenance"]}
+        assert edge_ab.id not in prov_targets
+        # only node_a's provenance remains
+        assert prov_targets == {node_a.id}
+
+    def test_every_provenance_target_is_emitted(self):
+        """Every remaining provenance row's target_id is in nodes-or-edges."""
+        q, stmts, node_a, node_b, edge_ab = self._setup()
+        q.decide(stmts[0].statement_id, "accepted")  # node_a accepted
+        # node_b NOT accepted -> edge dropped
+        q.decide(stmts[2].statement_id, "accepted")  # edge_ab accepted
+        bundle, _ = build_intermediate(
+            q, [node_a, node_b], [edge_ab],
+            namespace="test-ns", source_doc_ids=["doc-1"]
+        )
+        emitted_ids = {n["id"] for n in bundle["nodes"]} | {e["id"] for e in bundle["edges"]}
+        for p in bundle["provenance"]:
+            assert p["target_id"] in emitted_ids
+
+    def test_dropped_edge_counts_provenance_matches(self):
+        """counts['provenance'] matches the filtered provenance length."""
+        q, stmts, node_a, node_b, edge_ab = self._setup()
+        q.decide(stmts[0].statement_id, "accepted")  # node_a accepted
+        q.decide(stmts[2].statement_id, "accepted")  # edge_ab accepted (will drop)
+        bundle, _ = build_intermediate(
+            q, [node_a, node_b], [edge_ab],
+            namespace="test-ns", source_doc_ids=["doc-1"]
+        )
+        assert bundle["counts"]["provenance"] == len(bundle["provenance"])
+        # node_a only (edge's provenance filtered out)
+        assert bundle["counts"]["provenance"] == 1

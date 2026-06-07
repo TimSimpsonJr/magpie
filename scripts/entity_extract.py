@@ -207,19 +207,32 @@ def make_edge(
 ) -> Optional[Edge]:
     """Build a deterministic Edge, or None if the pair is type-incompatible.
 
-    Uses taxonomy.allowed() as the type-compatibility filter.
+    Three cases (plan Task 3):
+    - rel_label not in taxonomy -> deterministic UnknownLink fallback.
+    - type-compatible (taxonomy.allowed) -> the spec's ftm_edge/role.
+    - ownership-like relation whose target is not an ownable Company/Asset
+      (e.g. an Organization) -> DEGRADE to UnknownLink (keep the real signal)
+      rather than drop it.
+    - any other type-incompatible KNOWN pair -> None (the pair filter).
     """
-    if not taxonomy.allowed(rel_label, head.label, tail.label):
-        return None
-
     spec = taxonomy.relation_for(rel_label)
-    if spec is not None:
-        schema = spec.ftm_edge
-        role = spec.role
-    else:
-        # Defensive: a label not in the taxonomy at all
+    if spec is None:
+        # unmapped label -> deterministic UnknownLink fallback (preserve the
+        # label as the role)
         schema = "UnknownLink"
         role = rel_label
+    elif taxonomy.allowed(rel_label, head.label, tail.label):
+        schema = spec.ftm_edge
+        role = spec.role
+    elif spec.ftm_edge == "Ownership":
+        # documented degrade (plan Task 3): an ownership-like relation whose
+        # target is not an ownable Company/Asset (e.g. an Organization) -> keep
+        # as a generic UnknownLink rather than DROP the real signal; preserve
+        # the label as the role
+        schema = "UnknownLink"
+        role = rel_label
+    else:
+        return None  # type-incompatible noise -> drop (the pair filter)
 
     id_ = stable_id(namespace, schema, head.id, tail.id, span_key)
     return Edge(
@@ -346,6 +359,16 @@ class ReviewQueue:
         orig = self.get(sid)
         if orig is None:
             raise KeyError(sid)
+
+        # v1: only entity statements are editable. A relation relabel cannot
+        # recompute the FtM edge schema/id without an id-changing cascade, so
+        # relation statements are accept/reject only.
+        if orig.target_kind == "edge" or orig.kind == "relation":
+            raise ValueError(
+                "edit is only supported for entity statements in v1; relation "
+                "statements are accept/reject -- reject and re-extract to change "
+                "a relation"
+            )
 
         # Ordinal = 1 + number of existing statements whose supersedes == sid
         ordinal = 1 + sum(1 for s in self._statements if s.supersedes == sid)
@@ -565,7 +588,16 @@ def build_intermediate(
     accepted_stmts = queue.accepted()
     accepted_ids = {s.target_id for s in accepted_stmts}
 
-    # Accepted nodes
+    # Reconcile the human gate's edits into the emitted node name. An accepted
+    # ENTITY name-statement carries the reviewed (possibly edited) value; an
+    # edit() supersedes the original and is appended LAST, so iterating in order
+    # and letting a later value overwrite an earlier one means the edit wins.
+    reconciled_name: dict = {}
+    for s in accepted_stmts:
+        if s.target_kind == "entity" and s.prop == "name":
+            reconciled_name[s.target_id] = s.value
+
+    # Accepted nodes, with the reconciled name overriding the (stale) Node.name.
     accepted_nodes = [n for n in nodes if n.id in accepted_ids]
     node_ids = {n.id for n in accepted_nodes}
 
@@ -582,9 +614,16 @@ def build_intermediate(
                 "dropped edge %s (%s): endpoint not accepted" % (edge.id, edge.label)
             )
 
-    # Provenance rows
+    # The set of target ids actually emitted into the bundle. Provenance must
+    # only reference these -- a dropped edge's statement would otherwise leak a
+    # provenance row whose target_id is absent from edges (self-inconsistent).
+    emitted_ids = node_ids | {e.id for e in accepted_edges}
+
+    # Provenance rows -- only for statements whose target was emitted.
     provenance = []
     for s in accepted_stmts:
+        if s.target_id not in emitted_ids:
+            continue
         provenance.append({
             "statement_id": s.statement_id,
             "target_id": s.target_id,
@@ -600,11 +639,16 @@ def build_intermediate(
             "reviewed": True,
         })
 
+    node_dicts = []
+    for n in accepted_nodes:
+        name = reconciled_name.get(n.id, n.name)
+        node_dicts.append(dataclasses.asdict(dataclasses.replace(n, name=name)))
+
     bundle = {
         "schema_version": schema_version,
         "dataset_namespace": namespace,
         "source_doc_ids": list(source_doc_ids),
-        "nodes": [dataclasses.asdict(n) for n in accepted_nodes],
+        "nodes": node_dicts,
         "edges": [dataclasses.asdict(e) for e in accepted_edges],
         "provenance": provenance,
         "counts": {

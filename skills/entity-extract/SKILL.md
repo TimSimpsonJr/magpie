@@ -81,11 +81,21 @@ The human accepts / rejects / edits:
     result.review_queue.decide(statement_id, "rejected", reviewer="tim")
     result.review_queue.edit(statement_id, "Corrected Value", reviewer="tim")
 
-An EDIT SUPERSEDES, it never mutates: `edit()` marks the original
-`decision="edited"`, then appends a fresh `accepted` statement with
-`supersedes` / `superseded_by` links and a derived id. The queue is a persisted
-artifact (`to_jsonl()` / `from_jsonl()`), so a large document can be drained
-out-of-band (open the file, mark decisions) and reloaded.
+Edit semantics (v1):
+
+- ENTITY statements are EDITABLE. An EDIT SUPERSEDES, it never mutates:
+  `edit()` marks the original `decision="edited"`, then appends a fresh
+  `accepted` statement with `supersedes` / `superseded_by` links and a derived
+  id. The corrected value FLOWS to the emitted node -- `build_intermediate`
+  reconciles each node's `name` from the latest accepted entity name-statement,
+  so a corrected entity name reaches the bundle's node (not just provenance).
+- RELATION statements are ACCEPT / REJECT only. `edit()` on a relation RAISES
+  `ValueError`: a relabel cannot recompute the FtM edge schema/id without an
+  id-changing cascade in v1. To change a relation, REJECT it and re-extract.
+
+The queue is a persisted artifact (`to_jsonl()` / `from_jsonl()`), so a large
+document can be drained out-of-band (open the file, mark decisions) and
+reloaded.
 
 Solo single-reviewer is the only required gate. NEVER run this autonomously:
 zero-shot relation-extraction F1 is ~25-40, so a machine-only edge is untrusted

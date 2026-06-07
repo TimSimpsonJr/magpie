@@ -137,6 +137,10 @@ class TestMakeEdge:
         span = _span(name, "company")
         return make_node(span, doc, "test_ns", TAXONOMY)
 
+    def _org_node(self, name="Globex", doc="doc1"):
+        span = _span(name, "organization")
+        return make_node(span, doc, "test_ns", TAXONOMY)
+
     def test_member_of_person_to_agency_returns_edge(self):
         head = self._person_node()
         tail = self._agency_node()
@@ -170,11 +174,61 @@ class TestMakeEdge:
         edge = make_edge("member of", head, tail, "span_0", "test_ns", TAXONOMY)
         assert edge is None
 
-    def test_owns_subsidiary_company_to_agency_returns_none(self):
-        """'owns/subsidiary of' only allows company tails -> agency tail => None."""
+    def test_owns_subsidiary_company_to_org_degrades_to_unknown_link(self):
+        """Ownership of a non-ownable Organization DEGRADES to UnknownLink
+        (plan Task 3), not dropped -- the real signal is preserved."""
+        head = self._company_node()
+        tail = self._org_node()
+        edge = make_edge("owns/subsidiary of", head, tail, "span_0", "test_ns", TAXONOMY)
+        assert edge is not None
+        assert edge.schema == "UnknownLink"
+        assert edge.role == "owns/subsidiary of"
+        assert edge.label == "owns/subsidiary of"
+
+    def test_owns_subsidiary_person_to_org_degrades_to_unknown_link(self):
+        """Same ownership degrade with a person head and an organization tail."""
+        head = self._person_node()
+        tail = self._org_node()
+        edge = make_edge("owns/subsidiary of", head, tail, "span_0", "test_ns", TAXONOMY)
+        assert edge is not None
+        assert edge.schema == "UnknownLink"
+        assert edge.role == "owns/subsidiary of"
+
+    def test_owns_subsidiary_company_to_agency_degrades_to_unknown_link(self):
+        """Ownership of a non-ownable government agency also degrades (not None)."""
         head = self._company_node()
         tail = self._agency_node()
         edge = make_edge("owns/subsidiary of", head, tail, "span_0", "test_ns", TAXONOMY)
+        assert edge is not None
+        assert edge.schema == "UnknownLink"
+        assert edge.role == "owns/subsidiary of"
+
+    def test_unmapped_label_gives_unknown_link(self):
+        """A rel_label not in the taxonomy -> deterministic UnknownLink fallback."""
+        head = self._person_node()
+        tail = self._company_node()
+        edge = make_edge("totally unknown relation", head, tail, "span_0", "test_ns", TAXONOMY)
+        assert edge is not None
+        assert edge.schema == "UnknownLink"
+        assert edge.role == "totally unknown relation"
+        assert edge.label == "totally unknown relation"
+
+    def test_incompatible_known_non_ownership_pair_returns_none(self):
+        """A type-incompatible KNOWN pair that is NOT ownership is dropped.
+
+        'employed by' requires a person/official head; a company head is
+        incompatible and (not being Ownership) yields None."""
+        head = self._company_node()
+        tail = self._company_node(name="Initech")
+        edge = make_edge("employed by", head, tail, "span_0", "test_ns", TAXONOMY)
+        assert edge is None
+
+    def test_incompatible_member_of_org_head_returns_none(self):
+        """'member of' requires a person/official head; an organization head is
+        incompatible and (not Ownership) yields None."""
+        head = self._org_node()
+        tail = self._agency_node()
+        edge = make_edge("member of", head, tail, "span_0", "test_ns", TAXONOMY)
         assert edge is None
 
     def test_affiliated_linked_person_to_company_returns_edge(self):
