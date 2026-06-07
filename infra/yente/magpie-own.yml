@@ -1,0 +1,9 @@
+# TEMPLATE -- the live manifest is rendered by entity_yente_dataset.render_manifest
+# into data/magpie_corpus/manifest.yml with a content-hash version; this file
+# documents the own-corpus shape, it is NOT mounted by the compose.
+datasets:
+  - name: magpie_corpus
+    title: "Magpie FOIA corpus (own-corpus)"
+    path: /data/entities.ftm.json
+    version: "seed"
+    namespace: true
