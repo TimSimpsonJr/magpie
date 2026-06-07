@@ -113,11 +113,13 @@ so the later steps reload the same inputs.
   candidate_snapshot_path, packet_hash, auto_merge_log_path)`: set
   `NOMENKLATURA_DB_URL=sqlite:///<scratch>/resolver.db`; `Resolver.make_default()`;
   `begin()`; `store = _load_store(entities_paths, resolver)`; `xref(resolver, store,
-  index_dir, algorithm=LogicV2, auto_threshold=config.auto_threshold)`; `commit()`.
-  AUTO-MERGE LOG source = the POSITIVE edges this xref created (iterate the resolver
-  edge table for `judgement==POSITIVE` with a non-human `user`), each hydrated with
-  score + the two captions + provenance from the store -> `scratch/auto_merge_log
-  .jsonl`. REVIEW band = `get_candidates()` filtered to `score in [review_floor,
+  index_dir, algorithm=LogicV2, auto_threshold=config.auto_threshold,
+  user="magpie-auto")`; `commit()`. Passing `user="magpie-auto"` TAGS the auto-merge
+  edges; AUTO-MERGE LOG source = the POSITIVE edges this xref created (iterate the
+  resolver edge table for `judgement==POSITIVE and user=="magpie-auto"`), each
+  hydrated with score + the two captions + provenance from the store ->
+  `scratch/auto_merge_log.jsonl`. (apply_verdicts' `decide()` later passes a human
+  reviewer `user`, so auto vs human merges stay distinguishable.) REVIEW band = `get_candidates()` filtered to `score in [review_floor,
   auto_threshold)`, hydrated to Candidates (display fields + snippet provenance refs)
   -> `entity_review_packet.build_candidate_snapshot` -> `scratch/candidate_snapshot
   .json` (its hash IS packet_hash). Write `scratch/run.json`.
@@ -127,8 +129,8 @@ so the later steps reload the same inputs.
   `!=` the verdict file's packet_hash, RETURN aborted("resolver moved -- regenerate
   the packet"), applying NOTHING. Else `begin()`; per pair re-check it is STILL a
   live NO_JUDGEMENT candidate at the packet's score before `resolver.decide(left,
-  right, Judgement.POSITIVE|NEGATIVE)` (unsure -> skip; a drifted pair -> skipped +
-  reported); `commit()`.
+  right, Judgement.POSITIVE|NEGATIVE, user=<reviewer id>)` (unsure -> skip; a
+  drifted pair -> skipped + reported); `commit()`.
 - `build_resolved_snapshot(scratch_dir, investigation_id, config) -> dict`: reopen
   the resolver + reload the store from `run.json` (NOT an in-memory arg). For every
   member id `resolver.get_canonical(id)` -> group members into clusters; per cluster
