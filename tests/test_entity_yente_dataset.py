@@ -278,3 +278,23 @@ def test_render_manifest_watchlist_adds_civic_catalog():
     # dataset block still present.
     assert "datasets:" in out
     assert "name: magpie_corpus" in out
+
+
+def test_render_manifest_namespace_false_branch():
+    # The namespace=False branch (review-flagged gap): renders "namespace: false".
+    entry = DatasetEntry(
+        name="magpie_corpus",
+        title="Magpie Corpus",
+        path="/data/entities.ftm.json",
+        version="v1",
+        namespace=False,
+    )
+    out = render_manifest([entry], include_watchlist=False)
+    assert "namespace: false" in out
+    assert "namespace: true" not in out
+
+
+def test_write_dataset_returns_echoed_name(tmp_path):
+    # Review fold: write_dataset echoes `name` so a caller can build DatasetEntry.
+    res = write_dataset(_fixture_snapshot(), tmp_path, name="magpie_corpus")
+    assert res["name"] == "magpie_corpus"

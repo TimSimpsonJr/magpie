@@ -67,14 +67,20 @@ def dataset_version(entities_text: str) -> str:
     return hashlib.sha256(entities_text.encode("utf-8")).hexdigest()[:16]
 
 def write_dataset(snapshot: dict, out_dir, *, name: str = DATASET_NAME) -> dict:
-    """Write <out_dir>/entities.ftm.json. Returns {entities_path, version, count}."""
+    """Write <out_dir>/entities.ftm.json. Returns {name, entities_path, version, count}.
+
+    `entities_path` is the HOST path written; the yente manifest's dataset `path`
+    is the IN-CONTAINER mount (e.g. /data/entities.ftm.json) -- do NOT feed this
+    host path into DatasetEntry.path. `name` is echoed back so a caller can build
+    the matching DatasetEntry(name=..., version=...) without re-deriving it.
+    """
     out = pathlib.Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     entities = snapshot_to_entities(snapshot)
     text = _serialize_entities(entities)
     version = dataset_version(text)
     entities_path = out / "entities.ftm.json"
     entities_path.write_text(text, encoding="utf-8")
-    return {"entities_path": str(entities_path), "version": version, "count": len(entities)}
+    return {"name": name, "entities_path": str(entities_path), "version": version, "count": len(entities)}
 
 def render_manifest(datasets: list[DatasetEntry], *, include_watchlist: bool = False) -> str:
     """Render a yente manifest YAML by hand (no yaml dep). Own-corpus default has
