@@ -93,7 +93,11 @@ services:
       YENTE_AUTO_REINDEX: "false"
       YENTE_UPDATE_TOKEN: "${YENTE_UPDATE_TOKEN:?set YENTE_UPDATE_TOKEN in infra/.env (copy infra/.env.example)}"
     volumes:
-      - ./data/magpie_corpus:/data:ro
+      # Relative bind-mount paths resolve against the COMPOSE FILE's dir (infra/),
+      # so `../data/magpie_corpus` is the repo-root data/magpie_corpus the emitter
+      # writes to (and .gitignore blocks). `./data/...` would wrongly resolve to
+      # infra/data and leave /data empty -- caught by the local re-smoke.
+      - ../data/magpie_corpus:/data:ro
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:

@@ -26,7 +26,9 @@ def test_ports_localhost_bound():
 
 def test_yente_only_mounts_data_dir():
     c = _compose()
-    assert "./data/magpie_corpus:/data:ro" in c
+    # ../ because relative bind-mount paths resolve against the compose file's
+    # dir (infra/); ../data/magpie_corpus is the repo-root data dir the emitter writes.
+    assert "../data/magpie_corpus:/data:ro" in c
     # the committed infra/yente templates are NOT mounted into the container:
     assert "/app/manifests" not in c
 
