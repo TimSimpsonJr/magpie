@@ -68,10 +68,10 @@ surface -- the load-bearing Phase-12 lesson).
 | Module | Tier | Responsibility |
 |---|---|---|
 | `scripts/entity_resolution_policy.py` | pure core (Windows) | score buckets, threshold config, the STABLE `canonical_id` derivation, candidate/verdict dataclasses |
-| `scripts/entity_review_packet.py` | pure core (Windows) | candidate-snapshot JSON, self-contained HTML packet render, verdict-JSON schema + validation, stale-pair guard logic |
+| `scripts/entity_review_packet.py` | pure core (Windows) | candidate-snapshot JSON, self-contained HTML packet render, snippet hydration (injected resolver over Phase-6 source text), verdict-JSON schema + validation, fail-closed stale-pair guard |
 | `scripts/entity_resolved_snapshot.py` | pure core (Windows) | the portable resolved-snapshot schema + serializer (the 13a deliverable / 13a->13b seam) |
 | `scripts/entity_nomenklatura.py` | Linux/CI edge (only nomenklatura importer) | load bundle -> `xref(LogicV2)` -> auto-merge log -> drain review band -> apply verdicts -> emit resolved cluster membership |
-| `scripts/entity_graph_neo4j.py` | Docker edge (only neo4j-driver importer) | constraints/indexes + MERGE canonical nodes / member aliases / provenance / resolved relationships; rerun-safe |
+| `scripts/entity_graph_neo4j.py` | Docker edge (only neo4j-driver importer) | constraints/indexes + investigation-SCOPED REPLACE: MERGE canonical nodes / member aliases / provenance / resolved relationships, then delete in-scope rows absent from the snapshot; rerun-safe |
 | `skills/entity-graph/SKILL.md` | orchestration | the operator-run flow + the HITL gate |
 | `infra/docker-compose.yml` | infra | Neo4j (13a); localhost-bound; healthcheck; `graph` profile |
 
@@ -110,37 +110,64 @@ STABLE, content-addressed canonical id:
 - Members are the Phase-12 sha256 node ids (preserved through the bundle).
 - A SINGLETON (no merge) uses the same rule over its one member id -> stable from
   day one; every node has a canonical_id immediately.
-- The Neo4j node is keyed (MERGE) on `canonical_id`; member sha256 ids are stored
-  as a `members` property (+ optional `:Mention` alias nodes); the nomenklatura
-  `NK-` id is stored as `resolver_id` METADATA only.
+- The Neo4j node is keyed (MERGE) on `canonical_id` and tagged with
+  `investigation_id` (D4); member sha256 ids are stored as a `member_ids` property
+  (+ optional `:Mention` alias nodes); the nomenklatura `NK-` id is stored as
+  `resolver_id` METADATA only.
 - Reproducible: the same (bundle + accepted verdicts) always yields the same
   graph, independent of resolver-DB churn. A membership change yields a NEW
   canonical_id -- correct, it is a genuinely different cluster; the snapshot is the
-  source of truth and the graph is re-MERGEd from it (orphan canonical nodes absent
-  from the current snapshot are pruned).
+  source of truth and the graph is re-derived from it via the investigation-SCOPED
+  REPLACE (D4), which deletes the prior in-scope orphan WITHOUT touching any other
+  investigation's subgraph.
 
 ### D3. The resolved snapshot (the 13a deliverable + the 13a/13b seam)
 13a's durable output is NOT "the live resolver DB". It is a portable **resolved
 snapshot** (one JSON artifact), mirroring Phase-12's reviewed-intermediate ->
-FtM-bundle decoupling. One record per resolved cluster:
+FtM-bundle decoupling. It is a GRAPH object (top-level entities + edges, NOT
+cluster-nested -- so a cross-cluster edge has ONE unambiguous owner), scoped to a
+single investigation:
 
-    { canonical_id, schema, name (representative), members:[node_id...],
-      aliases:[name...], resolver_id (NK- or null), provenance_refs:[...],
-      edges:[{schema, head_canonical, tail_canonical, role, provenance_refs}],
-      algorithm, thresholds, generated_at }
+    { "metadata": { investigation_id (= the bundle dataset_namespace),
+                    algorithm, thresholds, generated_at, snapshot_version },
+      "entities": [ { canonical_id, schema, caption (representative name),
+                      aliases:[name...], member_ids:[node_id...],
+                      properties:{ <ftm-prop>: [values...] },
+                      resolver_id (NK- or null), provenance_refs:[ref_id...] } ],
+      "edges":    [ { edge_id (stable), schema, head_canonical, tail_canonical,
+                      role, properties:{...}, provenance_refs:[ref_id...] } ],
+      "provenance": [ { ref_id, doc_id, page, char_start, char_end, model,
+                        confidence } ] }
 
-`entity_resolved_snapshot.py` is a pure serializer over the cluster membership
-`entity_nomenklatura` emits, so the snapshot SCHEMA is Windows-golden-testable.
-The Neo4j writer (13a) and the yente own-corpus dataset + cross-ref (13b) both
-consume the snapshot unchanged -- 13b never reaches back into the resolver DB.
+- Top-level `entities[]` + `edges[]` (NOT edges nested per cluster) so a
+  cross-cluster edge is owned ONCE; `edge_id` is stable =
+  sha256(schema|head_canonical|tail_canonical|role)[:40], so MERGE is idempotent.
+- Each entity carries an extensible `properties` bag -- the FtM props yente
+  `/match` needs in 13b (schema + name/birthDate/country/...) -- so 13b consumes
+  the snapshot UNCHANGED, never reaching back into the resolver DB.
+- `investigation_id` scopes every downstream write (D4); the snapshot is the SINGLE
+  source of truth for ONE investigation's graph.
 
-### D4. Graph write = direct neo4j 6.2.0 driver MERGE (idempotent)
+`entity_resolved_snapshot.py` is a pure serializer over the cluster membership +
+properties `entity_nomenklatura` emits, so the snapshot SCHEMA is
+Windows-golden-testable.
+
+### D4. Graph write = direct neo4j 6.2.0 driver, investigation-scoped REPLACE
 `ftm export-neo4j-bulk` needs a stopped/empty DB -> out (we need incremental
 upserts). `ftm export-cypher` renders FtM edge-schemas as relationships for free,
 but emits whatever it emits this year -> we keep it as a CONTRACT ORACLE / debug
-bootstrap, not the production path. Production write = direct driver `session.run`
-with explicit `MERGE` on `canonical_id` over our small fixed edge taxonomy (full
-control, idempotent, rerun-safe). Uniqueness constraint on `:Entity(canonical_id)`.
+bootstrap, not the production path. Production write = direct driver `session.run`.
+
+`entity_graph_neo4j.write(snapshot)` is an investigation-SCOPED REPLACE, NOT a
+blind prune (Codex CRITICAL): every node/edge/alias/provenance row carries the
+snapshot's `investigation_id`; the writer (a) MERGEs the snapshot's current
+entities + edges (keyed on `canonical_id` / `edge_id`), then (b) DELETEs only the
+entities / relationships / aliases / provenance rows whose `investigation_id`
+matches AND that are ABSENT from the current snapshot. It never reads or deletes
+another investigation's subgraph, and it leaves no stale edges on surviving nodes.
+So a re-run with changed cluster membership (a new canonical_id) cleanly REPLACES
+the prior graph for THAT investigation and is idempotent. Uniqueness constraint on
+`:Entity(canonical_id)`; index on `:Entity(investigation_id)`.
 
 ### D5. Cross-corpus resolution, per-investigation resolver DB, single writer
 Resolve ACROSS the whole investigation corpus (all docs' bundles loaded into one
@@ -153,25 +180,34 @@ boundary around `xref` + candidate drain + verdict apply; no concurrent writers
 (SQLite contention).
 
 ### D6. The HITL review packet + JSON handback + snapshot discipline
-The 70%-to-auto-merge band drains from the LIVE resolver via
-`get_candidates()` (NOT from `dump()`, which drops NO_JUDGEMENT edges). Flow:
+The review band drains from the LIVE resolver via `get_candidates()` (NOT from
+`dump()`, which drops NO_JUDGEMENT edges). Flow:
 
 1. `entity_nomenklatura` drains `get_candidates()` for `score in [floor, auto)`.
 2. `entity_review_packet` writes a candidate-SNAPSHOT JSON AND renders a
-   self-contained HTML packet (side-by-side cards: entity A vs B, their
-   provenance/source snippets, the matched score). Packet metadata carries:
-   investigation id, resolver-DB path hash, algorithm, thresholds, generated_at,
-   and a candidate-snapshot HASH.
+   self-contained HTML packet (side-by-side cards: entity A vs B, their source
+   SNIPPETS, the matched score). Packet metadata carries: investigation_id,
+   resolver-DB path hash, algorithm, thresholds, generated_at, and a
+   candidate-snapshot HASH.
+   - SNIPPET HYDRATION (Codex IMPORTANT): Phase-12 provenance carries OFFSETS
+     ({doc_id, page, char_start, char_end}), NOT snippet text. Packet generation
+     takes an injected `snippet_resolver(doc_id, char_start, char_end) -> text`
+     built over the Phase-6 ingest DoclingDocument JSONs (the source page text),
+     hydrating each card's snippet at render time. Injected, so the renderer is
+     Windows-golden-testable with a fake; snippets are LOCAL-only raw source text
+     (never published -- the local-exhibit posture).
 3. The human reviews in-browser, exports a verdict JSON `[{left, right, verdict}]`.
-4. `entity_nomenklatura` applies each verdict via `resolver.decide(...)` inside
-   `begin()/commit()` -- but RE-CHECKS each pair is still LIVE and unresolved
-   first; a stale pair (already moved by another decision / a rerun / an
-   auto-merge) is SKIPPED and REPORTED, never blindly applied. The snapshot hash
-   detects a packet generated against a different resolver state.
+4. `entity_nomenklatura.apply_verdicts(...)` is FAIL-CLOSED (Codex IMPORTANT):
+   - If the verdict file's packet-hash != the CURRENT live candidate-snapshot hash,
+     ABORT the entire apply and tell the operator to REGENERATE the packet (the
+     default -- resolver state moved since generation); NOT a silent per-pair skip.
+   - Only when the hash matches: per pair, re-check it is still LIVE, unresolved,
+     AND at the packet's score/state before `resolver.decide(...)` inside
+     `begin()/commit()`; a pair whose live state drifted is skipped + reported.
+     Apply ONLY when BOTH the packet hash AND the live pair state still match.
 
-This is the stale-candidate guard Codex flagged: static HTML + downloaded JSON is
-robust ONLY with this snapshot discipline. Verdict-JSON validation + the
-stale-apply behavior are Windows-golden-testable in `entity_review_packet`.
+Verdict-JSON validation, the hash-mismatch abort, and the stale-pair re-check are
+Windows-golden-testable in `entity_review_packet` / the policy core with fakes.
 
 ### D7. Auto-merge logged + reversible (Tim's decision, realized)
 `xref(auto_threshold=<auto>)` auto-decides `score > auto` as POSITIVE. Each
@@ -200,14 +236,17 @@ bundles; they are config, not truth.
    set `NOMENKLATURA_DB_URL` to a scratch sqlite -> `Resolver.make_default()` ->
    `load_entity_file_store(each bundle)` -> `xref(auto_threshold=auto)` ->
    write the auto-merge log -> drain `get_candidates()` in `[floor, auto)`.
-3. `entity_review_packet.build(candidates)` -> candidate-snapshot JSON + the HTML
-   packet. Operator reviews -> verdict JSON.
-4. `entity_nomenklatura.apply_verdicts(verdict_json)` with the stale-pair guard ->
-   resolver now holds the human decisions.
-5. `entity_resolved_snapshot.build(resolver, store)` -> the portable resolved
-   snapshot (D3), deriving each cluster's `canonical_id` (D2).
-6. `entity_graph_neo4j.write(snapshot, bolt_uri, auth)` -> constraints + idempotent
-   MERGE of canonical nodes / member aliases / provenance / resolved relationships.
+3. `entity_review_packet.build(candidates, snippet_resolver)` -> candidate-snapshot
+   JSON + the HTML packet (snippets hydrated from the Phase-6 source text).
+   Operator reviews -> verdict JSON.
+4. `entity_nomenklatura.apply_verdicts(verdict_json)` -- FAIL-CLOSED (abort on
+   packet-hash mismatch; per-pair live re-check) -> resolver holds the decisions.
+5. `entity_resolved_snapshot.build(resolver, store, investigation_id)` -> the
+   portable resolved snapshot (D3): top-level entities[]+edges[], each entity's
+   stable `canonical_id` (D2) + `properties`, scoped by `investigation_id`.
+6. `entity_graph_neo4j.write(snapshot, bolt_uri, auth)` -> constraints + the
+   investigation-SCOPED REPLACE (D4): MERGE current entities/edges, delete in-scope
+   rows absent from the snapshot. Idempotent + rerun-safe.
 7. Output via Librarian: an aggregate findings note (cluster counts, the N
    auto-merges, the M human merges, top connected entities); raw member PII stays
    local; any surfaced PII routes through `redact-output` (the spine seam).
@@ -228,13 +267,17 @@ Three tiers (Codex-converged), building on the existing Phase-12 xref smoke:
   `entity_resolved_snapshot` generation. (The Phase-12 candidate smoke already
   proves load->xref->get_candidates; 13a adds LogicV2 + decide + snapshot.)
 - **Ubuntu Neo4j service-container job (NEW):** spin a `neo4j:...-community`
-  service container -> create constraints/indexes -> MERGE the resolved snapshot
-  TWICE -> assert idempotent node/relationship counts (rerun-safe). Plus a
-  `docker compose config` validation of `infra/docker-compose.yml`.
+  service container -> create constraints/indexes -> write the resolved snapshot
+  TWICE -> assert idempotent node/relationship counts; then write a snapshot with
+  a cluster REMOVED -> assert the investigation-SCOPED REPLACE deleted only the
+  in-scope orphan and touched no other investigation's rows (D4 correctness).
+- **Compose smoke (Codex NICE):** `docker compose config` for syntax PLUS one job
+  that actually brings the 13a compose `graph` profile UP and connects through it
+  (verifies the profile/env/healthcheck wiring shipped, not just YAML syntax).
 
-For 13a we do NOT run full compose in CI (a Neo4j service container suffices to
-prove the writer). RULE (Phase-12 lesson): gate the merge on these CI jobs, NEVER
-on Windows-green + Codex-green alone.
+For 13a we do NOT run the full multi-service compose in CI (the Neo4j service
+container + the single graph-profile compose-up suffice). RULE (Phase-12 lesson):
+gate the merge on these CI jobs, NEVER on Windows-green + Codex-green alone.
 
 ---
 
@@ -261,7 +304,7 @@ INSTRUCTS the operator to install Docker + run the WSL2 `vm.max_map_count` step
   the compose file + docs, NEVER the Neo4j image; the operator pulls it.
 - **Canonical-id churn on membership change** is by-design (a changed cluster is a
   new entity); the snapshot is the source of truth and the graph is re-derived from
-  it, with orphan pruning -- documented, not hidden.
+  it via the investigation-scoped REPLACE (D4) -- documented, not hidden.
 - **Resolver SQLite is single-writer**; the skill serializes access. A crashed run
   leaves a scratch DB the operator can discard (per-investigation, gitignored).
 - **CI cost:** a Neo4j service container per run is the price of honest
@@ -310,8 +353,13 @@ INSTRUCTS the operator to install Docker + run the WSL2 `vm.max_map_count` step
 
 ## 11. Open items -> implementation plan (13a)
 
-- Exact module APIs + dataclasses (`Candidate`, `Verdict`, `ResolvedCluster`,
-  `ResolutionConfig`); the canonical_id helper signature.
+- Exact module APIs + dataclasses (`Candidate`, `Verdict`, `ResolvedEntity`,
+  `ResolvedEdge`, `ResolutionConfig`); the `canonical_id` + `edge_id` helper
+  signatures.
+- The `snippet_resolver` contract (doc_id + char range -> source text over the
+  Phase-6 DoclingDocument JSONs) + its injection into the packet renderer.
+- The investigation-scoped REPLACE Cypher (MERGE + scoped DELETE) +
+  `:Entity(investigation_id)` index; how member/provenance/edge rows are scoped.
 - The HTML packet template (to be MOCKED UP for Tim's sign-off before building).
 - The Neo4j schema (labels, constraints, the member/provenance/edge Cypher).
 - The exact `ftm`-contract + Neo4j-service CI job YAML.
