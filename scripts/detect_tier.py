@@ -209,6 +209,20 @@ def build_capability_map(probes):
         unavailable_note="Layer 2, operator-tier; the journalist onramp stays Docker-free",
     )
 
+    # Layer 2 (Phase 13b) cross-reference. The SECOND Docker-gated capability,
+    # gated on the SAME read-only docker probe as the entity-graph cap above (it
+    # reuses docker_missing; it does NOT probe a live yente -- a health check must
+    # not assume the services are up). Like the entity-graph cap it is INDEPENDENT
+    # of the Track-A document workflows and is NOT in _DOC_CAPS.
+    caps["cross-reference entities (Layer 2)"] = _cap(
+        requires=["docker", "docker compose"],
+        missing=docker_missing,
+        optional_missing=[],
+        blocks="Cross-referencing resolved entities against your own corpus (FOSS default) and sanctions/PEP watchlists (opt-in) via yente + OpenSearch (Layer 2, operator-tier, Docker-gated).",
+        fix="install Docker Desktop (the setup skill INSTRUCTS; it never auto-installs), then start it; the crossref compose pulls opensearchproject/opensearch:2.19.5 + ghcr.io/opensanctions/yente:5.4.0",
+        unavailable_note="Layer 2, operator-tier; the journalist onramp stays Docker-free",
+    )
+
     return caps
 
 

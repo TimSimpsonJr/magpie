@@ -50,6 +50,7 @@ def test_all_present_every_capability_ready():
         "analyze datasets", "ingest native PDFs", "OCR preprocessing for scans",
         "PII scan", "redaction QA", "citation verify", "evidence timestamp",
         "extract entities (Track B)", "build an entity graph (Layer 2)",
+        "cross-reference entities (Layer 2)",
     }
     for name, cap in cm.items():
         assert cap["status"] == dt.READY, name
@@ -231,6 +232,38 @@ def test_entity_graph_does_not_touch_the_core_or_document_headline():
     assert s_without["document_workflows"] == "READY"
     # and the Layer-2 cap is NOT part of the document-workflows rollup
     assert "build an entity graph (Layer 2)" not in dt._DOC_CAPS
+
+
+def test_crossref_ready_when_docker_compose_daemon_present():
+    cm = dt.build_capability_map(all_present_probes())
+    assert cm["cross-reference entities (Layer 2)"]["status"] == dt.READY
+
+
+def test_crossref_unavailable_when_docker_absent_names_binary_and_setup_fix():
+    probes = all_present_probes()
+    probes["docker"] = {"present": False, "path": None,
+                        "daemon_ok": False, "compose_ok": False}
+    cm = dt.build_capability_map(probes)
+    cap = cm["cross-reference entities (Layer 2)"]
+    assert cap["status"] == dt.UNAVAILABLE
+    assert cap["missing"]  # non-empty
+    assert "docker (system binary)" in cap["missing"]
+    # the fix is a setup pointer that mentions Docker (setup INSTRUCTS, never installs)
+    assert "docker" in cap["fix"].lower()
+
+
+def test_crossref_does_not_touch_the_core_or_document_headline():
+    """The second Layer-2 cap is independent too: toggling ONLY the docker probe
+    must NOT change the core or document-workflows headline, and the crossref cap is
+    not in _DOC_CAPS."""
+    base = all_present_probes()
+    s_with = dt.summarize(dt.build_capability_map(base))
+    no_docker = all_present_probes()
+    no_docker["docker"] = {"present": False, "path": None,
+                           "daemon_ok": False, "compose_ok": False}
+    s_without = dt.summarize(dt.build_capability_map(no_docker))
+    assert s_with == s_without
+    assert "cross-reference entities (Layer 2)" not in dt._DOC_CAPS
 
 
 def test_check_docker_absent(monkeypatch):

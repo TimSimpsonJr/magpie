@@ -26,7 +26,10 @@ timestamp, and extract entities (Track B)), plus the subordinate two-line headli
 entity-extract capability is independent of both). Doctor also reports the Layer-2
 "build an entity graph" capability via a READ-ONLY Docker probe -- it runs
 `shutil.which("docker")` plus `docker version` / `docker compose version` for their
-return codes only, and NEVER pulls an image or starts a container. (Installing Docker
+return codes only, and NEVER pulls an image or starts a container. The Layer-2
+"cross-reference entities" capability (Phase 13b, yente + OpenSearch) is the second
+Docker-gated capability and is reported off the SAME read-only Docker probe; doctor
+never probes a live yente. (Installing Docker
 for that capability is setup's job, not doctor's; doctor only reports it.) For each
 gap it shows what that gap blocks and the single next instruction: ask your operator
 to run setup, or, for a missing system binary, the one-line hint naming the binary to
