@@ -23,7 +23,8 @@ run this flow autonomously past the review gate.
 
 13a (this skill) does resolution + the Neo4j write. Watchlist / sanctions / PEP
 cross-reference and own-corpus cross-ref (yente + OpenSearch + the `yente-mcp`
-server) are 13b -- a SEPARATE, later PR. Do not attempt cross-ref here.
+server) are the SEPARATE `entity-crossref` skill (Phase 13b) -- run it AFTER this
+one, on the resolved snapshot. Do not attempt cross-ref here.
 
 ---
 
@@ -289,8 +290,8 @@ include PII (a name in a top-degree list, a snippet), route it through the
 - NEO4J COMMUNITY IS GPLv3. Ship the compose file + docs, NEVER the image; the
   operator pulls `neo4j:5.26.26-community` themselves. Bolt across a process
   boundary is the community reading of the license, not an official ruling.
-- WATCHLIST / OWN-CORPUS CROSS-REF IS 13b. A separate, later PR (yente +
-  OpenSearch + `yente-mcp`). Not in scope here.
+- WATCHLIST / OWN-CORPUS CROSS-REF IS THE `entity-crossref` SKILL (Phase 13b,
+  yente + OpenSearch + `yente-mcp`). Run it after this skill; not in scope here.
 
 See `references/prior-art.md` for the verified library versions, the exact
 resolution/graph API facts, the honest limits, and the CI verification surface.
