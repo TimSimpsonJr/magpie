@@ -1,0 +1,29 @@
+{
+  "responses": {
+    "magpiecanonaaa0000000000000000000000000000000": {
+      "status": 200,
+      "results": [
+        {
+          "id": "magpie-canon-aaa.e8d592d5679046f6e547fc2237bccab948835d5f",
+          "caption": "Jonathan Edward Maple",
+          "schema": "Person",
+          "properties": {"name": ["Jonathan Edward Maple"], "country": ["us"]},
+          "datasets": ["magpie_corpus"],
+          "score": 1.0,
+          "match": true
+        },
+        {
+          "id": "other-weak.1234",
+          "caption": "Jon Maple",
+          "schema": "Person",
+          "properties": {"name": ["Jon Maple"]},
+          "datasets": ["magpie_corpus"],
+          "score": 0.42,
+          "match": false
+        }
+      ],
+      "total": {"value": 2, "relation": "eq"}
+    }
+  },
+  "limit": 5
+}
