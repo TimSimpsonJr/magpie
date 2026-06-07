@@ -3,16 +3,17 @@
 Fieldwork suite **Magpie**: a FOSS-first FOIA / investigative-analysis Claude Code plugin.
 State: **Layer 0-1 complete + tagged v0.1.0** (Track A analysis core, document ingest,
 redaction, citation, evidence, onboarding). **Track B (entity-network) underway** --
-Phase 12 `entity-extract` shipped; Phase 13 `entity-graph` (resolution + Neo4j + yente)
-next. This file is a one-line-per-file INDEX; depth lives in the design docs, docstrings,
-and tests it points to (see the last Key Relationship).
+Phase 12 `entity-extract` shipped; **Phase 13a `entity-graph` (nomenklatura resolution +
+HITL review packet + Neo4j) built** (13b = yente watchlist/own-corpus cross-ref, a later PR).
+This file is a one-line-per-file INDEX; depth lives in the design docs, docstrings, and
+tests it points to (see the last Key Relationship).
 
 ## Stack
 
 - **Language / shape:** Python 3.12.10 (mise-pinned; the project `.venv` is the source of truth). Claude Code plugin (`.claude-plugin/`); hard-deps the `librarian` plugin. `scripts/` are invoked directly by skills; `pyproject.toml` configures pytest only (not a pip package).
 - **Layer 0-1 deps (laptop-local, no Docker):** pandas/numpy/duckdb/pyarrow + openpyxl/charset-normalizer/sqlite-utils/PyYAML; heavy CPU-only ML *edges* -- spaCy + en_core_web_lg (pii-sweep), docling+rapidocr+onnxruntime+torch+ocrmypdf (ingest), x-ray -> PyMuPDF (redaction-check), rfc3161-client (archive-evidence). numpy/pandas/torch pins held across every phase.
-- **Track B (Layer 2) deps:** gliner + glirel + loguru, with `transformers==4.57.6` + `typer==0.24.2` PINNED (the GLiNER<->docling coexistence). The FtM stack (followthemoney + nomenklatura) is **Linux/CI-only** in `requirements-ftm.txt` -- PyICU has no Windows wheel.
-- **Requirements split:** `requirements-dev.txt` (full) / `requirements-offline.txt` (trimmed CI subset) / `requirements-ftm.txt` (Linux-CI-only FtM).
+- **Track B (Layer 2) deps:** gliner + glirel + loguru with `transformers==4.57.6` + `typer==0.24.2` PINNED. The FtM stack (followthemoney 4.9.0 + nomenklatura 4.9.1) is **Linux/CI-only** in `requirements-ftm.txt` (PyICU has no Windows wheel). The Neo4j driver (`neo4j==6.2.0`) is **cross-platform** in `requirements-graph.txt`; Neo4j server (`neo4j:5.26.26-community`, GPLv3) ships as compose + docs, never the image.
+- **Requirements split:** `requirements-dev.txt` (full) / `requirements-offline.txt` (trimmed CI subset) / `requirements-ftm.txt` (Linux-CI-only FtM) / `requirements-graph.txt` (cross-platform Neo4j driver, Layer-2-only).
 
 ## Structure
 
@@ -34,11 +35,16 @@ scripts/                     Engine modules invoked by skills. House pattern: st
   redact_output.py           Redact uninvolved PII to initials for publish; officials/involved kept; vault-guarded exhibit.
   citation.py                Pure citation-anchor engine (build_anchor/resolve_anchor fallback chain); own-.text offsets.
   evidence.py                Provenance/custody: sha256-on-receipt + RFC 3161 timestamp + hash-chained custody log.
-  detect_tier.py             setup/doctor capability probe (stdlib metadata/which/subprocess) + a --json CLI.
+  detect_tier.py             setup/doctor capability probe (stdlib metadata/which/subprocess) + Layer-2 read-only Docker probe + --json CLI.
   entity_taxonomy.py         Track B: entity/relation taxonomy config (GENERIC + FLOCK presets).
   entity_extract.py          Track B pure core: windowing, span dedup, FtM-shaped nodes/edges, ReviewQueue, build_intermediate.
   entity_models.py           Track B lazy GLiNER/GLiREL edge (the only torch/gliner/glirel/spaCy importer).
   entity_ftmize.py           Track B FtM layer (Linux/CI only; only followthemoney importer): intermediate -> FtM bundle.
+  entity_resolution_policy.py  Phase 13a pure core: ResolutionConfig, canonical_id/edge_id, score bucket, Candidate/Verdict.
+  entity_resolved_snapshot.py  Phase 13a pure core: portable resolved-snapshot schema + serializer + consumable check (the 13a/13b seam).
+  entity_review_packet.py    Phase 13a pure core: HITL HTML review packet + packet_hash + verdict parse (matches signed-off mockup).
+  entity_nomenklatura.py     Phase 13a Linux/CI edge (only nomenklatura importer): xref LogicV2, fail-closed apply, resolved-snapshot build.
+  entity_graph_neo4j.py      Phase 13a Docker edge (only neo4j importer): investigation-scoped REPLACE writer (single-property scoped_id).
 agents/
   extraction-verifier.md     Semantic advisory re-check of a cited span (presence + entailment; indeterminate default).
   citation-checker.md        Mechanical anchor-integrity check (drives citation.resolve_anchor / is_clean_citation).
@@ -53,35 +59,39 @@ skills/                      One SKILL.md per skill; each carries references/pri
   archive-evidence/          Spine: evidence provenance + chain-of-custody (engine evidence.py; + bundled freeTSA root cert).
   setup/  doctor/            Onboarding: setup (operator, MAY install) vs doctor (journalist, READ-ONLY); engine detect_tier.
   entity-extract/            Track B: GLiNER+GLiREL -> reviewed FtM-shaped intermediate after a mandatory human gate.
-tests/                       TDD suite; test_<module>.py mirrors each script + test_<skill>_skill.py smokes (675 offline + 1 guard).
-                             Marker-gated, excluded from the offline default: spacy / docling / xray / tsa / gliner / ftm.
+  entity-graph/              Phase 13a: resolve entities -> HITL review -> Neo4j (operator-tier, Docker-gated, mandatory human gate).
+tests/                       TDD suite; test_<module>.py mirrors each script + test_<skill>_skill.py smokes (776 offline + 1 guard).
+                             Marker-gated, excluded from offline: spacy/docling/xray/tsa/gliner/ftm/neo4j/compose.
   golden/                    Env-gated real-corpus goldens (test_simpsonville.py) + Flock _adapters.py; skip-if-absent public slice.
-  fixtures/                  Synthetic fixtures ONLY (no real corpus): agency_counts_sample.json, sample CSV/XLSX, reviewed_intermediate_sample.
+  fixtures/                  Synthetic fixtures ONLY (no real corpus): agency_counts_sample.json, sample CSV/XLSX, reviewed_intermediate_sample(+coalesce).
   conftest*.py               Shared synthetic builders (PDF / DoclingDocument / redaction / entity fakes).
   test_manifest_budget.py    The recurrence guard for THIS file (line / word / per-line-word budgets).
 docs/
-  OPERATOR_GUIDE / JOURNALIST_START   Phase 10 dual onramp (operator setup vs journalist daily use; no Docker).
+  OPERATOR_GUIDE / JOURNALIST_START   Phase 10 dual onramp (operator setup vs journalist daily use; no Docker in either).
   RELEASE-NOTES-0.1.0 / RELEASE-CHECKLIST   v0.1.0 release notes + the pre-tag green gate.
-  plans/                     Source-of-truth design (2026-06-03-magpie-design.md) + per-phase design(WHY)+plan(HOW) pairs.
-  handoffs/                  Session-boundary handoff docs (latest: phase12-shipped-phase13-entity-graph).
+  plans/                     Source-of-truth design (2026-06-03-magpie-design.md) + per-phase design(WHY)+plan(HOW) pairs + the phase13a review-packet mockup.
+  handoffs/                  Session-boundary handoff docs (latest: phase13a-planned-sdd-next).
+infra/
+  docker-compose.yml         Phase 13a Neo4j `graph` profile (localhost-bound, healthcheck, named volume) + .env.example template.
 tools/
   build_public_slice.py      Deterministic neutral public-CSV slice builder (for the forthcoming corpus/public sample).
   codex-review.ps1           Dev helper: UTF-8-pinned Codex cross-model review (PS 5.1 cp1252 workaround).
 corpus/public/               Reserved for the redistributable public sample (DATASHEET.md template; the corpus is a fast-follow).
-.github/workflows/ci.yml     CI: offline job (default) + workflow_dispatch heavy job + a continuous ftm job (Linux FtM contract).
-requirements-{dev,offline,ftm}.txt   Full dev / trimmed offline-CI subset / Linux-CI-only FtM stack.
+.github/workflows/ci.yml     CI: offline (default) + workflow_dispatch heavy + continuous ftm (FtM contract) + graph (Neo4j service) + compose (graph-profile up) jobs.
+requirements-{dev,offline,ftm,graph}.txt   Full dev / trimmed offline-CI subset / Linux-CI-only FtM / cross-platform Neo4j driver.
 mise.toml / pyproject.toml   mise dev env (Python 3.12.10 + .venv bind; test/bootstrap tasks) / pytest config + markers.
-.gitignore / .gitattributes  PII-corpus hard block + scratch ignores / binary-mark certs+tokens against line-ending corruption.
+.gitignore / .gitattributes  PII-corpus hard block + scratch/resolver-DB/infra-secret ignores / binary-mark certs+tokens.
 ```
 
 ## Key Relationships
 
 - **Pure-core / engine-at-edge split (suite-wide).** Every heavy module keeps a stdlib pure core plus a lazy model/IO edge (pii_sweep, ingest, citation, evidence, detect_tier, entity_*), so importing stays cheap and the core golden-tests with injected fakes. The edge is the sole importer of its heavy dependency.
-- **FtM boundary is Linux/CI-only.** `entity_ftmize` is the only followthemoney importer; PyICU has no Windows wheel, so it and the `ftm`-marked tests SKIP on Windows. **The CI `ftm` job is the only verification surface for that code -- gate merges on it, never on Windows-green + Codex-green alone** (it caught two real bugs in Phase 12).
-- **Track B data contract (Phase 12 -> 13).** `entity_extract.build_intermediate` emits a reviewed, followthemoney-FREE intermediate (per-document node scope, NO cross-doc merge); `entity_ftmize.write_bundle` realizes the three-file FtM bundle; `assert_phase13_consumable` is the Phase-13 entry check. The first true cross-doc merge is Phase-13 nomenklatura.
-- **Deliberate decoupling.** `scripts/` import no neighbors (a skill wires each chain); the two tracks share only the Librarian output and the design-section-7 citation schema. pii_sweep (count PII) and entity-extract (build a graph) share NO code though both run NER.
+- **Track B edges are Linux/CI-or-Docker-gated.** `entity_ftmize` + `entity_nomenklatura` (only followthemoney/nomenklatura importers, PyICU -> `ftm` job) + `entity_graph_neo4j` (only neo4j importer, `graph`+`compose` jobs). **These CI jobs are the only real verification surface -- gate merges on `ftm`+`graph`+`compose`, never Windows-green + Codex-green alone** (the Phase-12 lesson; caught two real bugs).
+- **Track B data contract (Phase 12 -> 13a -> 13b).** `entity_extract` -> reviewed FtM-free intermediate; `entity_ftmize` -> the FtM bundle; `entity_nomenklatura` does the first cross-doc merge (xref) behind a mandatory HITL packet (`entity_review_packet`, fail-closed apply) -> `entity_resolved_snapshot` (the portable 13a/13b seam) -> `entity_graph_neo4j.write` (investigation-scoped Neo4j REPLACE; 13b consumes it unchanged).
+- **Stable content-addressed identity (Phase 13a).** `canonical_id = sha256(sorted(member_ids))[:40]` (NOT the mutable NK- id, kept only as `resolver_id`); the Neo4j node keys on a synthesized `scoped_id = investigation_id+':'+canonical_id` (single-property uniqueness, Community-safe), so two investigations never collide and the scoped REPLACE never touches another's subgraph.
+- **Deliberate decoupling.** `scripts/` import no neighbors except where the plan authorizes it (the entity_* graph chain reuses the pure policy/snapshot/packet cores by import; entity_resolution_policy reuses entity_extract.stable_id). The two tracks share only the Librarian output and the design-section-7 citation schema.
 - **Hard dep on Librarian.** `plugin.json` `dependencies: ["librarian"]` wires findings output to the shared notes layer (auto-installed with Magpie).
-- **Private corpus is gitignored.** Real Flock/Simpsonville PII lives outside the repo; scope any corpus search to `*.py` (an unscoped grep leaks PII) and have corpus compute print aggregates only via a gitignored `.codex-review/` script.
-- **Dev env: never bare `python`.** The Claude Code PowerShell tool is `-NoProfile`, so mise activation cannot auto-load -- use `mise run`/`mise exec` or `& .venv\Scripts\python.exe`. Offline suite: `-m "not docling and not spacy and not xray and not tsa and not gliner and not ftm"` (use `-m`, NOT `-k` -- a filename collision drops whole files).
+- **Private corpus + secrets are gitignored.** Real Flock/Simpsonville PII lives outside the repo; scope any corpus search to `*.py`. The per-investigation nomenklatura resolver DB + `infra/.env` are gitignored; corpus compute prints aggregates only via a gitignored `.codex-review/` script.
+- **Dev env: never bare `python`.** The Claude Code PowerShell tool is `-NoProfile`, so use `mise run`/`mise exec` or `& .venv\Scripts\python.exe`. Offline suite: `-m "not docling and not spacy and not xray and not tsa and not gliner and not ftm and not neo4j and not compose"` (use `-m`, NOT `-k`).
 - **This file only indexes; depth lives elsewhere.** WHY -> `docs/plans/*-design.md`; HOW / source-of-truth -> module docstrings; the contract -> `tests/`; per-phase verified library facts -> `skills/*/references/prior-art.md`; build state + lessons -> project memory. Regenerating MANIFEST means rewriting this index to its budget, never appending detail (guarded by `tests/test_manifest_budget.py`).
 ```
