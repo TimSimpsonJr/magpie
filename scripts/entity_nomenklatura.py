@@ -135,12 +135,17 @@ def _load_store(entities_paths, resolver, *, scratch_dir=None):
 
     base = pathlib.Path(scratch_dir) if scratch_dir is not None else paths[0].parent
     combined = base / _COMBINED_ENTITIES
-    with combined.open("w", encoding="utf-8") as out:
+    # Write to a sibling temp path then os.replace so the published combined
+    # bundle is ALWAYS complete -- an interrupt mid-write must not leave a corrupt
+    # partial file for the next run to read.
+    tmp = combined.with_suffix(combined.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as out:
         for path in paths:
             for line in path.read_text(encoding="utf-8").splitlines():
                 if line.strip():
                     out.write(line)
                     out.write("\n")
+    os.replace(tmp, combined)
     return load_entity_file_store(combined, resolver, cleaned=True)
 
 
@@ -148,22 +153,32 @@ def _load_store(entities_paths, resolver, *, scratch_dir=None):
 # Bundle / provenance reading (hydration source; Windows-safe JSON)
 # ---------------------------------------------------------------------------
 
-def _provenance_path_for(entities_path) -> pathlib.Path:
-    """Derive the sibling <name>.provenance.jsonl path from an entities path.
+def _base_name_for(entities_path) -> str:
+    """The <name> base of an entities path (sibling artifacts share this base).
 
     entity_ftmize names the pair <name>.entities.ftm.json /
-    <name>.provenance.jsonl, so the provenance path is the entities path with the
-    ".entities.ftm.json" suffix swapped for ".provenance.jsonl".
+    <name>.provenance.jsonl / <name>.manifest.json, so the base is the file name
+    with the ".entities.ftm.json" suffix stripped. For a NON-standard name the
+    fallback strips ".ftm.json" then a trailing ".entities" -- NOT pathlib `.stem`,
+    which removes only ONE suffix (so "foo.entities.ftm.json" -> "foo.entities.ftm",
+    wrong) and would mis-derive every sibling path.
     """
-    p = pathlib.Path(entities_path)
-    name = p.name
+    name = pathlib.Path(entities_path).name
     suffix = ".entities.ftm.json"
     if name.endswith(suffix):
-        base = name[: -len(suffix)]
-    else:
-        # Fallback: strip the final two dotted parts (".ftm.json") then ".entities".
-        base = p.stem
-    return p.with_name(base + ".provenance.jsonl")
+        return name[: -len(suffix)]
+    # Fallback for a non-standard name: strip ".ftm.json" then a ".entities" tail.
+    if name.endswith(".ftm.json"):
+        name = name[: -len(".ftm.json")]
+    if name.endswith(".entities"):
+        name = name[: -len(".entities")]
+    return name
+
+
+def _provenance_path_for(entities_path) -> pathlib.Path:
+    """Derive the sibling <name>.provenance.jsonl path from an entities path."""
+    p = pathlib.Path(entities_path)
+    return p.with_name(_base_name_for(p) + ".provenance.jsonl")
 
 
 def _read_entity_lines(entities_paths) -> dict:
@@ -301,6 +316,25 @@ def _read_run_json(scratch_dir) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _config_from_run(run: dict, fallback: ResolutionConfig) -> ResolutionConfig:
+    """Reconstruct the resolve-time ResolutionConfig from run.json.
+
+    run.json is the source of truth for the config resolve() actually used, so
+    the apply/build recompute MUST use it (not the caller's param) -- a config
+    drift between resolve and apply would otherwise pick a different candidate
+    band -> a different packet_hash -> a misleading "resolver moved" abort. Older
+    artifacts without a "config" key fall back to the passed config.
+    """
+    cfg = run.get("config")
+    if not cfg:
+        return fallback
+    return ResolutionConfig(
+        algorithm=cfg.get("algorithm", fallback.algorithm),
+        auto_threshold=cfg.get("auto_threshold", fallback.auto_threshold),
+        review_floor=cfg.get("review_floor", fallback.review_floor),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Investigation id (the bundle dataset_namespace, from the sibling manifest)
 # ---------------------------------------------------------------------------
@@ -313,9 +347,7 @@ def _investigation_id_for(entities_paths) -> str:
     manifest is absent.
     """
     first = pathlib.Path(entities_paths[0])
-    name = first.name
-    suffix = ".entities.ftm.json"
-    base = name[: -len(suffix)] if name.endswith(suffix) else first.stem
+    base = _base_name_for(first)
     manifest_path = first.with_name(base + ".manifest.json")
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -400,6 +432,18 @@ def _write_auto_merge_log(scratch_dir, resolver, entity_dicts, config) -> str:
     return str(log_path)
 
 
+def _write_empty_auto_merge_log(scratch_dir) -> str:
+    """Best-effort empty auto-merge log (used when the real write fails).
+
+    The auto-merge log is a DERIVATIVE artifact; if building it raises we still
+    publish an empty (but well-formed) file so downstream readers see a valid,
+    empty JSONL rather than a missing path.
+    """
+    log_path = pathlib.Path(scratch_dir) / _AUTO_MERGE_LOG
+    log_path.write_text("", encoding="utf-8")
+    return str(log_path)
+
+
 # ---------------------------------------------------------------------------
 # resolve (step 1 of the flow; design D5/D6/D7)
 # ---------------------------------------------------------------------------
@@ -442,10 +486,16 @@ def resolve(
             user=_AUTO_USER,
         )
         # Auto-merge log: read the in-memory POSITIVE magpie-auto edges BEFORE
-        # commit (the edge map is populated during the transaction).
-        auto_merge_log_path = _write_auto_merge_log(
-            scratch, resolver, entity_dicts, config
-        )
+        # commit (the edge map is populated during the transaction). The log is a
+        # DERIVATIVE artifact -- a failure here (odd edge object, disk issue) must
+        # NOT abort resolve, which still owes its resolver state + candidate
+        # snapshot. On failure, publish a best-effort empty log and continue.
+        try:
+            auto_merge_log_path = _write_auto_merge_log(
+                scratch, resolver, entity_dicts, config
+            )
+        except Exception:
+            auto_merge_log_path = _write_empty_auto_merge_log(scratch)
         resolver.commit()
 
         # Review band: drain the committed NO_JUDGEMENT candidates.
@@ -491,6 +541,9 @@ def apply_verdicts(verdict_json_path, scratch_dir, config: ResolutionConfig) -> 
     run = _read_run_json(scratch)
     entities_paths = run["entities_paths"]
     investigation_id = run["investigation_id"]
+    # run.json is the source of truth for the resolve-time config; the recompute
+    # MUST match resolve regardless of the caller's `config` param.
+    recompute_config = _config_from_run(run, config)
 
     verdict_text = pathlib.Path(verdict_json_path).read_text(encoding="utf-8")
     verdict_packet_hash, verdicts = parse_verdicts(verdict_text)
@@ -506,13 +559,13 @@ def apply_verdicts(verdict_json_path, scratch_dir, config: ResolutionConfig) -> 
         # Recompute the live packet_hash (resolver_db_hash / generated_at do NOT
         # affect the hash, so any value is fine here).
         live_candidates = _band_candidates(
-            resolver, entity_dicts, provenance_rows, config
+            resolver, entity_dicts, provenance_rows, recompute_config
         )
         _snapshot, live_packet_hash = build_candidate_snapshot(
             live_candidates,
             resolver_db_hash="sha256:",
             generated_at="",
-            **_candidate_snapshot_args(investigation_id, config),
+            **_candidate_snapshot_args(investigation_id, recompute_config),
         )
 
         if live_packet_hash != verdict_packet_hash:
@@ -610,6 +663,9 @@ def build_resolved_snapshot(
     scratch = pathlib.Path(scratch_dir)
     run = _read_run_json(scratch)
     entities_paths = run["entities_paths"]
+    # run.json is the source of truth for the resolve-time config; snapshot
+    # metadata (algorithm/thresholds) MUST reflect what resolve actually used.
+    snapshot_config = _config_from_run(run, config)
 
     entity_dicts = _read_entity_lines(entities_paths)
     provenance_rows = _read_provenance(entities_paths)
@@ -736,10 +792,10 @@ def build_resolved_snapshot(
         edges,
         provenance,
         investigation_id=investigation_id,
-        algorithm=config.algorithm,
+        algorithm=snapshot_config.algorithm,
         thresholds={
-            "auto_threshold": config.auto_threshold,
-            "review_floor": config.review_floor,
+            "auto_threshold": snapshot_config.auto_threshold,
+            "review_floor": snapshot_config.review_floor,
         },
         generated_at=generated_at,
     )

@@ -317,6 +317,10 @@ def test_apply_fail_closed_on_wrong_hash(tmp_path):
     applied = en.apply_verdicts(verdict_path, scratch, config)
 
     assert applied.applied == 0, "fail-closed apply must apply nothing"
+    assert applied.skipped == 0, (
+        "fail-closed abort must short-circuit BEFORE the per-verdict loop "
+        "(skipped should be 0, got %d)" % applied.skipped
+    )
     assert applied.aborted_reason, "fail-closed apply must report an aborted_reason"
     assert isinstance(applied.aborted_reason, str) and applied.aborted_reason
 
@@ -360,5 +364,165 @@ def test_auto_merge_log_is_valid_jsonl(tmp_path):
             assert key in row, "auto-merge log row missing %s: %r" % (key, row)
         assert isinstance(row["members"], list)
         assert isinstance(row["names"], list)
+
+    _drop_resolver_table(scratch)
+
+
+@ftm
+def test_apply_distinct_verdict_keeps_singletons(tmp_path):
+    # A "distinct" verdict records a NEGATIVE judgement -> the two John Smiths
+    # stay SEPARATE singleton clusters in a following resolved snapshot.
+    import scripts.entity_nomenklatura as en
+    from scripts.entity_resolution_policy import canonical_id
+
+    entities_path = _bundle_entities_path(tmp_path)
+    scratch = tmp_path / "scratch"
+    config = _config()
+
+    result = en.resolve([entities_path], scratch, config)
+
+    verdict = {
+        "investigation_id": "greenville_flock_rfp",
+        "packet_hash": result.packet_hash,
+        "verdicts": [{"left": ID_A, "right": ID_B, "verdict": "distinct"}],
+    }
+    verdict_path = scratch / "verdicts.json"
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+
+    applied = en.apply_verdicts(verdict_path, scratch, config)
+    assert applied.aborted_reason is None, (
+        "distinct apply aborted unexpectedly: %s" % applied.aborted_reason
+    )
+    assert applied.applied >= 1, "the distinct verdict was not applied"
+
+    snapshot = en.build_resolved_snapshot(scratch, "greenville_flock_rfp", config)
+    merged_cid = canonical_id([ID_A, ID_B])
+    assert all(
+        e["canonical_id"] != merged_cid for e in snapshot["entities"]
+    ), "the John Smiths were merged despite a NEGATIVE (distinct) verdict"
+
+    a_singleton = canonical_id([ID_A])
+    b_singleton = canonical_id([ID_B])
+    cids = {e["canonical_id"] for e in snapshot["entities"]}
+    assert a_singleton in cids and b_singleton in cids, (
+        "expected both John Smiths as separate singleton clusters after distinct"
+    )
+
+    _drop_resolver_table(scratch)
+
+
+@ftm
+def test_apply_unsure_verdict_skips(tmp_path):
+    # An "unsure" verdict is a no-op deferral: skipped >= 1, applied == 0, and the
+    # apply still succeeds (no abort).
+    import scripts.entity_nomenklatura as en
+
+    entities_path = _bundle_entities_path(tmp_path)
+    scratch = tmp_path / "scratch"
+    config = _config()
+
+    result = en.resolve([entities_path], scratch, config)
+
+    verdict = {
+        "investigation_id": "greenville_flock_rfp",
+        "packet_hash": result.packet_hash,
+        "verdicts": [{"left": ID_A, "right": ID_B, "verdict": "unsure"}],
+    }
+    verdict_path = scratch / "verdicts.json"
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+
+    applied = en.apply_verdicts(verdict_path, scratch, config)
+    assert applied.aborted_reason is None, (
+        "unsure apply aborted unexpectedly: %s" % applied.aborted_reason
+    )
+    assert applied.applied == 0, "an unsure verdict must apply nothing"
+    assert applied.skipped >= 1, "the unsure verdict was not skipped"
+
+    _drop_resolver_table(scratch)
+
+
+@ftm
+def test_apply_drifted_pair_second_apply_skips(tmp_path):
+    # Re-applying the SAME merge verdict a second time must SKIP the now
+    # already-judged pair (no longer NO_JUDGEMENT) rather than erroring. The
+    # second apply re-derives the live packet_hash from the now-decided resolver:
+    # the merged pair has left the review band, so the band -- and its hash -- are
+    # unchanged from an empty-band resolve, and the hash still matches.
+    import scripts.entity_nomenklatura as en
+
+    entities_path = _bundle_entities_path(tmp_path)
+    scratch = tmp_path / "scratch"
+    config = _config()
+
+    result = en.resolve([entities_path], scratch, config)
+
+    verdict = {
+        "investigation_id": "greenville_flock_rfp",
+        "packet_hash": result.packet_hash,
+        "verdicts": [{"left": ID_A, "right": ID_B, "verdict": "merge"}],
+    }
+    verdict_path = scratch / "verdicts.json"
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+
+    first = en.apply_verdicts(verdict_path, scratch, config)
+    assert first.aborted_reason is None and first.applied >= 1, (
+        "first merge apply did not take: %r" % (first,)
+    )
+
+    # Re-resolve so the live packet_hash reflects the post-merge band, then write a
+    # fresh verdict against THAT hash and re-apply the same merge.
+    result2 = en.resolve([entities_path], scratch, config)
+    verdict2 = {
+        "investigation_id": "greenville_flock_rfp",
+        "packet_hash": result2.packet_hash,
+        "verdicts": [{"left": ID_A, "right": ID_B, "verdict": "merge"}],
+    }
+    verdict_path.write_text(json.dumps(verdict2), encoding="utf-8")
+
+    second = en.apply_verdicts(verdict_path, scratch, config)
+    assert second.aborted_reason is None, (
+        "second apply aborted unexpectedly: %s" % second.aborted_reason
+    )
+    assert second.applied == 0, (
+        "the already-judged pair must NOT be re-applied (applied=%d)"
+        % second.applied
+    )
+    assert second.skipped >= 1, (
+        "the drifted (already-judged) pair must be skipped, got skipped=%d"
+        % second.skipped
+    )
+
+    _drop_resolver_table(scratch)
+
+
+@ftm
+def test_apply_uses_run_json_investigation_id_not_verdict_file(tmp_path):
+    # run.json governs: a verdict file carrying a DIFFERENT investigation_id than
+    # the one resolve recorded must still apply (apply reads investigation_id +
+    # config from run.json, not from the verdict file).
+    import scripts.entity_nomenklatura as en
+
+    entities_path = _bundle_entities_path(tmp_path)
+    scratch = tmp_path / "scratch"
+    config = _config()
+
+    result = en.resolve([entities_path], scratch, config)
+
+    verdict = {
+        "investigation_id": "a_totally_different_investigation",
+        "packet_hash": result.packet_hash,
+        "verdicts": [{"left": ID_A, "right": ID_B, "verdict": "merge"}],
+    }
+    verdict_path = scratch / "verdicts.json"
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+
+    applied = en.apply_verdicts(verdict_path, scratch, config)
+    assert applied.aborted_reason is None, (
+        "apply aborted despite a matching packet_hash (the verdict's "
+        "investigation_id must be ignored): %s" % applied.aborted_reason
+    )
+    assert applied.applied >= 1, (
+        "the merge was not applied; run.json's investigation_id should govern"
+    )
 
     _drop_resolver_table(scratch)
