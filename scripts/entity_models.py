@@ -23,6 +23,45 @@ from scripts.entity_extract import Span
 
 
 # ---------------------------------------------------------------------------
+# Pure char<->token glue helper (stdlib only -- NO spaCy, NO model).
+# Kept module-level + pure so it is offline-testable without weights.
+# ---------------------------------------------------------------------------
+
+def _dedup_token_intervals(mapped):
+    """mapped: list of (span, start_tok, end_incl). Collapse duplicate
+    (start_tok, end_incl) intervals to ONE deterministic winner so the
+    reverse map is unambiguous and order-independent.
+
+    Winner rule (deterministic, input-order-independent): for a given
+    interval, prefer the LONGEST char span (span.char_end - span.char_start),
+    then the HIGHEST score, then the lexicographically smallest label -- a
+    total order so ties never depend on input order.
+    Returns (ner, reverse): ner = [[start_tok, end_incl, label.upper(), text], ...]
+    one entry per surviving interval (sorted by (start_tok, end_incl) for
+    determinism); reverse = {(start_tok, end_incl): span}.
+    """
+    # Group the mapped tuples by their token interval.
+    by_interval: dict = {}
+    for span, start_tok, end_incl in mapped:
+        by_interval.setdefault((start_tok, end_incl), []).append(span)
+
+    def _key(span):
+        # Total order. Negate length + score so that "largest" sorts FIRST under
+        # ascending min(); label is the final ascending lexicographic tiebreak.
+        char_len = span.char_end - span.char_start
+        return (-char_len, -span.score, span.label)
+
+    ner = []
+    reverse = {}
+    for interval in sorted(by_interval):  # sort by (start_tok, end_incl)
+        start_tok, end_incl = interval
+        winner = min(by_interval[interval], key=_key)
+        ner.append([start_tok, end_incl, winner.label.upper(), winner.text])
+        reverse[interval] = winner
+    return ner, reverse
+
+
+# ---------------------------------------------------------------------------
 # Documentation-only Protocols (the classes need not inherit them; they make
 # the injection contract explicit and let type checkers verify the fakes).
 # ---------------------------------------------------------------------------
@@ -132,18 +171,20 @@ class GlirelRelationExtractor:
         doc = self._tokenizer()(text)
         tokens = [t.text for t in doc]
 
-        # c. Build the ner list (INCLUSIVE end) + reverse map back to Span objects.
-        ner = []
-        reverse = {}
+        # c. Map each span to its INCLUSIVE token interval, then resolve duplicate
+        #    intervals deterministically (a pure helper) so the reverse map is
+        #    unambiguous and order-independent. Two distinct cross-label spans can
+        #    expand to the SAME token interval; _dedup_token_intervals picks ONE
+        #    winner per interval (no overwrite, no duplicate ner entry).
+        mapped = []
         for s in spans:
             sp = doc.char_span(s.char_start, s.char_end, alignment_mode="expand")
             if sp is None:
                 # Span does not align to token boundaries -> skip for relations.
                 continue
-            start_tok = sp.start
-            end_incl = sp.end - 1  # spaCy end is EXCLUSIVE; GLiREL ner end is INCLUSIVE
-            ner.append([start_tok, end_incl, s.label.upper(), s.text])
-            reverse[(start_tok, end_incl)] = s
+            # spaCy end is EXCLUSIVE; GLiREL ner end is INCLUSIVE -> sp.end - 1.
+            mapped.append((s, sp.start, sp.end - 1))
+        ner, reverse = _dedup_token_intervals(mapped)
         if len(ner) < 2:
             return []
 

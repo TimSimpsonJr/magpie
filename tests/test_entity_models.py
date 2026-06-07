@@ -68,6 +68,73 @@ def test_entity_models_exposes_the_two_extractor_classes():
 
 
 # ---------------------------------------------------------------------------
+# _dedup_token_intervals (offline suite -- pure, NO spaCy, NO models)
+#
+# Regression for the Codex `tokenmap` cluster: two DISTINCT input spans (e.g.
+# overlapping cross-label spans) can expand to the SAME inclusive token interval.
+# The old reverse-map construction let the later span OVERWRITE the earlier (and
+# added a duplicate ner entry), so a returned relation could re-bind to the wrong
+# Span/label, order-dependently. The pure helper must collapse each interval to
+# ONE deterministic winner (longest char span, then highest score, then
+# lexicographically smallest label), independent of input order.
+# ---------------------------------------------------------------------------
+
+def test_dedup_token_intervals_collision_keeps_one_deterministic_winner():
+    from scripts.entity_models import _dedup_token_intervals
+
+    # Two distinct spans (different labels AND char ranges) that map to the SAME
+    # token interval (0, 1). The "company" span is clearly LONGER in chars, so it
+    # is the deterministic winner regardless of score.
+    longer = Span("Flock Safety", "company", 0, 12, 0.50)
+    shorter = Span("Flock", "organization", 0, 5, 0.99)
+    mapped = [(longer, 0, 1), (shorter, 0, 1)]
+
+    ner, reverse = _dedup_token_intervals(mapped)
+
+    # Exactly one ner entry for the colliding interval, and reverse maps to the
+    # longer span (the winner) -- not the higher-scored shorter one.
+    assert len(ner) == 1
+    assert ner == [[0, 1, "COMPANY", "Flock Safety"]]
+    assert list(reverse.keys()) == [(0, 1)]
+    assert reverse[(0, 1)] is longer
+
+
+def test_dedup_token_intervals_is_order_independent():
+    from scripts.entity_models import _dedup_token_intervals
+
+    longer = Span("Flock Safety", "company", 0, 12, 0.50)
+    shorter = Span("Flock", "organization", 0, 5, 0.99)
+
+    ner_a, reverse_a = _dedup_token_intervals([(longer, 0, 1), (shorter, 0, 1)])
+    ner_b, reverse_b = _dedup_token_intervals([(shorter, 0, 1), (longer, 0, 1)])
+
+    # Same winner / same ner / same reverse regardless of input order.
+    assert ner_a == ner_b
+    assert reverse_a == reverse_b
+    assert reverse_a[(0, 1)] is longer
+    assert reverse_b[(0, 1)] is longer
+
+
+def test_dedup_token_intervals_distinct_intervals_both_survive():
+    from scripts.entity_models import _dedup_token_intervals
+
+    # Two spans that map to DIFFERENT intervals -> both survive; reverse has both.
+    a = Span("Jane Smith", "person", 0, 10, 0.9)
+    b = Span("Flock Safety", "company", 20, 32, 0.9)
+    mapped = [(b, 3, 4), (a, 0, 1)]  # deliberately out of token order
+
+    ner, reverse = _dedup_token_intervals(mapped)
+
+    assert len(ner) == 2
+    # ner is sorted by (start_tok, end_incl) for determinism.
+    assert ner == [
+        [0, 1, "PERSON", "Jane Smith"],
+        [3, 4, "COMPANY", "Flock Safety"],
+    ]
+    assert reverse == {(0, 1): a, (3, 4): b}
+
+
+# ---------------------------------------------------------------------------
 # Shared sample for the gliner-marked integration tests
 # ---------------------------------------------------------------------------
 
