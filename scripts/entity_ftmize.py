@@ -56,8 +56,11 @@ def to_ftm(intermediate: dict) -> list:
         e.id = edge["id"]
         # Use FollowTheMoney's OWN edge endpoint property names -- authoritative,
         # never a hardcoded guess: schema.edge_source / schema.edge_target.
-        e.add(e.schema.edge_source, edge["head_id"])
-        e.add(e.schema.edge_target, edge["tail_id"])
+        # cleaned=True stores our canonical intermediate ids VERBATIM as the
+        # endpoint refs -- the entity-type clean would otherwise reformat or drop
+        # them. e.id is assigned verbatim too, so endpoints match the node ids exactly.
+        e.add(e.schema.edge_source, edge["head_id"], cleaned=True)
+        e.add(e.schema.edge_target, edge["tail_id"], cleaned=True)
         if edge.get("role"):
             # most FtM edges (UnknownLink/Membership/...) carry a "role" prop;
             # quiet skips it on a schema that lacks one.
