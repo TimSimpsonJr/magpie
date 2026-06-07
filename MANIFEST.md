@@ -1,10 +1,10 @@
 # Magpie -- Structural Map
 
 Fieldwork suite **Magpie**: a FOSS-first FOIA / investigative-analysis Claude Code plugin.
-State: **Layer 0-1 complete + tagged v0.1.0** (Track A analysis core, document ingest,
-redaction, citation, evidence, onboarding). **Track B (entity-network) underway** --
-Phase 12 `entity-extract` + Phase 13a `entity-graph` (resolution + HITL packet + Neo4j) +
-Phase 13b `entity-crossref` (yente own-corpus / opt-in watchlist cross-ref + yente-mcp) shipped.
+State: **tagged v0.2.0** -- Layer 0-1 (Track A analysis core, document ingest, redaction,
+citation, evidence, onboarding; the v0.1.0 cut) PLUS **Track B (entity-network) SHIPPED** in
+v0.2.0: Phase 12 `entity-extract` + Phase 13a `entity-graph` (resolution + HITL packet + Neo4j)
++ Phase 13b `entity-crossref` (yente own-corpus / opt-in watchlist cross-ref + yente-mcp).
 This file is a one-line-per-file INDEX; depth lives in the design docs, docstrings, and
 tests it points to (see the last Key Relationship).
 
