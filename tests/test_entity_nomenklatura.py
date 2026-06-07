@@ -77,15 +77,13 @@ def _drop_resolver_table(scratch_dir) -> None:
     leak judgements across tests. The per-test scratch sqlite is the primary
     isolation; this is defensive."""
     try:
-        import os
+        from scripts import entity_nomenklatura
 
-        from followthemoney import StatementEntity as Entity
-        from nomenklatura.resolver import Resolver
-
-        os.environ["NOMENKLATURA_DB_URL"] = (
-            "sqlite:///" + (pathlib.Path(scratch_dir) / "resolver.db").as_posix()
-        )
-        resolver = Resolver[Entity].make_default()
+        # Use the module's own resolver opener so the teardown binds the SAME
+        # per-investigation scratch DB (an explicit engine), NOT the library's
+        # import-time default ./nomenklatura.db -- otherwise it drops the wrong
+        # table and leaks a CWD db file.
+        resolver = entity_nomenklatura._open_resolver(scratch_dir)
         resolver.close()
         try:
             resolver._table.drop(resolver._engine, checkfirst=True)

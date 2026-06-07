@@ -30,6 +30,7 @@ from typing import Optional
 
 from followthemoney import StatementEntity as Entity
 from followthemoney import model
+from nomenklatura.db import get_engine
 from nomenklatura.judgement import Judgement
 from nomenklatura.matching import LogicV2
 from nomenklatura.resolver import Resolver
@@ -102,13 +103,19 @@ def _resolver_db_url(scratch_dir) -> str:
 
 
 def _open_resolver(scratch_dir):
-    """Set NOMENKLATURA_DB_URL under scratch_dir, then make the default Resolver.
+    """Open a Resolver bound to the PER-INVESTIGATION sqlite DB under scratch_dir.
 
-    The env var MUST be set before make_default() (it reads it to locate the
-    sqlite store). Persistence across separate process calls comes from that file.
+    nomenklatura reads NOMENKLATURA_DB_URL into settings.DB_URL at IMPORT time, so
+    setting the env after this module is already imported has NO effect --
+    make_default() would silently fall back to the global default
+    ./nomenklatura.db (a design-D5 per-investigation-isolation violation AND a
+    CWD leak). We therefore bind the scratch DB EXPLICITLY: build the engine for
+    our scratch URL and hand it to make_default(), bypassing settings.DB_URL. The
+    env is also set, for any code path that re-reads it.
     """
-    os.environ["NOMENKLATURA_DB_URL"] = _resolver_db_url(scratch_dir)
-    return Resolver[Entity].make_default()
+    db_url = _resolver_db_url(scratch_dir)
+    os.environ["NOMENKLATURA_DB_URL"] = db_url
+    return Resolver[Entity].make_default(get_engine(db_url))
 
 
 def _load_store(entities_paths, resolver, *, scratch_dir=None):
