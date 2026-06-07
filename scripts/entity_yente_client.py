@@ -26,15 +26,24 @@ class YenteClient:
         import httpx  # lazy
         return httpx.Client(base_url=self.base_url, timeout=self.timeout)
 
-    def _check_size(self, resp):
-        if len(resp.content) > self.max_bytes:
-            raise ValueError("yente response exceeds max_bytes")
-        return resp.json()
+    def _stream_json(self, method, path, **kw):
+        # STREAM the body and ABORT once max_bytes is exceeded, so an oversized or
+        # hostile response is never fully buffered first (untrusted-server posture,
+        # design D8 / Codex response-cap-bypass). All JSON reads go through here.
+        import json as _json
+        with self._client() as c:
+            with c.stream(method, path, **kw) as r:
+                r.raise_for_status()
+                chunks, total = [], 0
+                for chunk in r.iter_bytes():
+                    total += len(chunk)
+                    if total > self.max_bytes:
+                        raise ValueError("yente response exceeds max_bytes")
+                    chunks.append(chunk)
+        return _json.loads(b"".join(chunks))
 
     def _get_json(self, path, params=None):
-        with self._client() as c:
-            r = c.get(path, params=params); r.raise_for_status()
-            return self._check_size(r)
+        return self._stream_json("GET", path, params=params)
 
     def readyz(self) -> bool:
         try:
@@ -53,12 +62,11 @@ class YenteClient:
         return self._get_json("/entities/%s" % urllib.parse.quote(entity_id, safe=""))
 
     def match(self, scope, body, *, algorithm="best", threshold=0.7, limit=5):
-        with self._client() as c:
-            r = c.post("/match/%s" % scope,
-                       params={"algorithm": algorithm, "threshold": threshold, "limit": limit},
-                       json=body)
-            r.raise_for_status()
-            return self._check_size(r)
+        return self._stream_json(
+            "POST", "/match/%s" % scope,
+            params={"algorithm": algorithm, "threshold": threshold, "limit": limit},
+            json=body,
+        )
 
 def run_crossref(snapshot, scopes, client, *, threshold=0.7, cap=25, algorithm="best",
                  batch=100, generated_at=None, index_provenance=None) -> dict:

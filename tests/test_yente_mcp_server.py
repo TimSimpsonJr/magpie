@@ -141,13 +141,22 @@ def test_tool_match_unknown_scope_raises():
 # 4. tool_cross_reference (FAIL-CLOSED on scopes)
 # ---------------------------------------------------------------------------
 
-def test_tool_cross_reference_default_scopes():
+def test_tool_cross_reference_default_scope_is_own_corpus_only():
+    # Codex default-scope-drift: the DEFAULT is own_corpus ONLY -- it must NOT hit
+    # the watchlist `default` scope, which is unindexed on a default deployment.
     c = FakeClient()
     out = srv.tool_cross_reference(c, "Alice Smith")
-    assert set(out.keys()) == {"own_corpus", "watchlists"}
+    assert set(out.keys()) == {"own_corpus"}
     assert isinstance(out["own_corpus"], list)
-    assert isinstance(out["watchlists"], list)
-    # two scopes -> two client.match calls
+    # one scope -> exactly one client.match call (never the watchlist scope)
+    assert sum(1 for call in c.calls if call[0] == "match") == 1
+
+
+def test_tool_cross_reference_explicit_watchlists():
+    # Watchlists are reachable, but only when explicitly requested.
+    c = FakeClient()
+    out = srv.tool_cross_reference(c, "Alice Smith", scopes=["own_corpus", "watchlists"])
+    assert set(out.keys()) == {"own_corpus", "watchlists"}
     assert sum(1 for call in c.calls if call[0] == "match") == 2
 
 

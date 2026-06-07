@@ -39,7 +39,11 @@ def tool_match(client, scope: str, name: str, schema: str = "Person",
 
 def tool_cross_reference(client, name: str, schema: str = "Person",
                          scopes: list = None, threshold: float = 0.7) -> dict:
-    scopes = scopes or ["own_corpus", "watchlists"]
+    # Default to own_corpus ONLY (Codex default-scope-drift): watchlists are
+    # opt-in and the `default` scope is NOT indexed on a default deployment, so
+    # defaulting to it would hit an unindexed scope. Requesting watchlists is
+    # explicit (pass scopes=[...], or the MCP tool's include_watchlists flag).
+    scopes = scopes or ["own_corpus"]
     # FAIL-CLOSED: validate EVERY requested scope and raise on any unknown value
     # (do NOT silently drop, unlike a filter).
     for s in scopes:
@@ -75,9 +79,14 @@ def build_server():
         return tool_match(client, scope, name, schema, threshold)
 
     @mcp.tool()
-    def cross_reference(name: str, schema: str = "Person", threshold: float = 0.7) -> dict:
-        """Screen ONE name against own_corpus AND watchlists; grouped hits."""
-        return tool_cross_reference(client, name, schema=schema, threshold=threshold)
+    def cross_reference(name: str, schema: str = "Person", threshold: float = 0.7,
+                        include_watchlists: bool = False) -> dict:
+        """Screen ONE name against own_corpus (and watchlists too if
+        include_watchlists is True AND the watchlist scope is indexed); grouped
+        hits. Default own_corpus only -- watchlists are opt-in."""
+        scopes = ["own_corpus"] + (["watchlists"] if include_watchlists else [])
+        return tool_cross_reference(client, name, scopes=scopes, schema=schema,
+                                    threshold=threshold)
 
     return mcp
 
