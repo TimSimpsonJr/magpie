@@ -117,16 +117,19 @@ rfc3161-client==1.0.6
 #   loguru -- glirel imports it but FORGETS to declare it; pinned explicitly here.
 #   transformers / typer -- PINNED to the GLiNER<->Docling coexistence overlap. GLiNER
 #             needs transformers >=4.51.3,<5.2; docling-ibm-models needs transformers
-#             !=5.0/5.1/5.2/5.3; docling-core needs typer <0.25. The clean overlap is
-#             transformers 4.57.6 + typer 0.24.2 (`pip check` clean; the docling heavy
-#             suite passes; gliner/glirel import). WITHOUT these pins a rebuild resolves
-#             transformers 5.1.x (gliner's default) and breaks a fresh
-#             `pip install -r requirements-dev.txt` (docling-ibm-models excludes 5.1).
-#             numpy/pandas/torch/spacy pins UNTOUCHED.
+#             !=5.0/5.1/5.2/5.3. For typer: docling-core needs <0.25, BUT the docling
+#             2.97.0 metapackage pulls docling-slim[standard]==2.97.0 whose `standard`
+#             extra caps typer at <0.22 (>=0.12.5) -- the BINDING bound the earlier comment
+#             missed. typer==0.24.2 therefore broke a fresh `pip install -r requirements-dev.txt`
+#             at resolution (ResolutionImpossible); re-pinned to 0.21.2 (latest <0.22) to
+#             satisfy the standard extra. transformers 4.57.6 stays the clean overlap
+#             (gliner/glirel import; the docling heavy suite passes). WITHOUT the transformers
+#             pin a rebuild resolves transformers 5.1.x (gliner's default), which
+#             docling-ibm-models excludes. numpy/pandas/torch/spacy pins UNTOUCHED.
 #   NOTE: the FtM mapping stack (followthemoney + nomenklatura) is LINUX/CI ONLY and
 #   lives in requirements-ftm.txt (PyICU has no Windows wheel) -- NOT here.
 transformers==4.57.6
-typer==0.24.2
+typer==0.21.2
 gliner==0.2.26
 glirel==1.2.1
 loguru==0.7.3
