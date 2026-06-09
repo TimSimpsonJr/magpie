@@ -270,7 +270,7 @@ def check_pretext(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, Any]:
 _DEFAULT_PII_PATTERNS: dict[str, str] = {
     "a_number": r"\bA#?[\s-]?\d{3}[\s-]?\d{3}[\s-]?\d{2,3}\b",
     "ssn": r"\b\d{3}-\d{2}-\d{4}\b",
-    "phone": r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b",
+    "phone": r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b|\(\d{3}\)[-.\s]?\d{3}[-.\s]?\d{4}\b",
     "email": r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b",
 }
 

@@ -269,6 +269,20 @@ def test_pii_structured_patterns_presence():
     assert "pii-sweep" in out["note"].lower()
 
 
+def test_pii_phone_matches_parenthesized_not_runtogether():
+    # the strict phone pattern gained parenthesized area codes (high precision).
+    # recipe.check_pii carries ONLY the strict phone (no phone_compact lead), so a
+    # bare run-together 10-digit run must NOT count -- it is ambiguous with case
+    # numbers / badge IDs. The existing separated form still counts.
+    df = pd.DataFrame({"notes": ["reach (555) 123-4567 today", "call 555-123-4567"]})
+    out = check_pii(df, {"text_cols": ["notes"]})
+    assert out["records_by_pattern"]["phone"] == 2     # parenthesized + separated
+    # bare run-together is NOT exposure here (strict phone only, no phone_compact).
+    df2 = pd.DataFrame({"notes": ["5551234567", "nothing here"]})
+    out2 = check_pii(df2, {"text_cols": ["notes"]})
+    assert out2["records_by_pattern"]["phone"] == 0
+
+
 def test_pii_default_patterns_exclude_bare_dates():
     # A high-precision default set: a lone calendar date is NOT flagged as PII
     # (an incident date is not exposure); DOB detection is opt-in via `patterns`.

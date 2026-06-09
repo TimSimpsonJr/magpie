@@ -52,6 +52,7 @@ def test_each_pattern_matches_positive_and_rejects_negative():
         "email": "x@y.org", "dob_kw": "see DOB below",
         "alien_num": "A123456789", "driver_lic": "OLN# AB1234567",
         "race_sex": "susp B/M", "possible_birthdate": "04/12/1989",
+        "phone_compact": "5551234567",   # run-together 10-digit (broad-only lead)
     }
     for name, text in pos.items():
         assert _regex_hit(DEFAULT_PII_PATTERNS[name], text), name
@@ -84,11 +85,13 @@ def test_alien_num_tolerates_separators_and_hash():
         assert _regex_hit(DEFAULT_PII_PATTERNS["alien_num"], text), text
 
 
-def test_broad_only_patterns_are_birthdate_and_race_sex():
-    # a bare date is also an incident date, and a 2-char demographic ratio
-    # collides with prose ("H/M ratio") -> both are broad-only leads. Every
-    # OTHER default pattern is high-precision PII (counts toward the headline).
-    assert BROAD_ONLY_PATTERN_NAMES == {"possible_birthdate", "race_sex"}
+def test_broad_only_patterns_are_birthdate_race_sex_and_phone_compact():
+    # a bare date is also an incident date, a 2-char demographic ratio collides
+    # with prose ("H/M ratio"), and a bare 10-digit run is also a case #/badge ID
+    # -> all three are broad-only leads. Every OTHER default pattern is
+    # high-precision PII (counts toward the headline). phone_compact is NOT in the
+    # strict set, so the disjoint guard still holds.
+    assert BROAD_ONLY_PATTERN_NAMES == {"possible_birthdate", "race_sex", "phone_compact"}
     assert {"ssn", "phone", "email", "alien_num", "dob_kw",
             "driver_lic"}.isdisjoint(BROAD_ONLY_PATTERN_NAMES)
 
@@ -98,6 +101,24 @@ def test_race_sex_is_a_broad_lead_not_the_strict_headline():
     # lead -> it must land in broad, never strict.
     r = sweep(pd.Series(["susp B/M"]), person_classifier=FakePersonClassifier())
     assert r["categories"]["race_sex"]["distinct"] == 1
+    assert r["exposure"]["strict"]["distinct"] == 0
+    assert r["exposure"]["broad"]["distinct"] == 1
+
+
+def test_phone_matches_parenthesized_area_code():
+    # the STRICT phone pattern gained parenthesized area codes (high precision),
+    # but a bare run-together 10-digit run must NOT match it -- that ambiguous
+    # form is handled separately by the broad-only phone_compact lead.
+    assert _regex_hit(DEFAULT_PII_PATTERNS["phone"], "(555) 123-4567") is True
+    assert _regex_hit(DEFAULT_PII_PATTERNS["phone"], "(555)123-4567") is True
+    assert _regex_hit(DEFAULT_PII_PATTERNS["phone"], "5551234567") is False
+
+
+def test_phone_compact_is_a_broad_lead_not_strict():
+    # a bare 10-digit run still FIRES as a category, but it is ambiguous (case
+    # #/badge ID), so it lands in broad, never the strict headline.
+    r = sweep(pd.Series(["5551234567"]), person_classifier=FakePersonClassifier())
+    assert r["categories"]["phone_compact"]["distinct"] == 1
     assert r["exposure"]["strict"]["distinct"] == 0
     assert r["exposure"]["broad"]["distinct"] == 1
 
