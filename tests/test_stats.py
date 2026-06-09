@@ -275,19 +275,28 @@ def _automation_df():
     return pd.DataFrame(rows)
 
 
-def test_automation_flags_overnight_agency():
+def test_automation_overnight_agency_is_overnight_heavy():
     result = automation_signature(_automation_df(), "hour", "agency")
     night = result.loc["NIGHTBOT"]
     assert night["overnight_pct"] == pytest_approx(1.0)
-    assert bool(night["flagged"]) is True
+    # overnight_heavy is a LEAD (timezone-relative), not an automation verdict.
+    assert bool(night["overnight_heavy"]) is True
 
 
-def test_automation_does_not_flag_midday_agency():
+def test_automation_midday_agency_not_overnight_heavy():
     result = automation_signature(_automation_df(), "hour", "agency")
     day = result.loc["DAYDESK"]
     assert day["daytime_pct"] == pytest_approx(1.0)
     assert day["overnight_pct"] == pytest_approx(0.0)
-    assert bool(day["flagged"]) is False
+    assert bool(day["overnight_heavy"]) is False
+
+
+def test_automation_signature_columns_contract():
+    # Lock the no-verdict contract: the renamed boolean is overnight_heavy, and
+    # the legacy `flagged` verdict column is gone for good.
+    result = automation_signature(_automation_df(), "hour", "agency")
+    assert set(result.columns) == {"daytime_pct", "overnight_pct", "overnight_heavy"}
+    assert "flagged" not in result.columns
 
 
 def test_automation_boundary_hours():
@@ -304,8 +313,8 @@ def test_automation_boundary_hours():
 def test_automation_drops_invalid_hours_no_inflation():
     # A daytime agency with a NaN hour and an out-of-range hour (25). Those
     # dirty rows must be DROPPED, not bucketed as overnight: overnight_pct must
-    # stay 0 and the agency must not be flagged. Without the guard, the two
-    # invalid rows would land in the overnight bucket (2/6 -> 0.33 overnight).
+    # stay 0 and the agency must not be overnight_heavy. Without the guard, the
+    # two invalid rows would land in the overnight bucket (2/6 -> 0.33 overnight).
     df = pd.DataFrame(
         {
             "agency": ["DAYDESK"] * 6,
@@ -316,12 +325,12 @@ def test_automation_drops_invalid_hours_no_inflation():
     day = result.loc["DAYDESK"]
     assert day["daytime_pct"] == pytest_approx(1.0)  # all 4 valid rows are daytime
     assert day["overnight_pct"] == pytest_approx(0.0)
-    assert bool(day["flagged"]) is False
+    assert bool(day["overnight_heavy"]) is False
 
 
-def test_automation_invalid_hours_do_not_trip_flag():
+def test_automation_invalid_hours_do_not_trip_overnight_heavy():
     # A mostly-daytime agency padded with invalid hours. If invalid hours were
-    # counted as overnight, overnight_pct would exceed 0.5 and flag falsely.
+    # counted as overnight, overnight_pct would exceed 0.5 and trip overnight_heavy.
     df = pd.DataFrame(
         {
             "agency": ["A"] * 5,
@@ -333,12 +342,12 @@ def test_automation_invalid_hours_do_not_trip_flag():
     # Only hours 10 and 11 are valid; both daytime.
     assert a["daytime_pct"] == pytest_approx(1.0)
     assert a["overnight_pct"] == pytest_approx(0.0)
-    assert bool(a["flagged"]) is False
+    assert bool(a["overnight_heavy"]) is False
 
 
-def test_automation_all_invalid_hours_not_flagged():
+def test_automation_all_invalid_hours_not_overnight_heavy():
     # Every row for this agency has an invalid hour. After dropping them it has
-    # zero valid rows: shares are 0.0/0.0 and it is NOT flagged.
+    # zero valid rows: shares are 0.0/0.0 and it is NOT overnight_heavy.
     df = pd.DataFrame(
         {
             "agency": ["GHOST", "GHOST", "GHOST"],
@@ -349,19 +358,19 @@ def test_automation_all_invalid_hours_not_flagged():
     ghost = result.loc["GHOST"]
     assert ghost["daytime_pct"] == pytest_approx(0.0)
     assert ghost["overnight_pct"] == pytest_approx(0.0)
-    assert bool(ghost["flagged"]) is False
+    assert bool(ghost["overnight_heavy"]) is False
 
 
 def test_automation_valid_hours_unchanged_with_drop_logic():
     # Sanity: with only valid hours, the drop logic changes nothing. A genuine
-    # overnight agency is still flagged; a midday agency is still clean.
+    # overnight agency is still overnight_heavy; a midday agency is still clean.
     result = automation_signature(_automation_df(), "hour", "agency")
     night = result.loc["NIGHTBOT"]
     day = result.loc["DAYDESK"]
     assert night["overnight_pct"] == pytest_approx(1.0)
-    assert bool(night["flagged"]) is True
+    assert bool(night["overnight_heavy"]) is True
     assert day["daytime_pct"] == pytest_approx(1.0)
-    assert bool(day["flagged"]) is False
+    assert bool(day["overnight_heavy"]) is False
 
 
 # --------------------------------------------------------------------------
