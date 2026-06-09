@@ -1,10 +1,11 @@
 # Magpie -- Structural Map
 
 Fieldwork suite **Magpie**: a FOSS-first FOIA / investigative-analysis Claude Code plugin.
-State: **tagged v0.2.0** -- Layer 0-1 (Track A analysis core, document ingest, redaction,
+State: **v0.2.1** -- Layer 0-1 (Track A analysis core, document ingest, redaction,
 citation, evidence, onboarding; the v0.1.0 cut) PLUS **Track B (entity-network) SHIPPED** in
 v0.2.0: Phase 12 `entity-extract` + Phase 13a `entity-graph` (resolution + HITL packet + Neo4j)
-+ Phase 13b `entity-crossref` (yente own-corpus / opt-in watchlist cross-ref + yente-mcp).
++ Phase 13b `entity-crossref` (yente own-corpus / opt-in watchlist cross-ref + yente-mcp). v0.2.1
+= post-v0.2.0 Track A FOIA-audit correctness fixes (date-window tz/day-granularity; A-number + phone PII coverage; honest-lead automation flag).
 This file is a one-line-per-file INDEX; depth lives in the design docs, docstrings, and
 tests it points to (see the last Key Relationship).
 
@@ -18,7 +19,7 @@ tests it points to (see the last Key Relationship).
 ## Structure
 
 ```
-.claude-plugin/plugin.json   Plugin manifest (name "magpie", v0.1.0, MIT; dependencies: ["librarian"]).
+.claude-plugin/plugin.json   Plugin manifest (name "magpie", MIT; dependencies: ["librarian"]).
 .mcp.json                    Declares the magpie-dataset server (uvx mcp-sqlite, read-only, ds_ prefix).
 .mcp.yente.example.json      Operator-wired yente-mcp config snippet (Phase 13b; NOT auto-loaded -- never in the default .mcp.json).
 scripts/                     Engine modules invoked by skills. House pattern: stdlib pure core + lazy heavy edge.
