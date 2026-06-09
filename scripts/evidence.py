@@ -235,7 +235,7 @@ def _timestamp_block(tr: TimestampResult, token_path: Optional[str],
 
 
 def archive_evidence(path, *, timestamper: Timestamper, out_dir, now: datetime,
-                     tool_version: str = "0.2.0", actor: Optional[str] = None,
+                     tool_version: str = "0.2.1", actor: Optional[str] = None,
                      on_exists: str = "error") -> EvidenceManifest:
     """Record provenance for one artifact ON RECEIPT. Ordering + failure classes per
     design 8: TSA failure SOFT-degrades; any LOCAL write failure HARD-fails. The
