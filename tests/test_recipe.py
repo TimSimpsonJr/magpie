@@ -429,7 +429,7 @@ def test_operations_overview():
 # 11. AI / moderation  (automation signature + burstiness)
 # --------------------------------------------------------------------------- #
 
-def test_ai_moderation_flags_overnight_actors_and_bursts():
+def test_ai_moderation_overnight_heavy_actors_and_bursts():
     out = check_ai_moderation(
         sample_audit(),
         {"hour_col": "hour_et", "user_col": "agency", "timestamp_col": "ts"},
@@ -437,23 +437,41 @@ def test_ai_moderation_flags_overnight_actors_and_bursts():
     assert out["status"] == "ok"
     assert out["n_actors"] == 5
     # Houston (3/5 overnight) and Atlanta (2/2 overnight) cross the 0.5 threshold.
-    assert out["n_flagged_overnight"] == 2
-    assert set(out["flagged_actors"]) == {"Houston TX PD", "Atlanta GA PD"}
+    assert out["n_overnight_heavy"] == 2
+    assert set(out["overnight_heavy_actors"]) == {"Houston TX PD", "Atlanta GA PD"}
     # rows 0,1 share the same second for the same agency -> a batch of 2.
     assert out["max_same_second"] == 2
 
 
+def test_ai_moderation_honest_lead_no_verdict():
+    # Issue #18: the overnight half is a timezone-relative LEAD, not an
+    # automation verdict. The result must carry a timezone caveat, and the
+    # summary must not render an automation verdict ("automat...") while still
+    # reporting the overnight_heavy count.
+    out = check_ai_moderation(
+        sample_audit(),
+        {"hour_col": "hour_et", "user_col": "agency", "timestamp_col": "ts"},
+    )
+    assert out["overnight_caveat"]  # non-empty
+    assert "timezone" in out["overnight_caveat"].lower()
+    assert "automat" not in out["summary"].lower()
+    assert out["n_overnight_heavy"] == 2
+
+
 def test_ai_moderation_partial_without_timestamp():
-    # The overnight automation signature still runs, but burstiness is undefined
-    # without a second-resolution timestamp -> PARTIAL, with the reason recorded
-    # and the undefined sub-metric null (never a fake 0).
+    # The overnight signature still runs, but burstiness is undefined without a
+    # second-resolution timestamp -> PARTIAL, with the reason recorded and the
+    # undefined sub-metric null (never a fake 0). The caveat is present in this
+    # branch too, and the summary still renders no automation verdict.
     out = check_ai_moderation(
         sample_audit(), {"hour_col": "hour_et", "user_col": "agency"}
     )
     assert out["status"] == "partial"
-    assert out["n_flagged_overnight"] == 2          # signature half still computed
+    assert out["n_overnight_heavy"] == 2          # signature half still computed
     assert out["max_same_second"] is None
     assert "timestamp" in out["reason"].lower()
+    assert "timezone" in out["overnight_caveat"].lower()
+    assert "automat" not in out["summary"].lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -584,7 +602,7 @@ def test_ai_moderation_partial_on_invalid_timestamps():
     assert out["max_same_second"] is None
     assert "timestamp" in out["reason"].lower()
     # the overnight-signature half still computed.
-    assert out["n_flagged_overnight"] == 2
+    assert out["n_overnight_heavy"] == 2
 
 
 def test_ai_moderation_burstiness_ignores_invalid_timestamp_rows():

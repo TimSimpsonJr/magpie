@@ -130,28 +130,36 @@ def automation_signature(
     day_end=18,
     overnight_threshold=0.5,
 ):
-    """Per-actor day/overnight activity split, flagging scheduled-job patterns.
+    """Descriptive per-actor day/overnight activity split (a LEAD, not a verdict).
 
     ``hour_col`` holds integer hours (0-23). For each actor in ``agency_col``:
 
-    * ``daytime_pct``  = share of rows with ``day_start <= hour < day_end``
-    * ``overnight_pct`` = share with ``hour < day_start`` or ``hour >= day_end``
-    * ``flagged``       = ``overnight_pct > overnight_threshold``
+    * ``daytime_pct``    = share of rows with ``day_start <= hour < day_end``
+    * ``overnight_pct``  = share with ``hour < day_start`` or ``hour >= day_end``
+    * ``overnight_heavy`` = ``overnight_pct > overnight_threshold``
 
-    A high overnight share is an automation tell: humans work business hours,
-    but a cron / scheduled job runs in the dead of night. The day interval is
-    half-open ``[day_start, day_end)``, so ``day_end`` itself counts as
-    overnight.
+    The day interval is half-open ``[day_start, day_end)``, so ``day_end`` itself
+    counts as overnight.
 
-    Rows whose ``hour`` is null/NaN or outside ``0..23`` are DROPPED before
-    each actor's shares are computed, so missing or garbage timestamps can
-    never inflate ``overnight_pct`` or trip ``flagged`` (a rigor guardrail: a
-    dirty hour must not manufacture an automation signal). An actor whose rows
-    are *all* invalid still appears in the output but with
-    ``daytime_pct == overnight_pct == 0.0`` and ``flagged == False``.
+    TIMEZONE CONFOUND -- read before treating this as a behavior signal. The
+    ``hour_col`` is derived in a SINGLE timezone, so "overnight" is defined
+    relative to that one clock. An actor working ORDINARY business hours in
+    another timezone (e.g. Central or Pacific against an Eastern hour column)
+    lands partly outside ``[day_start, day_end)`` and can show a high overnight
+    share by GEOGRAPHY, not behavior. ``overnight_heavy`` is therefore a LEAD to
+    inspect -- which actors to look at next -- and NOT an automation verdict.
+    (Same-second burstiness, computed elsewhere, is the timezone-independent
+    automation tell.)
+
+    Rows whose ``hour`` is null/NaN or outside ``0..23`` are DROPPED before each
+    actor's shares are computed, so missing or garbage timestamps can never
+    inflate ``overnight_pct`` or trip ``overnight_heavy`` (a rigor guardrail: a
+    dirty hour must not manufacture a signal). An actor whose rows are *all*
+    invalid still appears in the output but with
+    ``daytime_pct == overnight_pct == 0.0`` and ``overnight_heavy == False``.
 
     Returns a :class:`pandas.DataFrame` indexed by actor with columns
-    ``daytime_pct``, ``overnight_pct``, ``flagged``.
+    ``daytime_pct``, ``overnight_pct``, ``overnight_heavy``.
     """
     agencies = pd.Series(df[agency_col].values, name="agency")
     hours = pd.to_numeric(df[hour_col], errors="coerce").to_numpy()
@@ -174,7 +182,7 @@ def automation_signature(
         {
             "daytime_pct": daytime_pct,
             "overnight_pct": overnight_pct,
-            "flagged": overnight_pct > overnight_threshold,
+            "overnight_heavy": overnight_pct > overnight_threshold,
         }
     )
     result.index.name = agency_col

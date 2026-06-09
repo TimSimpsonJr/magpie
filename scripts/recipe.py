@@ -628,15 +628,21 @@ def _busiest(
 # --------------------------------------------------------------------------- #
 
 def check_ai_moderation(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, Any]:
-    """Automation tells: overnight-actor signature + same-second burstiness.
+    """Two halves: same-second burstiness (a genuine automation tell) + an
+    overnight-share split (a timezone-confounded LEAD, not an automation verdict).
 
     Always runs :func:`stats.automation_signature` over ``cfg["hour_col"]`` /
-    ``cfg["user_col"]`` to flag actors whose overnight share crosses
-    ``cfg["overnight_threshold"]`` (default 0.5) -- a scheduled-job tell.
-    Burstiness (:func:`stats.burstiness`, same-second batches) runs ONLY when a
-    ``timestamp_col`` is configured AND present; otherwise the burst half is
-    undefined, so status is ``partial``, ``max_same_second`` is ``None`` (never a
-    fake ``0``), and ``reason`` says a timestamp column is needed.
+    ``cfg["user_col"]`` to mark actors whose overnight share crosses
+    ``cfg["overnight_threshold"]`` (default 0.5) as ``overnight_heavy``. The hour
+    column is derived in a SINGLE timezone, so an actor working ordinary hours in
+    another timezone can show a high overnight share by GEOGRAPHY, not behavior;
+    ``overnight_heavy`` is reported as a LEAD to inspect (with ``overnight_caveat``
+    spelling out the confound), NOT as an automation verdict. Burstiness
+    (:func:`stats.burstiness`, same-second batches) is the timezone-INDEPENDENT
+    automation tell and runs ONLY when a ``timestamp_col`` is configured AND
+    present; otherwise the burst half is undefined, so status is ``partial``,
+    ``max_same_second`` is ``None`` (never a fake ``0``), and ``reason`` says a
+    timestamp column is needed.
 
     A present ``timestamp_col`` is VALIDATED, not trusted: it is coerced with
     ``pd.to_datetime(..., errors="coerce")`` and the invalid (``NaT``) rows are
@@ -664,15 +670,27 @@ def check_ai_moderation(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, A
         day_end=cfg.get("day_end", 18),
         overnight_threshold=cfg.get("overnight_threshold", 0.5),
     )
-    flagged = signature.index[signature["flagged"]].tolist()
-    flagged_actors = [_to_native_key(a) for a in flagged]
+    overnight_heavy = signature.index[signature["overnight_heavy"]].tolist()
+    overnight_heavy_actors = [_to_native_key(a) for a in overnight_heavy]
     n_actors = _to_int(signature.shape[0])
-    n_flagged = len(flagged_actors)
+    n_overnight_heavy = len(overnight_heavy_actors)
+
+    # The overnight half is timezone-relative: "overnight" is defined against the
+    # single timezone hour_col is derived in, so a high overnight share can be
+    # geography, not behavior. Attach the caveat so no downstream consumer reads
+    # overnight_heavy as an automation verdict (issue #18).
+    overnight_caveat = (
+        f"overnight share is computed from a single-timezone hour column ({hour_col}); "
+        "an actor working ordinary hours in another timezone can show a high overnight "
+        "share by geography, not behavior -- treat overnight_heavy as a lead to inspect, "
+        "not an automation verdict"
+    )
 
     result: dict[str, Any] = {
         "n_actors": n_actors,
-        "n_flagged_overnight": n_flagged,
-        "flagged_actors": flagged_actors,
+        "n_overnight_heavy": n_overnight_heavy,
+        "overnight_heavy_actors": overnight_heavy_actors,
+        "overnight_caveat": overnight_caveat,
     }
 
     timestamp_col = cfg.get("timestamp_col")
@@ -698,7 +716,8 @@ def check_ai_moderation(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, A
             _to_int(k): _to_int(v) for k, v in burst["size_distribution"].items()
         }
         result["summary"] = (
-            f"{n_flagged} of {n_actors} actors flagged overnight; "
+            f"{n_overnight_heavy} of {n_actors} actors have a heavy overnight share "
+            "(lead; overnight is timezone-relative, see overnight_caveat); "
             f"max same-second batch {result['max_same_second']}"
         )
     else:
@@ -710,8 +729,9 @@ def check_ai_moderation(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, A
             "so same-second batching is undefined"
         )
         result["summary"] = (
-            f"{n_flagged} of {n_actors} actors flagged overnight; "
-            "burstiness undefined (no valid timestamp column)"
+            f"{n_overnight_heavy} of {n_actors} actors have a heavy overnight share "
+            "(lead; overnight is timezone-relative); burstiness undefined "
+            "(no valid timestamp column)"
         )
     return result
 

@@ -178,7 +178,7 @@ check — same guard as `derive_columns`). Each check is a small pure fn with it
 | 8 | `check_blast_radius` | `nets_col="nets", severity_col?` | `median, max, total_exposure, n_with_nets, by_severity?` | `stats.median_by_category` |
 | 9 | `check_mega_users` | `user_col, top_n=10, top_frac=0.01` | `n_users, largest_user, top_users, top_frac_share` | `stats.top_k_share` |
 | 10 | `check_operations` | `user_col?, date_col="date_et", hour_col="hour_et"` | `total_records, n_users?, date_start, date_end, span_days, records_per_day_mean, busiest_day, busiest_hour` | — |
-| 11 | `check_ai_moderation` | `hour_col="hour_et", user_col, timestamp_col?, overnight_threshold=0.5, day_start=6, day_end=18` | `n_actors, n_flagged_overnight, flagged_actors, max_same_second?, burst_size_distribution?` | `stats.automation_signature` + `stats.burstiness` |
+| 11 | `check_ai_moderation` | `hour_col="hour_et", user_col, timestamp_col?, overnight_threshold=0.5, day_start=6, day_end=18` | `n_actors, n_overnight_heavy, overnight_heavy_actors, overnight_caveat, max_same_second?, burst_size_distribution?` | `stats.automation_signature` + `stats.burstiness` |
 | 12 | `check_cross_agency` | `user_col, external_geo_col="geo", external_label="OOS", max_list=200` | `n_agencies, n_external_agencies, agency_counts (bounded), external_agencies` | — |
 | 13 | `check_statistical_patterns` | `user_col, top_frac=0.01` | `n_actors, gini, top_frac_share, bottom_half_share` | `stats.gini/top_k_share/bottom_half_share` |
 
