@@ -56,7 +56,7 @@ def text_id(text: str) -> str:
 
 
 DEFAULT_PII_PATTERNS: dict[str, re.Pattern[str]] = {
-    "phone": re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b"),
+    "phone": re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b|\(\d{3}\)[-.\s]?\d{3}[-.\s]?\d{4}\b"),
     "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     "email": re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
     "dob_kw": re.compile(r"\bD\.?O\.?B\.?\b", re.IGNORECASE),
@@ -66,13 +66,20 @@ DEFAULT_PII_PATTERNS: dict[str, re.Pattern[str]] = {
     "possible_birthdate": re.compile(
         r"\b(?:0?[1-9]|1[0-2])[/-](?:0?[1-9]|[12]\d|3[01])[/-](?:19|20)\d\d\b"
     ),
+    "phone_compact": re.compile(r"\b\d{10}\b"),  # run-together 10-digit; broad-only LEAD (also matches case #/IDs)
 }
 
-# Two DEFAULT broad-only patterns, both medium-precision LEADS rather than the
+# Three DEFAULT broad-only patterns, all medium-precision LEADS rather than the
 # publishable headline:
 #   - possible_birthdate: a bare MM/DD/YYYY also matches an INCIDENT date.
 #   - race_sex: the 2-char demographic ratio is ambiguous with ordinary prose
 #     ("H/M ratio", "W/M reading"), so it is a lead, not the headline.
+#   - phone_compact: a bare 10-digit run is probably a phone but also matches a
+#     case number / badge ID, so it is a LEAD, never the strict headline. (The
+#     strict `phone` pattern deliberately requires a separator or parens, so the
+#     run-together form lives here, not in STRICT.) Note: "A123456789"
+#     (alien-num shape) does NOT match \b\d{10}\b -- 9 digits, glued to the "A"
+#     with no word boundary -- so the alien_num path is unaffected.
 # Each still FIRES as a category; only its TIER is broad. Every other DEFAULT
 # pattern is high-precision PII (counts toward STRICT). This is only the DEFAULT
 # broad-only set; `sweep(broad_only_names=...)` overrides it -- e.g. the Phase 11
@@ -80,7 +87,19 @@ DEFAULT_PII_PATTERNS: dict[str, re.Pattern[str]] = {
 # headline and reproduce the pilot's documented figure. Naming the headline
 # honestly: "high-precision PII", NOT "structured identifiers" -- dob_kw is a
 # sensitive descriptor, not a literal ID.
-BROAD_ONLY_PATTERN_NAMES: frozenset[str] = frozenset({"possible_birthdate", "race_sex"})
+BROAD_ONLY_PATTERN_NAMES: frozenset[str] = frozenset(
+    {"possible_birthdate", "race_sex", "phone_compact"}
+)
+
+# Broad-only patterns that are EXPOSURE leads but must NOT, on their own, make a
+# text a REDACTION target (local_texts feeds redact-output). phone_compact is a
+# bare 10-digit run -- as likely a case number / badge ID as a phone -- and
+# over-redacting accountability data is the wrong direction for this tool. A text
+# still becomes a redaction target if it ALSO hits a strict pattern, a person, or
+# another (non-exempt) broad lead; phone_compact alone never does. It still
+# counts toward the broad exposure lead. (possible_birthdate / race_sex are NOT
+# exempt -- pre-existing behavior, unchanged here.)
+REDACTION_EXEMPT_PATTERN_NAMES: frozenset[str] = frozenset({"phone_compact"})
 
 
 def _regex_hit(pattern: re.Pattern[str], text: str) -> bool:
@@ -163,12 +182,19 @@ def sweep(
                   else frozenset(broad_only_names))
     strict_names = [n for n in patterns if n not in broad_only]
     broad_only_present = [n for n in patterns if n in broad_only]
-    strict_bool, broad_bool = [], []
+    # Redaction targets (local_texts) gate on a TIGHTER set than the broad
+    # exposure lead: a redaction-exempt broad pattern (phone_compact) counts as a
+    # lead but never, on its own, marks a text for redact-output.
+    redactable_broad = [n for n in broad_only_present
+                        if n not in REDACTION_EXEMPT_PATTERN_NAMES]
+    strict_bool, broad_bool, redactable_bool = [], [], []
     for i in range(n_distinct):
         strict_i = any(regex_hits[n][i] for n in strict_names)
         broad_i = strict_i or unknown[i] or any(regex_hits[n][i] for n in broad_only_present)
+        redactable_i = strict_i or unknown[i] or any(regex_hits[n][i] for n in redactable_broad)
         strict_bool.append(strict_i)
         broad_bool.append(broad_i)
+        redactable_bool.append(redactable_i)
 
     result["exposure"] = {
         "strict": _tally(counts, strict_bool),   # publishable headline (high-precision PII)
@@ -178,7 +204,7 @@ def sweep(
     if collect_local_texts:
         local: dict[str, dict[str, Any]] = {}
         for i, t in enumerate(texts):
-            if not broad_bool[i]:           # only redaction targets; officials-only excluded
+            if not redactable_bool[i]:      # redaction targets only (officials-only AND redaction-exempt leads like phone_compact excluded)
                 continue
             cats = [n for n in patterns if regex_hits[n][i]]
             if official[i]:
