@@ -264,8 +264,11 @@ def check_pretext(df: pd.DataFrame, cfg: Mapping[str, Any]) -> dict[str, Any]:
 # High-precision default patterns. Record-level presence only; deliberately NO
 # bare-date pattern (an incident date is not exposure -- DOB detection is opt-in
 # via cfg["patterns"]). Semantic NER over names is deferred to Phase 5 pii-sweep.
+# a_number tolerates an optional '#' and a single space/hyphen separator and
+# spans 8-9 digits -- favors recall on this most-sensitive identifier (the real
+# A-numbers in the corpus carry separators) while staying anchored on the shape.
 _DEFAULT_PII_PATTERNS: dict[str, str] = {
-    "a_number": r"\bA\d{8,9}\b",
+    "a_number": r"\bA#?[\s-]?\d{3}[\s-]?\d{3}[\s-]?\d{2,3}\b",
     "ssn": r"\b\d{3}-\d{2}-\d{4}\b",
     "phone": r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b",
     "email": r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b",

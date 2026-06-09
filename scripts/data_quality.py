@@ -120,6 +120,32 @@ def _coerce_bound(value: Any) -> pd.Timestamp | None:
     return None if pd.isna(ts) else ts
 
 
+def _day_key(ts: pd.Timestamp | None) -> pd.Timestamp | None:
+    """Reduce a Timestamp to a tz-naive midnight key for day-granular comparison.
+
+    Used ONLY to decide ``missing_head`` / ``missing_tail`` -- never for the
+    stored return values. It makes two otherwise-incomparable bounds comparable
+    and drops sub-day precision in one step:
+
+    * ``None`` passes through as ``None``.
+    * A tz-AWARE timestamp is read as the same instant in UTC, then stripped of
+      its tz (``tz_convert("UTC").tz_localize(None)``), so it can be compared
+      with a tz-naive bound (which is treated as a UTC wall-clock value).
+    * The result is normalized to midnight (``normalize()``), i.e. the calendar
+      DAY, so a record at 14:42 on the requested start day is not counted as
+      "later than" midnight of that day.
+
+    This fixes both the tz-naive-vs-tz-aware ``TypeError`` and the false
+    missing-head/tail that a full-resolution comparison produced on day-granular
+    FOIA windows.
+    """
+    if ts is None:
+        return None
+    if ts.tz is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts.normalize()
+
+
 def check_date_window(
     df: pd.DataFrame,
     date_col: str,
@@ -144,6 +170,16 @@ def check_date_window(
     The comparison is strictly *narrower-than*: an actual bound landing exactly
     on the requested bound is full coverage, not a gap. A delivery WIDER than the
     request (extra data on either end) is fine and never flagged.
+
+    The head/tail gap test is at CALENDAR-DAY granularity (FOIA windows are
+    day-granular): a file that covers the requested day is NOT flagged
+    ``missing_head`` merely because that day's first record began after midnight
+    (e.g. 14:42). A tz-AWARE date column (FOIA audit-log exports routinely carry a
+    UTC offset) is handled too: the head/tail decision compares everything in UTC,
+    so a tz-aware column and a plain tz-naive ``requested_start`` / ``requested_end``
+    no longer raise "Cannot compare tz-naive and tz-aware timestamps". The STORED
+    ``actual_*`` / ``requested_*`` values keep their original full resolution and
+    tz; only the gap comparison is day-normalized.
 
     An all-``NaT`` / empty column is handled gracefully: ``actual_start`` /
     ``actual_end`` are ``None`` and neither head nor tail is reported missing
@@ -173,16 +209,18 @@ def check_date_window(
 
     # A gap can only be asserted when we have BOTH a requested bound and an actual
     # bound to compare it against; otherwise there is nothing to be narrower-than.
-    missing_head = (
-        actual_start is not None
-        and req_start is not None
-        and actual_start > req_start
-    )
-    missing_tail = (
-        actual_end is not None
-        and req_end is not None
-        and actual_end < req_end
-    )
+    # The head/tail decision uses a day-granular, tz-SAFE key (see _day_key): it
+    # makes a tz-aware column comparable to tz-naive bounds (both read as UTC) and
+    # compares at calendar-day resolution, so a file covering the requested day is
+    # not flagged merely because the day's first record began after midnight. The
+    # STORED bounds below stay the original full Timestamps -- only the comparison
+    # is normalized.
+    a_start = _day_key(actual_start)
+    a_end = _day_key(actual_end)
+    r_start = _day_key(req_start)
+    r_end = _day_key(req_end)
+    missing_head = a_start is not None and r_start is not None and a_start > r_start
+    missing_tail = a_end is not None and r_end is not None and a_end < r_end
 
     return {
         "actual_start": actual_start,
