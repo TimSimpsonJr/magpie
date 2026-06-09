@@ -141,6 +141,10 @@ def _day_key(ts: pd.Timestamp | None) -> pd.Timestamp | None:
     """
     if ts is None:
         return None
+    # Defensive coercion: accept any datetime-like (a pandas ``Timestamp``, a
+    # Python ``datetime``, an ``np.datetime64``) and normalize to the pandas
+    # ``Timestamp`` the tz/day logic below needs. Idempotent on a ``Timestamp``.
+    ts = pd.Timestamp(ts)
     if ts.tz is not None:
         ts = ts.tz_convert("UTC").tz_localize(None)
     return ts.normalize()
@@ -177,7 +181,9 @@ def check_date_window(
     (e.g. 14:42). A tz-AWARE date column (FOIA audit-log exports routinely carry a
     UTC offset) is handled too: the head/tail decision compares everything in UTC,
     so a tz-aware column and a plain tz-naive ``requested_start`` / ``requested_end``
-    no longer raise "Cannot compare tz-naive and tz-aware timestamps". The STORED
+    no longer raise "Cannot compare tz-naive and tz-aware timestamps". A column
+    carrying MORE THAN ONE UTC offset (a local-time log spanning a DST change) is
+    folded onto UTC at parse time rather than aborting. The STORED
     ``actual_*`` / ``requested_*`` values keep their original full resolution and
     tz; only the gap comparison is day-normalized.
 
@@ -197,7 +203,22 @@ def check_date_window(
     # heterogeneous real-world FOIA date column) and, by making that intent
     # explicit, suppresses pandas' "could not infer format, falling back to
     # dateutil" UserWarning that an all-/partly-unparseable column would emit.
-    parsed = pd.to_datetime(df[date_col], errors="coerce", format="mixed")
+    #
+    # A column carrying MORE THAN ONE UTC offset -- e.g. a local-time audit log
+    # that spans a DST change ("...-05:00" before, "...-04:00" after) -- cannot
+    # resolve to a single tz dtype: pandas raises "Mixed timezones detected", a
+    # BATCH-level check that errors="coerce" does NOT suppress. Retry with
+    # utc=True to fold every value onto a common UTC instant (the same UTC the
+    # day-granular _day_key comparison uses anyway), so a mixed-offset export is
+    # handled rather than aborting the whole data_quality_report. Uniform-offset
+    # and tz-naive columns take the first parse unchanged (naive stays tz-naive,
+    # so the stored bounds and their echo are unaffected).
+    try:
+        parsed = pd.to_datetime(df[date_col], errors="coerce", format="mixed")
+    except ValueError:
+        parsed = pd.to_datetime(
+            df[date_col], errors="coerce", format="mixed", utc=True
+        )
     n_undated = int(parsed.isna().sum())
 
     valid = parsed.dropna()

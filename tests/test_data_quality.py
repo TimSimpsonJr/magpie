@@ -280,6 +280,24 @@ def test_date_window_tz_aware_tail_genuinely_missing_flags_tail():
     assert result["missing_tail"] is True
 
 
+def test_date_window_mixed_offset_column_does_not_crash():
+    # A LOCAL-time audit log that spans a DST change carries MORE THAN ONE UTC
+    # offset in a single column (e.g. -05:00 before the change, +00:00 after).
+    # pandas refuses to parse that to one tz dtype ("Mixed timezones detected"),
+    # and errors="coerce" does NOT suppress that batch-level error -- so the gate
+    # must fold the column onto UTC instead of aborting. Both records land on
+    # 2026-03-31 (UTC), fully covering the requested single-day window.
+    df = pd.DataFrame(
+        {"ts": ["2026-03-30T23:30:00-05:00", "2026-03-31T01:00:00+00:00"]}
+    )
+    result = check_date_window(
+        df, "ts", requested_start="2026-03-31", requested_end="2026-03-31"
+    )
+    assert result["missing_head"] is False
+    assert result["missing_tail"] is False
+    assert result["n_undated"] == 0
+
+
 # ==========================================================================
 # 3.2.c  analyze_anomalies -- per-column descriptive LEADS (not verdicts)
 # ==========================================================================
