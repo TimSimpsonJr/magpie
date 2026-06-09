@@ -60,7 +60,7 @@ DEFAULT_PII_PATTERNS: dict[str, re.Pattern[str]] = {
     "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     "email": re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
     "dob_kw": re.compile(r"\bD\.?O\.?B\.?\b", re.IGNORECASE),
-    "alien_num": re.compile(r"\bA\d{8,9}\b"),           # tightened from prototype 8,12
+    "alien_num": re.compile(r"\bA#?[\s-]?\d{3}[\s-]?\d{3}[\s-]?\d{2,3}\b"),  # 8-9 digits; tolerates A# / separator (issue #19)
     "driver_lic": re.compile(r"\b(?:OLN|DLN|DL|OL)\s?#?\s?(?=[A-Z0-9]*\d)[A-Z0-9]{6,}\b"),
     "race_sex": re.compile(r"\b[BWHAI]\s?/\s?[MF]\b"),
     "possible_birthdate": re.compile(

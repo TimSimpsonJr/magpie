@@ -222,6 +222,82 @@ def test_date_window_echoes_requested_bounds():
     assert pd.Timestamp(result["requested_end"]) == pd.Timestamp("2026-04-30")
 
 
+def test_date_window_tz_aware_column_vs_naive_bounds_does_not_crash():
+    # FOIA audit-log exports routinely carry a UTC offset, so the parsed column is
+    # tz-AWARE while a plain requested_start/end is tz-NAIVE. The comparison must
+    # NOT raise "Cannot compare tz-naive and tz-aware timestamps". The delivery
+    # starts 2026-04-02 (after the requested 2026-03-30 -> head missing) and
+    # reaches the requested end DAY 2026-04-30 (-> tail present).
+    df = pd.DataFrame(
+        {"ts": ["2026-04-02T00:00:00+00:00", "2026-04-30T12:00:00+00:00"]}
+    )
+    result = check_date_window(
+        df, "ts", requested_start="2026-03-30", requested_end="2026-04-30"
+    )
+    assert result["missing_head"] is True
+    assert result["missing_tail"] is False
+
+
+def test_date_window_head_check_is_day_granular_not_intraday():
+    # FOIA windows are day-granular. A delivery whose first record falls on the
+    # requested start DAY but at a later clock time (14:42, not midnight) fully
+    # COVERS that day -- it must NOT be flagged missing_head merely because the
+    # first instant is after midnight. Likewise the tail reaches the end day.
+    df = pd.DataFrame(
+        {"date": ["2026-03-30T14:42:00", "2026-04-30T09:00:00"]}
+    )
+    result = check_date_window(
+        df, "date", requested_start="2026-03-30", requested_end="2026-04-30"
+    )
+    assert result["missing_head"] is False
+    assert result["missing_tail"] is False
+
+
+def test_date_window_tz_aware_genuinely_late_start_still_flags_head():
+    # Guard against over-suppression: a tz-aware column whose first delivered DAY
+    # (2026-04-03) is genuinely after the requested start (2026-03-30) must still
+    # flag missing_head -- the day-granular fix must not silence a real gap.
+    df = pd.DataFrame(
+        {"ts": ["2026-04-03T08:00:00+00:00", "2026-04-30T00:00:00+00:00"]}
+    )
+    result = check_date_window(
+        df, "ts", requested_start="2026-03-30", requested_end="2026-04-30"
+    )
+    assert result["missing_head"] is True
+
+
+def test_date_window_tz_aware_tail_genuinely_missing_flags_tail():
+    # Tail counterpart on a tz-aware column: the last delivered DAY (2026-04-25)
+    # is before the requested end DAY (2026-04-30), so the tail of the window is
+    # genuinely absent and must be flagged.
+    df = pd.DataFrame(
+        {"ts": ["2026-03-30T00:00:00+00:00", "2026-04-25T23:00:00+00:00"]}
+    )
+    result = check_date_window(
+        df, "ts", requested_start="2026-03-30", requested_end="2026-04-30"
+    )
+    assert result["missing_head"] is False
+    assert result["missing_tail"] is True
+
+
+def test_date_window_mixed_offset_column_does_not_crash():
+    # A LOCAL-time audit log that spans a DST change carries MORE THAN ONE UTC
+    # offset in a single column (e.g. -05:00 before the change, +00:00 after).
+    # pandas refuses to parse that to one tz dtype ("Mixed timezones detected"),
+    # and errors="coerce" does NOT suppress that batch-level error -- so the gate
+    # must fold the column onto UTC instead of aborting. Both records land on
+    # 2026-03-31 (UTC), fully covering the requested single-day window.
+    df = pd.DataFrame(
+        {"ts": ["2026-03-30T23:30:00-05:00", "2026-03-31T01:00:00+00:00"]}
+    )
+    result = check_date_window(
+        df, "ts", requested_start="2026-03-31", requested_end="2026-03-31"
+    )
+    assert result["missing_head"] is False
+    assert result["missing_tail"] is False
+    assert result["n_undated"] == 0
+
+
 # ==========================================================================
 # 3.2.c  analyze_anomalies -- per-column descriptive LEADS (not verdicts)
 # ==========================================================================

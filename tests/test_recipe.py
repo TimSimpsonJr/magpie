@@ -291,6 +291,44 @@ def test_pii_dedupes_record_across_multiple_text_cols():
     assert out["records_by_pattern"]["a_number"] == 1
 
 
+def test_pii_a_number_separator_variants_all_detected():
+    # Real alien-registration numbers in the corpus carry separators / a leading
+    # "A#", and span 8-9 digits. Every row below is one A-number in some form, so
+    # the looser pattern must catch all 6 (the strict \bA\d{8,9}\b caught 0 of the
+    # separator forms -- a false negative on the most sensitive identifier type).
+    df = pd.DataFrame(
+        {
+            "notes": [
+                "A123456789",               # 9 digits, no separator
+                "A# 123456789",             # leading A#, space separator
+                "A-123456789",              # hyphen separator
+                "A 12345678",               # 8 digits, space separator
+                "A-12345678",               # 8 digits, hyphen separator
+                "subject A12345678 flagged",  # embedded, no separator
+            ]
+        }
+    )
+    out = check_pii(df, {"text_cols": ["notes"]})
+    assert out["records_by_pattern"]["a_number"] == 6
+    assert out["records_with_pii"] == 6
+
+
+def test_pii_a_number_precision_guard():
+    # Detection stays anchored on the A-then-digits SHAPE: a bare digit run, an
+    # "A" not followed by digits, and a too-short (6-digit) run must NOT match.
+    df = pd.DataFrame(
+        {
+            "notes": [
+                "ref 123456789",     # bare 9-digit run, no A
+                "graded A on test",  # A not followed by digits
+                "A123456",           # only 6 digits, too short
+            ]
+        }
+    )
+    out = check_pii(df, {"text_cols": ["notes"]})
+    assert out["records_by_pattern"]["a_number"] == 0
+
+
 def test_pii_skipped_when_no_text_cols_present():
     out = check_pii(pd.DataFrame({"x": [1]}), {"text_cols": ["notes"]})
     assert out["status"] == "skipped"

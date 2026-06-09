@@ -76,6 +76,14 @@ def test_alien_num_is_8_or_9_digits_not_more():
     assert not _regex_hit(DEFAULT_PII_PATTERNS["alien_num"], "A1234567890")  # 10
 
 
+def test_alien_num_tolerates_separators_and_hash():
+    # Real A-numbers in the corpus carry an optional '#' and a space/hyphen
+    # separator (issue #19) -- the authoritative tally must catch them, not only
+    # the run-together form. Width stays at the deliberate 8-9 digits.
+    for text in ("A# 123456789", "A-123456789", "A 12345678", "A-12345678"):
+        assert _regex_hit(DEFAULT_PII_PATTERNS["alien_num"], text), text
+
+
 def test_broad_only_patterns_are_birthdate_and_race_sex():
     # a bare date is also an incident date, and a 2-char demographic ratio
     # collides with prose ("H/M ratio") -> both are broad-only leads. Every
@@ -251,7 +259,8 @@ def test_overlap_patterns_stay_consistent_with_recipe_check_pii():
     """Decoupled modules (no imports either way); this tripwire fires if the
     SHARED-INTENT patterns silently diverge. recipe stores regex STRINGS,
     pii_sweep COMPILED -> compare `.pattern` to the string. recipe's `a_number`
-    is pii_sweep's `alien_num` (different key, same concept; both `A\\d{8,9}`)."""
+    is pii_sweep's `alien_num` (different key, same concept; both the same
+    separator-tolerant 8-9-digit A-number pattern)."""
     overlap = {"ssn": "ssn", "phone": "phone", "email": "email", "alien_num": "a_number"}
     for sweep_key, recipe_key in overlap.items():
         assert DEFAULT_PII_PATTERNS[sweep_key].pattern == RECIPE_PII[recipe_key], sweep_key
