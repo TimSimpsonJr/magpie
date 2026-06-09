@@ -123,6 +123,24 @@ def test_phone_compact_is_a_broad_lead_not_strict():
     assert r["exposure"]["broad"]["distinct"] == 1
 
 
+def test_phone_compact_is_a_lead_but_not_a_redaction_target():
+    # phone_compact is redaction-EXEMPT: a bare 10-digit run (as likely a case
+    # number as a phone) counts toward the broad exposure lead but must NOT, on
+    # its own, become a redact-output target -- over-redacting accountability data
+    # is the wrong direction. It enters local_texts only if the SAME text also
+    # carries a real redaction trigger (here, an SSN).
+    r = sweep(
+        pd.Series(["call 5551234567", "ssn 123-45-6789 and 5551234567"]),
+        person_classifier=FakePersonClassifier(),
+        collect_local_texts=True,
+    )
+    assert r["exposure"]["broad"]["distinct"] == 2     # both rows are leads
+    assert r["exposure"]["strict"]["distinct"] == 1    # only the ssn row is the headline
+    redacted = {v["text"] for v in r["local_texts"].values()}
+    assert "call 5551234567" not in redacted           # phone_compact-only -> NOT redacted
+    assert "ssn 123-45-6789 and 5551234567" in redacted  # ssn (strict) -> IS a redaction target
+
+
 def test_sweep_weights_distinct_by_counts():
     s = pd.Series(["ssn 123-45-6789"] * 50 + ["nothing here"] * 3)
     r = sweep(s, person_classifier=FakePersonClassifier())

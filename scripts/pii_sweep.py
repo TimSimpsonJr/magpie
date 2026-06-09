@@ -91,6 +91,16 @@ BROAD_ONLY_PATTERN_NAMES: frozenset[str] = frozenset(
     {"possible_birthdate", "race_sex", "phone_compact"}
 )
 
+# Broad-only patterns that are EXPOSURE leads but must NOT, on their own, make a
+# text a REDACTION target (local_texts feeds redact-output). phone_compact is a
+# bare 10-digit run -- as likely a case number / badge ID as a phone -- and
+# over-redacting accountability data is the wrong direction for this tool. A text
+# still becomes a redaction target if it ALSO hits a strict pattern, a person, or
+# another (non-exempt) broad lead; phone_compact alone never does. It still
+# counts toward the broad exposure lead. (possible_birthdate / race_sex are NOT
+# exempt -- pre-existing behavior, unchanged here.)
+REDACTION_EXEMPT_PATTERN_NAMES: frozenset[str] = frozenset({"phone_compact"})
+
 
 def _regex_hit(pattern: re.Pattern[str], text: str) -> bool:
     """True iff ``pattern`` matches ``text`` (``text`` is always a real str here)."""
@@ -172,12 +182,19 @@ def sweep(
                   else frozenset(broad_only_names))
     strict_names = [n for n in patterns if n not in broad_only]
     broad_only_present = [n for n in patterns if n in broad_only]
-    strict_bool, broad_bool = [], []
+    # Redaction targets (local_texts) gate on a TIGHTER set than the broad
+    # exposure lead: a redaction-exempt broad pattern (phone_compact) counts as a
+    # lead but never, on its own, marks a text for redact-output.
+    redactable_broad = [n for n in broad_only_present
+                        if n not in REDACTION_EXEMPT_PATTERN_NAMES]
+    strict_bool, broad_bool, redactable_bool = [], [], []
     for i in range(n_distinct):
         strict_i = any(regex_hits[n][i] for n in strict_names)
         broad_i = strict_i or unknown[i] or any(regex_hits[n][i] for n in broad_only_present)
+        redactable_i = strict_i or unknown[i] or any(regex_hits[n][i] for n in redactable_broad)
         strict_bool.append(strict_i)
         broad_bool.append(broad_i)
+        redactable_bool.append(redactable_i)
 
     result["exposure"] = {
         "strict": _tally(counts, strict_bool),   # publishable headline (high-precision PII)
@@ -187,7 +204,7 @@ def sweep(
     if collect_local_texts:
         local: dict[str, dict[str, Any]] = {}
         for i, t in enumerate(texts):
-            if not broad_bool[i]:           # only redaction targets; officials-only excluded
+            if not redactable_bool[i]:      # redaction targets only (officials-only AND redaction-exempt leads like phone_compact excluded)
                 continue
             cats = [n for n in patterns if regex_hits[n][i]]
             if official[i]:
