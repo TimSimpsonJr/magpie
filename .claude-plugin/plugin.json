@@ -1,6 +1,6 @@
 {
   "name": "magpie",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "FOSS-first investigative analysis toolkit: structured FOIA/data analysis (stats, PII sweep, repeatable recipes) plus document ingest, redaction-check, and verifiable findings. Fieldwork: Magpie.",
   "author": {
     "name": "Tim Simpson",
