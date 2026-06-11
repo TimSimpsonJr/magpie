@@ -1,6 +1,6 @@
 # Magpie
 
-![License](https://img.shields.io/badge/license-MIT-blue) ![Version](https://img.shields.io/badge/version-0.2.2-informational) ![Built for Claude Code](https://img.shields.io/badge/built%20for-Claude%20Code-8A3FFC) ![Python](https://img.shields.io/badge/python-3.12-3776AB) ![Status](https://img.shields.io/badge/status-beta-orange)
+![License](https://img.shields.io/badge/license-MIT-blue) ![Version](https://img.shields.io/badge/version-0.2.2-informational) ![Built for Claude Code](https://img.shields.io/badge/built%20for-Claude%20Code-8A3FFC) ![Python](https://img.shields.io/badge/python-3.12-3776AB) ![Status](https://img.shields.io/badge/status-alpha-red)
 
 Magpie is a Claude Code plugin for the part of an investigation that happens after the records arrive. You hand it a FOIA release or a data dump (a spreadsheet, an audit log, a stack of PDFs) and it helps you turn that pile into findings you can stand behind: counted, cited back to the exact page, swept for the PII that should not be published, and filed away as linked notes. Like the bird it is named for, it gathers scattered shiny things into one nest you can actually work in.
 
