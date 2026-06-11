@@ -91,7 +91,7 @@ The capability map (run `doctor` to see your own):
 Two design rules run through everything. **Leads, not verdicts:** a check that cannot run never certifies the absence of what it checks for, and a missing required column produces a recorded "skipped," never a fake zero. **Local versus published:** raw PII, recovered under-box text, and verifier reasoning live only on local files; the published note carries aggregate counts and non-raw anchors. The full file tree and how the pieces couple together is in [MANIFEST.md](MANIFEST.md).
 
 > [!NOTE]
-> **What you need:** Python 3.12, [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and a vault (Librarian installs automatically alongside Magpie). The optional machine-learning tiers (spaCy, Docling, GLiNER) are opt-in, and Claude installs them for you when you run setup. mise, Node, and Docker are contributor / full-tier only: you do not need them for everyday dataset analysis, ingest, or redaction work.
+> **What you need:** Python 3.12, [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and the Librarian plugin, which Magpie requires as its output layer (install it from the same Fieldwork marketplace). An Obsidian vault is recommended so findings land as linked notes. The optional machine-learning tiers (spaCy, Docling, GLiNER) are opt-in, and Claude installs them for you when you run setup. mise, Node, and Docker are contributor / full-tier only: you do not need them for everyday dataset analysis, ingest, or redaction work.
 
 > [!IMPORTANT]
 > **Your data & privacy:** Your records stay on your machine, analyzed locally inside your own Claude Code session with nothing uploaded. Two workflows exist specifically to protect people in the records. `pii-sweep` quantifies exactly what PII a release exposed, separating officials (named for accountability) from third parties who should have been redacted. `redact-output` masks uninvolved names to initials and structured PII to typed placeholders before anything is published, keeping the full un-redacted exhibit on a local, non-vault path. `redaction-check` also lets you verify your own PDFs before release. On the data side, the served dataset is read-only, and for any PII-bearing data it is built from a fail-closed allowlist, so raw identifiers are never reachable by SQL.
@@ -112,7 +112,7 @@ The suite is offline by default (no API key, no network): the heavy integration 
 ## Part of the Fieldwork suite
 - [Researcher](https://github.com/TimSimpsonJr/researcher): gather sources into cited notes
 - [Magpie](https://github.com/TimSimpsonJr/magpie): analyze FOIA/data into findings
-- [Librarian](https://github.com/TimSimpsonJr/librarian): file findings as linked notes (shared layer)
+- [Librarian](https://github.com/TimSimpsonJr/librarian): organize findings into linked vault notes (shared layer)
 - [Copydesk](https://github.com/TimSimpsonJr/copydesk): write findings up in your voice
 
 ## License
