@@ -8,23 +8,9 @@ The two ideas behind it are rigor and privacy. Every headline number goes throug
 
 ## How it works
 
-```mermaid
-flowchart TD
-    A["FOIA release / data dump"] --> B["archive-evidence<br/>hash + RFC 3161 timestamp + custody log"]
-    B --> C{"What kind of record?"}
-    C -->|CSV or XLSX| D["dataset-analyze<br/>load, quality gate, derive, read-only SQL"]
-    C -->|PDF or document| E["ingest<br/>text-layer gate, page and bbox provenance"]
-    D --> F["analysis-recipe<br/>13-point pass + cross-source rollup"]
-    D --> G["pii-sweep<br/>PII exposure tally"]
-    E --> H["redaction-check<br/>find bad redactions as leads"]
-    E --> I["investigate<br/>cited claims, mandatory human gate"]
-    F --> R["redact-output<br/>uninvolved PII to initials"]
-    G --> R
-    I --> R
-    R --> L[("Librarian<br/>linked findings notes")]
-    E -. optional Layer 2 .-> J["entity-extract, graph, crossref<br/>network analysis (Docker-gated)"]
-    J -.-> L
-```
+**A FOIA release or data dump** → `archive-evidence` (hash, RFC 3161 timestamp, custody log) → `dataset-analyze` for spreadsheets, or `ingest` for documents → `analysis-recipe` / `pii-sweep` / `redaction-check` / `investigate` → `redact-output` → **Librarian** files the linked findings notes.
+
+*Optional Layer 2 (Docker-gated):* `entity-extract` → `entity-graph` → `entity-crossref` for network analysis.
 
 ## What you can do with it
 
