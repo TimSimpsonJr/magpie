@@ -4,7 +4,7 @@
 
 Magpie is a Claude Code plugin for the part of an investigation that happens after the records arrive. You hand it a FOIA release or a data dump (a spreadsheet, an audit log, a stack of PDFs) and it helps you turn that pile into findings you can stand behind: counted, cited back to the exact page, swept for the PII that should not be published, and filed away as linked notes. Like the bird it is named for, it gathers scattered shiny things into one nest you can actually work in.
 
-The two ideas behind it are rigor and privacy. Every headline number goes through a check before it counts as a finding, and nothing degraded gets passed off as fact. Your records never leave your machine: the analysis runs locally in your own Claude Code session, and the tools that touch sensitive material (the PII sweep, the redaction checks) are there specifically to keep names out of anything you publish.
+Every headline number goes through a check before it counts as a finding, and nothing degraded gets passed off as fact. Your records never leave your machine: the analysis runs locally in your own Claude Code session, and the tools that touch sensitive material (the PII sweep, the redaction checks) exist to keep names out of anything you publish.
 
 ## How it works
 
@@ -27,9 +27,9 @@ Every one of these files its results through **Librarian**, so findings land as 
 
 ## Why it’s useful
 
-Investigations break in quiet, expensive ways: a spreadsheet that was silently cut off at a million rows, a keyword filter that flagged "police" because it contains "ice," a name left in a published note that should never have been there, a confident claim that turns out not to be in the document at all. Magpie is built to refuse each of those failures by default. It stops on a truncated export instead of analyzing a partial slice. It matches keywords on word boundaries. It treats a redaction mark as "present but withheld," never as a value. It will not let a claim publish on a span that does not support it.
+Investigations break in quiet, expensive ways: a spreadsheet that was silently cut off at a million rows, a keyword filter that flagged "police" because it contains "ice," a name left in a published note that should never have been there, a confident claim that turns out not to be in the document at all. Magpie is built to refuse each of those failures by default. It stops on a truncated export instead of analyzing a partial slice. Keywords match on word boundaries, so "police" never flags because of "ice." A redaction mark counts as "present but withheld," never as a value. And a claim cannot publish on a span that does not support it.
 
-The other half is the discipline you would want a careful colleague to enforce. Findings are leads until a human signs off, not verdicts. Evidence is shown before the AI's claim, so you judge the source first. Degraded citations get surfaced loudly instead of waved through. And because the heavy machine-learning pieces are optional and installed only when you need them, the everyday work (load a dataset, run the checklist, sweep for PII) stays light and runs on a laptop with nothing exotic set up.
+The other half is the discipline you would want a careful colleague to enforce. Findings are leads until a human signs off. Evidence is shown before the AI's claim, so you judge the source first. Degraded citations get surfaced loudly instead of waved through. And because the heavy machine-learning pieces are optional and installed only when you need them, the everyday work stays light and runs on a laptop with nothing exotic set up.
 
 ## Quick start
 
@@ -94,7 +94,7 @@ Two design rules run through everything. **Leads, not verdicts:** a check that c
 > **What you need:** Python 3.12, [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and a vault (Librarian installs automatically alongside Magpie). The optional machine-learning tiers (spaCy, Docling, GLiNER) are opt-in, and Claude installs them for you when you run setup. mise, Node, and Docker are contributor / full-tier only: you do not need them for everyday dataset analysis, ingest, or redaction work.
 
 > [!IMPORTANT]
-> **Your data & privacy:** Your records stay on your machine. Magpie runs locally inside your own Claude Code session; nothing is uploaded to analyze it. Two workflows exist specifically to protect people in the records: `pii-sweep` quantifies exactly what PII a release exposed and separates officials (named for accountability) from third parties who should have been redacted, and `redact-output` masks uninvolved names to initials and structured PII to typed placeholders before anything is published, while keeping the full un-redacted exhibit on a local, non-vault path. `redaction-check` also lets you verify your own PDFs before release. The served dataset is read-only and, for any PII-bearing data, built from a fail-closed allowlist so raw identifiers are never reachable by SQL.
+> **Your data & privacy:** Your records stay on your machine, analyzed locally inside your own Claude Code session with nothing uploaded. Two workflows exist specifically to protect people in the records. `pii-sweep` quantifies exactly what PII a release exposed, separating officials (named for accountability) from third parties who should have been redacted. `redact-output` masks uninvolved names to initials and structured PII to typed placeholders before anything is published, keeping the full un-redacted exhibit on a local, non-vault path. `redaction-check` also lets you verify your own PDFs before release. On the data side, the served dataset is read-only, and for any PII-bearing data it is built from a fail-closed allowlist, so raw identifiers are never reachable by SQL.
 
 ## For developers
 
