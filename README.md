@@ -10,24 +10,19 @@ The two ideas behind it are rigor and privacy. Every headline number goes throug
 
 ```mermaid
 flowchart TD
-    A[FOIA release / data dump] --> B[archive-evidence<br/>hash + RFC 3161 timestamp + custody log]
-    B --> C{What kind of record?}
-
-    C -->|CSV / XLSX| D[dataset-analyze<br/>load → quality gate → derive → read-only SQL]
-    C -->|PDF / document| E[ingest<br/>text-layer gate → DoclingDocument + page/bbox provenance]
-
-    D --> F[analysis-recipe<br/>13-point per-source pass + cross-source rollup]
-    D --> G[pii-sweep<br/>authoritative PII exposure tally]
-    E --> H[redaction-check<br/>find bad redactions as leads]
-    E --> I[investigate<br/>cited claims → mandatory human gate]
-
-    F --> R[redact-output<br/>uninvolved PII → initials]
+    A["FOIA release / data dump"] --> B["archive-evidence<br/>hash + RFC 3161 timestamp + custody log"]
+    B --> C{"What kind of record?"}
+    C -->|CSV or XLSX| D["dataset-analyze<br/>load, quality gate, derive, read-only SQL"]
+    C -->|PDF or document| E["ingest<br/>text-layer gate, page and bbox provenance"]
+    D --> F["analysis-recipe<br/>13-point pass + cross-source rollup"]
+    D --> G["pii-sweep<br/>PII exposure tally"]
+    E --> H["redaction-check<br/>find bad redactions as leads"]
+    E --> I["investigate<br/>cited claims, mandatory human gate"]
+    F --> R["redact-output<br/>uninvolved PII to initials"]
     G --> R
     I --> R
-
-    R --> L[(Librarian<br/>linked findings notes)]
-
-    E -.optional Layer 2.-> J[entity-extract → entity-graph → entity-crossref<br/>network analysis, Docker-gated]
+    R --> L[("Librarian<br/>linked findings notes")]
+    E -. optional Layer 2 .-> J["entity-extract, graph, crossref<br/>network analysis (Docker-gated)"]
     J -.-> L
 ```
 
