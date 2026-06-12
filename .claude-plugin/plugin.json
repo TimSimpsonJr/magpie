@@ -1,7 +1,7 @@
 {
   "name": "magpie",
-  "version": "0.2.1",
-  "description": "FOSS-first investigative analysis toolkit: structured FOIA/data analysis (stats, PII sweep, repeatable recipes) plus document ingest, redaction-check, and verifiable findings. Fieldwork: Magpie.",
+  "version": "0.2.2",
+  "description": "FOSS-first investigative analysis toolkit. Turn FOIA releases and data dumps into findings you can stand behind: counted, cited to the exact page, swept for PII, and filed as linked notes, all locally in your own Claude Code session. Covers structured-data analysis, document ingest, redaction checks, and opt-in entity-network mapping. Part of the Fieldwork investigative suite.",
   "author": {
     "name": "Tim Simpson",
     "email": "tim@timsimpsonjr.com"
