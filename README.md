@@ -10,7 +10,7 @@ Every headline number goes through a check before it counts as a finding, and no
 
 **A FOIA release or data dump** → `archive-evidence` (hash, RFC 3161 timestamp, custody log) → `dataset-analyze` for spreadsheets, or `ingest` for documents → `analysis-recipe` / `pii-sweep` / `redaction-check` / `investigate` → `redact-output` → **Librarian** files the linked findings notes.
 
-*Optional Layer 2 (Docker-gated):* `entity-extract` → `entity-graph` → `entity-crossref` for network analysis.
+*Optional Layer 2 (operator-tier):* `entity-extract` → `entity-graph` → `entity-crossref` for network analysis.
 
 ## What you can do with it
 
@@ -64,15 +64,17 @@ For a document:
 Archive this PDF as evidence, then ingest it: ./releases/response.pdf
 ```
 
-`doctor` tells you which workflows are ready right now and, for anything missing, the single next thing to ask your operator to install.
+`doctor` tells you which workflows are ready right now and, for anything missing, the single next thing to ask your operator to install. Under the hood it runs `detect_tier` to map what your machine can do.
+
+The two guides go deeper: operators follow [OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md), journalists follow [JOURNALIST_START.md](docs/JOURNALIST_START.md).
 
 ## Under the hood
 
 Magpie runs in layers, and most journalists never leave the first one.
 
-**Layer 0–1 (laptop-local, the flagship).** Pure local Python: pandas, DuckDB, and `sqlite-utils`, with the cleaned dataset served read-only through a pinned `mcp-sqlite` server so an analysis agent can query it with SQL but never write to it. The heavier pieces (spaCy for the PII sweep, Docling for PDF ingest, Free Law's `x-ray` for redaction checks) are CPU-only and sit at the edges, imported only when that specific workflow runs. No Docker, no infrastructure to manage.
+**Layer 0–1 (laptop-local, the flagship).** Pure local Python: pandas, DuckDB, and `sqlite-utils`, with the cleaned dataset served read-only through a pinned `mcp-sqlite` server so an analysis agent can query it with SQL but never write to it. The heavier pieces (spaCy for the PII sweep, Docling for PDF ingest, Free Law's `x-ray` for redaction checks) are CPU-only and sit at the edges, imported only when that specific workflow runs. No containers, no infrastructure to manage.
 
-**Layer 2 (entity networks, operator-tier, Docker-gated).** The optional network-analysis track: `entity-extract` (GLiNER + GLiREL), `entity-graph` (cross-document resolution into Neo4j, behind a mandatory human review gate), and `entity-crossref` (screening against your own corpus or opt-in sanctions/PEP watchlists via a local yente + OpenSearch stack). This never touches the journalist onramp, which stays Docker-free.
+**Layer 2 (entity networks, operator-tier).** The optional network-analysis track: `entity-extract` (GLiNER + GLiREL), `entity-graph` (cross-document resolution into Neo4j, behind a mandatory human review gate), and `entity-crossref` (screening against your own corpus or opt-in sanctions/PEP watchlists via a local yente + OpenSearch stack). This never touches the journalist onramp, which stays container-free.
 
 The capability map (run `doctor` to see your own):
 
@@ -85,13 +87,13 @@ The capability map (run `doctor` to see your own):
 | Citation verify | pure stdlib (the citation engine) | Layer 0–1 |
 | Evidence timestamp | `rfc3161-client` + a TSA (freeTSA by default) | Layer 0–1 |
 | Extract entities | GLiNER + GLiREL (weights download on first run) | Layer 2 deps |
-| Build entity graph | Docker + Neo4j | Layer 2 |
-| Cross-reference entities | Docker + yente + OpenSearch | Layer 2 |
+| Build entity graph | Neo4j (operator-run) | Layer 2 |
+| Cross-reference entities | yente + OpenSearch (operator-run) | Layer 2 |
 
 Two design rules run through everything. **Leads, not verdicts:** a check that cannot run never certifies the absence of what it checks for, and a missing required column produces a recorded "skipped," never a fake zero. **Local versus published:** raw PII, recovered under-box text, and verifier reasoning live only on local files; the published note carries aggregate counts and non-raw anchors. The full file tree and how the pieces couple together is in [MANIFEST.md](MANIFEST.md).
 
 > [!NOTE]
-> **What you need:** Python 3.12, [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and the Librarian plugin, which Magpie requires as its output layer (install it from the same Fieldwork marketplace). An Obsidian vault is recommended so findings land as linked notes. The optional machine-learning tiers (spaCy, Docling, GLiNER) are opt-in, and Claude installs them for you when you run setup. mise, Node, and Docker are contributor / full-tier only: you do not need them for everyday dataset analysis, ingest, or redaction work.
+> **What you need:** Python 3.12, [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and the Librarian plugin, which Magpie requires as its output layer (install it from the same Fieldwork marketplace). An Obsidian vault is recommended so findings land as linked notes. The optional machine-learning tiers (spaCy, Docling, GLiNER) are opt-in, and Claude installs them for you when you run setup. mise and Node are contributor / full-tier only: you do not need them for everyday dataset analysis, ingest, or redaction work.
 
 > [!IMPORTANT]
 > **Your data & privacy:** Your records stay on your machine, analyzed locally inside your own Claude Code session with nothing uploaded. Two workflows exist specifically to protect people in the records. `pii-sweep` quantifies exactly what PII a release exposed, separating officials (named for accountability) from third parties who should have been redacted. `redact-output` masks uninvolved names to initials and structured PII to typed placeholders before anything is published, keeping the full un-redacted exhibit on a local, non-vault path. `redaction-check` also lets you verify your own PDFs before release. On the data side, the served dataset is read-only, and for any PII-bearing data it is built from a fail-closed allowlist, so raw identifiers are never reachable by SQL.
@@ -105,7 +107,7 @@ mise run bootstrap   # install pinned deps into .venv
 mise run test        # run the full pytest suite
 ```
 
-The suite is offline by default (no API key, no network): the heavy integration tests are marker-gated (`spacy`, `docling`, `xray`, `tsa`, `gliner`, `ftm`, `neo4j`, `compose`, `yente`) and excluded from the default run, with the Track B Docker/Linux paths verified in CI. Dependencies are split across `requirements-dev.txt` (full), `requirements-offline.txt` (the trimmed CI subset), and the Layer 2 edges (`requirements-ftm.txt`, `requirements-graph.txt`, `requirements-crossref.txt`).
+The suite is offline by default (no API key, no network): the heavy integration tests are marker-gated (`spacy`, `docling`, `xray`, `tsa`, `gliner`, `ftm`, `neo4j`, `compose`, `yente`) and excluded from the default run, with the Track B container/Linux paths verified in CI. Dependencies are split across `requirements-dev.txt` (full), `requirements-offline.txt` (the trimmed CI subset), and the Layer 2 edges (`requirements-ftm.txt`, `requirements-graph.txt`, `requirements-crossref.txt`).
 
 > **Windows / PowerShell note.** mise's shell activation relies on a prompt hook that only fires in an interactive shell, so non-interactive one-shot shells will not auto-activate. Use `mise run` / `mise exec --` there, or the always-works fallback `& .venv\Scripts\python.exe -m pytest`. Do not call bare `python`: it resolves to the global interpreter, whose versions may differ from the pinned venv.
 
