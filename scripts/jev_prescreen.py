@@ -12,8 +12,15 @@ calls, never accept or reject a claim.
   with the caller's env). Claims with a local reason (guard, degraded anchor, numeric/date,
   computed cue) are never sent (Decision 3), and only positional keys ``K01...`` leave the
   machine, never claim ids (Decision 4).
+- Spot-checks (spec 2.4): a deterministic ~10% of ``skip`` claims (hash of claim id + run
+  seed, at least one whenever any claim skips) get ``spot_check: true`` and also go to the
+  extraction-verifier. ``log_spotcheck_disagreements`` appends every non-``supported`` (or
+  missing) spot-check verdict to ``data/jev_spotcheck.jsonl`` (IO, no claim text).
 - CLI: ``python scripts/jev_prescreen.py <claims.json> [--seed S]`` prints the output JSON;
   unreadable or invalid input exits 2 with no network call.
+  ``python scripts/jev_prescreen.py --spotcheck <output.json> --verdicts <verdicts.json>``
+  appends the disagreement log (``MAGPIE_JEV_SPOTCHECK_LOG`` overrides its path) and prints
+  the run summary line; bad files exit 2.
 
 Gate rules (Decision 9):
 
@@ -33,9 +40,11 @@ import argparse
 import functools
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -192,6 +201,18 @@ ROUTE_VERIFY = "verify"
 # Exit code for unreadable or invalid CLI input (argparse uses the same code for usage errors).
 EXIT_BAD_INPUT = 2
 
+# Spec 2.4: a deterministic ~10% of skip claims also go to the extraction-verifier.
+SPOT_CHECK_RATE = 0.10
+# Decision 6: whenever any claim skips, at least this many skip claims are spot-checked.
+MIN_SPOT_CHECKS = 1
+# Untracked local disagreement log (spec 2.4); main() honors MAGPIE_JEV_SPOTCHECK_LOG.
+SPOTCHECK_LOG = jev_state.DATA_DIR / "jev_spotcheck.jsonl"
+SPOTCHECK_LOG_ENV = "MAGPIE_JEV_SPOTCHECK_LOG"
+# The only extraction-verifier result that agrees with a skip; anything else is logged.
+VERDICT_SUPPORTED = "supported"
+# Logged verdict for a spot-checked claim with no verifier verdict (Decision 6).
+VERDICT_MISSING = "missing"
+
 _CLAIM_FIELDS = ("claim_id", "claim_text", "verbatim_quote", "span", "clean_citation")
 _USAGE_KEYS = ("input_tokens", "output_tokens", "cost")
 
@@ -267,6 +288,23 @@ def default_seed(claims: list[ClaimInput]) -> str:
     """Content-derived run seed: first 16 hex of sha256 over the sorted (id, text) pairs."""
     pairs = sorted([c.claim_id, c.claim_text] for c in claims)
     return hashlib.sha256(json.dumps(pairs).encode("utf-8")).hexdigest()[:16]
+
+
+def spot_hash(claim_id: str, seed: str) -> float:
+    """Deterministic value in [0, 1] for ``claim_id`` under ``seed``."""
+    digest = hashlib.sha256(f"{seed}:{claim_id}".encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) / 0xFFFFFFFF
+
+
+def select_spot_checks(skip_ids: list[str], seed: str,
+                       rate: float = SPOT_CHECK_RATE) -> set[str]:
+    """Skip ids with ``spot_hash < rate``; if none and ``skip_ids`` is non-empty, the single id
+    with the smallest hash (``MIN_SPOT_CHECKS``)."""
+    selected = {cid for cid in skip_ids if spot_hash(cid, seed) < rate}
+    if len(selected) < MIN_SPOT_CHECKS and skip_ids:
+        ranked = sorted(skip_ids, key=lambda cid: (spot_hash(cid, seed), cid))
+        selected.update(ranked[:MIN_SPOT_CHECKS])
+    return selected
 
 
 def local_reason(claim: ClaimInput) -> str | None:
@@ -367,29 +405,130 @@ def prescreen(claims: list[ClaimInput], *, env: Mapping | None = None,
             for entry in entries.values():
                 entry["route"], entry["reason"] = ROUTE_VERIFY, REASON_MODEL_CHANGED
 
+    # Spot-checks (spec 2.4): only claims that still skip after the model gate.
+    skip_ids = [c.claim_id for c in claims if entries[c.claim_id]["route"] == ROUTE_SKIP]
+    for claim_id in select_spot_checks(skip_ids, run_seed):
+        entries[claim_id]["spot_check"] = True
+
     out["claims"] = entries
     out["summary"] = _summary(entries)
     return out
 
 
+# --- spot-check verdicts, disagreement log, run summary (spec 2.4, 2.5) ------------------
+
+def normalize_verdicts(raw: object) -> dict[str, str]:
+    """``{claim_id: result}`` from ``{id: "supported"}`` or ``{id: {"result": ..., ...}}``
+    (the extraction-verifier output). Raises ValueError on any other shape."""
+    if not isinstance(raw, dict):
+        raise ValueError("verdicts must be a JSON object keyed by claim_id")
+    verdicts: dict[str, str] = {}
+    for claim_id, value in raw.items():
+        result = value.get("result") if isinstance(value, dict) else value
+        if not isinstance(result, str):
+            raise ValueError(f"verdict for {claim_id!r} must be a string or have a string result")
+        verdicts[str(claim_id)] = result
+    return verdicts
+
+
+def log_spotcheck_disagreements(output: dict, verdicts: dict[str, str], *,
+                                log_path: Path = SPOTCHECK_LOG,
+                                now: datetime | None = None) -> list[dict]:
+    """Append one JSON line per spot-checked claim whose verdict is not ``supported`` (a
+    missing verdict is logged as ``"missing"``); returns the lines. Verdicts for claims that
+    were not spot-checked are ignored. No claim text is ever written."""
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    lines: list[dict] = []
+    for claim_id, entry in output["claims"].items():
+        if not entry.get("spot_check"):
+            continue
+        verdict = verdicts.get(claim_id, VERDICT_MISSING)
+        if verdict == VERDICT_SUPPORTED:
+            continue
+        lines.append({"ts": ts, "claim_id": claim_id, "presence": entry.get("presence"),
+                      "entailment": entry.get("entailment"), "model": output.get("model"),
+                      "verdict": verdict, "seed": output.get("seed")})
+    if lines:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8", newline="\n") as fh:
+            for line in lines:
+                fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+    return lines
+
+
+def run_summary(output: dict, disagreements: int) -> str:
+    """The ASCII run summary line (spec 2.5, Decision 1: `` | `` separators)."""
+    entries = list(output["claims"].values())
+    skipped = sum(1 for e in entries if e["route"] == ROUTE_SKIP)
+    verify = sum(1 for e in entries if e["route"] == ROUTE_VERIFY)
+    spot = sum(1 for e in entries if e.get("spot_check"))
+    return (f"{len(entries)} claims pre-screened | {skipped} skipped | "
+            f"{verify + spot} sent to extraction-verifier | {spot} spot-checked | "
+            f"{disagreements} disagreements")
+
+
 # --- CLI ---------------------------------------------------------------------------------
 
-def _load_claims(path: str) -> list[ClaimInput]:
+def _load_json(path: str, what: str) -> object:
     try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError) as e:
-        raise ValueError(f"cannot read claims file: {type(e).__name__}") from None
-    return parse_claims(raw)
+        raise ValueError(f"cannot read {what} file: {type(e).__name__}") from None
+
+
+def _load_claims(path: str) -> list[ClaimInput]:
+    return parse_claims(_load_json(path, "claims"))
+
+
+def _load_output(path: str) -> dict:
+    """A pre-screen output: an object whose ``claims`` maps ids to entries with a route."""
+    raw = _load_json(path, "pre-screen output")
+    claims = raw.get("claims") if isinstance(raw, dict) else None
+    if not isinstance(claims, dict) or not all(
+            isinstance(e, dict) and e.get("route") in (ROUTE_SKIP, ROUTE_VERIFY)
+            for e in claims.values()):
+        raise ValueError("pre-screen output must be an object with a claims map of routed entries")
+    return raw
+
+
+def _spotcheck_main(output_path: str, verdicts_path: str) -> int:
+    try:
+        output = _load_output(output_path)
+        verdicts = normalize_verdicts(_load_json(verdicts_path, "verdicts"))
+    except ValueError as e:
+        print(f"jev_prescreen: {e}", file=sys.stderr)
+        return EXIT_BAD_INPUT
+    log_path = Path(os.environ[SPOTCHECK_LOG_ENV]) if os.environ.get(SPOTCHECK_LOG_ENV) \
+        else SPOTCHECK_LOG
+    lines = log_spotcheck_disagreements(output, verdicts, log_path=log_path)
+    print(run_summary(output, len(lines)))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jev_prescreen.py",
-        description="Jev citation pre-screen (Part A): route claims to skip or verify.")
-    parser.add_argument("claims", help="JSON list of {claim_id, claim_text, verbatim_quote, "
-                                       "span, clean_citation}")
+        description="Jev citation pre-screen (Part A): route claims to skip or verify, or "
+                    "(--spotcheck) log spot-check disagreements and print the run summary.")
+    parser.add_argument("claims", nargs="?", default=None,
+                        help="JSON list of {claim_id, claim_text, verbatim_quote, span, "
+                             "clean_citation}")
     parser.add_argument("--seed", default=None, help="spot-check seed (default: content hash)")
+    parser.add_argument("--spotcheck", metavar="OUTPUT_JSON", default=None,
+                        help="a pre-screen output JSON; requires --verdicts")
+    parser.add_argument("--verdicts", metavar="VERDICTS_JSON", default=None,
+                        help="extraction-verifier verdicts keyed by claim_id")
     args = parser.parse_args(argv)
+    if args.spotcheck is not None:
+        if args.claims is not None or args.seed is not None:
+            parser.error("--spotcheck does not take a claims file or --seed")
+        if args.verdicts is None:
+            parser.error("--spotcheck requires --verdicts")
+        return _spotcheck_main(args.spotcheck, args.verdicts)
+    if args.verdicts is not None:
+        parser.error("--verdicts is only valid with --spotcheck")
+    if args.claims is None:
+        parser.error("a claims file (or --spotcheck) is required")
     try:
         claims = _load_claims(args.claims)
     except ValueError as e:

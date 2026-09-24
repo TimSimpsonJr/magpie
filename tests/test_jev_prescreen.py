@@ -134,8 +134,9 @@ def test_supported_claim_skips(approved):
     assert out["enabled"] is True
     assert out["model"] == "m1"
     assert out["approved_model"] == "m1"
+    # The sole skip claim is spot-checked by the MIN_SPOT_CHECKS floor (Task 7).
     assert out["claims"]["a"] == {"presence": 0.95, "entailment": 0.95, "route": "skip",
-                                  "reason": None, "spot_check": False}
+                                  "reason": None, "spot_check": True}
     assert fake.count == 1
 
 
@@ -366,7 +367,10 @@ def test_output_shape(approved):
 def test_summary_counts_and_default_seed(approved):
     fake = FakeTransport(noul_responder(lambda q: 0.95))
     out = run([mk("a"), mk("b"), mk("d", clean_citation=False)], fake, approved)
-    assert out["summary"] == {"prescreened": 3, "skipped": 2, "verify": 1, "spot_checked": 0}
+    spotted = sum(1 for c in out["claims"].values() if c["spot_check"])
+    assert spotted == len(jp.select_spot_checks(["a", "b"], out["seed"])) >= 1
+    assert out["summary"] == {"prescreened": 3, "skipped": 2, "verify": 1,
+                              "spot_checked": spotted}
     assert isinstance(out["seed"], str) and out["seed"]
     again = run([mk("a"), mk("b"), mk("d", clean_citation=False)], fake, approved)
     assert again["seed"] == out["seed"]
