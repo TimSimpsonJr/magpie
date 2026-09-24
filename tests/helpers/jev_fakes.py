@@ -53,7 +53,7 @@ def choice_responder(label_for: Callable[[str], str], model: str = "m1"):
         answers = {}
         for qid, q in body["questions"].items():
             label = label_for(qid)
-            options = list((q.get("options") or {}).keys())
+            options = list((q.get("criteria") or {}).keys())
             probs = {opt: (1.0 if opt == label else 0.0) for opt in options}
             answers[qid] = {"type": "choice", "choice": label,
                             "probabilities": probs, "confidence": 1.0}
