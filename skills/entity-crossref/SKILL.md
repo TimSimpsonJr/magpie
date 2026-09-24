@@ -68,6 +68,8 @@ IMPORTANT NOTE: any `docker compose` invocation interpolates the WHOLE compose f
 
 ## The flow
 
+Optional pre-screen: when Jev is on, scripts/jev_ask.py can ask a "same entity?" question over candidate pairs before cross-ref, so only likely matches go forward; see ../dataset-analyze/references/jev-guide.md (off by default; its answers are leads, never verdicts).
+
 1. RESOLVE -> you already have the resolved snapshot from entity-graph (13a).
 2. EMIT + INDEX -> the precondition above (write the dataset, render the manifest, bring up the stack, run `yente reindex`).
 3. CROSS-REFERENCE:

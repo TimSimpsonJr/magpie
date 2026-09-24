@@ -119,6 +119,10 @@ checks for it).
 - **`references/prior-art.md`** — the Phase 3 research gate: verified DuckDB /
   sqlite-utils / openpyxl / `mcp-sqlite` APIs, the read-only + row-cap analysis,
   and the `.mcp.json` interpolation rules.
+- **`references/jev-guide.md`** - the optional, off-by-default Jev tool
+  (`scripts/jev_ask.py`): batched yes/no, choice and score questions over records
+  for triage, labeling and review flags. Covers when to use it, writing questions,
+  reading answers, what is sent, and provenance.
 - **`canned_queries.yml`** — the `mcp-sqlite` metadata (Datasette-compatible):
   served table/column descriptions and the row-capped `ds_` canned queries.
 - **`../../.mcp.json`** — the bundled `magpie-dataset` server config (plugin root).
