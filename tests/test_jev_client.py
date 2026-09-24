@@ -6,6 +6,7 @@ import json
 import socket
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -108,6 +109,20 @@ def test_missing_key_when_api_key_blank():
     assert t.count == 0
 
 
+@pytest.mark.parametrize("env", [{"MAGPIE_JEV": "1"}, {"MAGPIE_JEV": "1", "OPENROUTER_API_KEY": "  "}])
+def test_disabled_when_env_key_missing_even_with_explicit_api_key(env):
+    # Spec 1.1 / plan Decision 14: jev_status(env) off means no send, whatever api_key says.
+    t = FakeTransport(noul_responder(lambda q: 0.5))
+    assert _reason(t, env=env, api_key="explicit") == "disabled"
+    assert t.count == 0
+
+
+def test_key_whitespace_is_stripped_in_header():
+    t = FakeTransport(noul_responder(lambda q: 0.5))
+    ask(STATE, NOUL_Q, env={"MAGPIE_JEV": "1", "OPENROUTER_API_KEY": " k\n"}, transport=t)
+    assert t.calls[0]["headers"]["Authorization"] == "Bearer k"
+
+
 def test_env_defaults_to_os_environ(monkeypatch):
     monkeypatch.delenv("MAGPIE_JEV", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
@@ -179,6 +194,29 @@ def test_transport_timeout_and_network():
     assert _reason(t) == "timeout"
     t = FakeTransport(sequence_responder([OSError("unreachable")]))
     assert _reason(t) == "network"
+
+
+def test_402_json_is_http_402():
+    body = _json({"error": {"message": "insufficient credits"}})
+    assert _reason(FakeTransport(status_responder(402, body))) == "http_402"
+
+
+def test_urlerror_wrapped_timeout_is_timeout():
+    # The default urllib transport surfaces socket timeouts as URLError(reason=timeout).
+    t = FakeTransport(sequence_responder([urllib.error.URLError(socket.timeout("timed out"))]))
+    assert _reason(t) == "timeout"
+
+
+@pytest.mark.parametrize("exc", [socket.timeout("slow sk-or-v1-SECRETVALUE123"),
+                                 OSError("unreachable sk-or-v1-SECRETVALUE123")])
+def test_timeout_and_network_details_carry_no_key(exc):
+    secret = "sk-or-v1-SECRETVALUE123"
+    env = {"MAGPIE_JEV": "1", "OPENROUTER_API_KEY": secret}
+    with pytest.raises(JevUnavailable) as ei:
+        ask(STATE, NOUL_Q, env=env, transport=FakeTransport(sequence_responder([exc])),
+            sleep=lambda s: None)
+    assert secret not in str(ei.value)
+    assert secret not in (ei.value.detail or "")
 
 
 def test_200_not_json_is_malformed_json():

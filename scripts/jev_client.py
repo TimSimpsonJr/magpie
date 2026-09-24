@@ -242,11 +242,13 @@ def ask(state: dict, questions: dict, *, env: Mapping[str, str] | None = None,
         sleep: Callable[[float], None] = time.sleep, timeout: float = TIMEOUT_S) -> JevResult:
     """POST one Jev request and return validated answers, or raise JevUnavailable."""
     env = os.environ if env is None else env
-    enabled, off_reason = jev_status(env)
-    if not enabled and off_reason == REASON_OFF_FLAG:
+    # Opt-in gate first (spec 1.1, plan Decision 14): either setting missing -> no send,
+    # even when an explicit api_key is passed.
+    enabled, _ = jev_status(env)
+    if not enabled:
         raise JevUnavailable("disabled")
-    key = api_key if api_key is not None else env.get(API_KEY_ENV)
-    if not key or not key.strip():
+    key = (api_key if api_key is not None else env.get(API_KEY_ENV) or "").strip()
+    if not key:
         raise JevUnavailable("missing_key")
 
     transport = transport or _urllib_transport
