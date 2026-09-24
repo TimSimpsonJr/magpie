@@ -108,13 +108,22 @@ Request (Part A example; Part B uses `"records"` / `R0001` / `q_R0001`):
                   "false": "The span for K01 is silent on the claim, contradicts it, or supports only a weaker or different claim."}}}}
 ```
 
+Every question type carries its answer set in `criteria` (Decision 16): noul `{"true": str, "false": str}`, choice `{label: description, ...}` (2-255 entries), score `[level description, ...]` (2-10 entries, answered on a 0-based scale). Part B examples:
+
+```json
+{"q_R0002": {"type": "choice", "instructions": "Answer only about record R0002. ...",
+             "criteria": {"budget": "About money", "other": "Anything else"}},
+ "q_R0003": {"type": "score", "instructions": "Answer only about record R0003. ...",
+             "criteria": ["not relevant", "somewhat relevant", "highly relevant"]}}
+```
+
 Response (validated shapes):
 
 ```json
 {"model": "typesafe/jev-1.13-20260917",
  "answers": {"presence_K01": {"type": "noul", "noul": 0.94},
              "q_R0002": {"type": "choice", "choice": "budget", "probabilities": {"budget": 0.8, "other": 0.2}, "confidence": 0.8},
-             "q_R0003": {"type": "score", "score": 2.4, "legend": {}, "probabilities": {}, "confidence": 0.7}},
+             "q_R0003": {"type": "score", "score": 1.72, "legend": {"0": "not relevant", "1": "somewhat relevant", "2": "highly relevant"}, "probabilities": {"0": 0.0, "1": 0.28, "2": 0.72}, "confidence": 0.58}},
  "usage": {"input_tokens": 812, "output_tokens": 4, "cost": 0.0003}}
 ```
 
@@ -833,3 +842,4 @@ README is reader-facing: invoke `copydesk:write` before drafting the prose (user
 13. **Part B exit codes.** 0 ok (even with skips), 2 usage/input error, 3 Jev off.
 14. **Client-side opt-in check.** `jev_client.ask()` itself refuses with `disabled` when `jev_status` is off, so no caller can send while opted out (defense in depth on top of the Part A/B checks).
 15. **Model gate needs a model.** `model_changed` overrides reasons only when at least one window returned a model; a batch where nothing was answered keeps each claim's real failure reason.
+16. **Answer-set key is `criteria` for every type (verified live 2026-09-24).** The plan originally sent choice options as `options` and score levels as `levels`; Jev rejected every such request (Part B returned `jev_error` for 20/20 records). The systemone schema takes the answer set in `criteria` for all three types: noul an object `{"true", "false"}`, choice an object label -> description, score a list of level descriptions. Verified with one synthetic request per type against `typesafe/jev-1.13-20260917`: score answers use a 0-based scale, and `legend`/`probabilities` are keyed by the level index as a string (`"0"`, `"1"`, ...). `jev_ask`'s `--options` / `--levels` flags and the meta keys are unchanged; only the wire format moved.
