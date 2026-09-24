@@ -1,0 +1,182 @@
+[
+  {
+    "claim_id": "eval-01",
+    "category": "supported",
+    "expect": "supported",
+    "claim_text": "The Harlow County Sheriff's Office installed 14 license plate reader cameras along Route 9.",
+    "verbatim_quote": "installed 14 license plate reader cameras along Route 9",
+    "span": "In March 2026 the Harlow County Sheriff's Office installed 14 license plate reader cameras along Route 9, according to the purchase records.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-02",
+    "category": "supported",
+    "expect": "supported",
+    "claim_text": "On March 3, 2026, the Harlow city council approved a contract with Northgate Systems for $48,000.",
+    "verbatim_quote": "the Harlow city council approved a contract with Northgate Systems for $48,000",
+    "span": "On March 3, 2026, the Harlow city council approved a contract with Northgate Systems for $48,000. The vote was unanimous.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-03",
+    "category": "supported",
+    "expect": "supported",
+    "claim_text": "Chief Dana Whitfield signed the camera data retention policy.",
+    "verbatim_quote": "Chief Dana Whitfield signed the camera data retention policy",
+    "span": "Chief Dana Whitfield signed the camera data retention policy, which keeps images for 30 days before they are deleted.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-04",
+    "category": "supported",
+    "expect": "supported",
+    "claim_text": "The internal audit found 212 searches that were run without a case number recorded.",
+    "verbatim_quote": "212 searches were run without a case number recorded",
+    "span": "The internal audit found that 212 searches were run without a case number recorded in the search log.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-05",
+    "category": "supported",
+    "expect": "supported",
+    "claim_text": "The Riverbend Police Department shared its camera data with 6 outside agencies.",
+    "verbatim_quote": "the Riverbend Police Department shared its camera data with 6 outside agencies",
+    "span": "Sharing agreements show the Riverbend Police Department shared its camera data with 6 outside agencies during the pilot.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-06",
+    "category": "paraphrased_supported",
+    "expect": "supported",
+    "claim_text": "The county IT director gave Northgate Systems access to the dispatch database on June 12, 2026.",
+    "verbatim_quote": "Northgate Systems, was given access to the dispatch database by the county IT director on June 12, 2026",
+    "span": "The vendor, Northgate Systems, was given access to the dispatch database by the county IT director on June 12, 2026.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-07",
+    "category": "paraphrased_supported",
+    "expect": "supported",
+    "claim_text": "The drone program started before any written policy on drone flights existed.",
+    "verbatim_quote": "No written policy governing drone flights existed before the program started",
+    "span": "No written policy governing drone flights existed before the program started, the city attorney wrote in her memo.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-08",
+    "category": "paraphrased_supported",
+    "expect": "supported",
+    "claim_text": "Mayor Ellen Park said she was not briefed on the camera expansion.",
+    "verbatim_quote": "she had not been briefed about the camera expansion",
+    "span": "Mayor Ellen Park told reporters that she had not been briefed about the camera expansion before it was announced.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-09",
+    "category": "wrong_number",
+    "expect": "unsupported",
+    "claim_text": "The Harlow County Sheriff's Office installed 41 license plate reader cameras along Route 9.",
+    "verbatim_quote": "installed 14 license plate reader cameras along Route 9",
+    "span": "In March 2026 the Harlow County Sheriff's Office installed 14 license plate reader cameras along Route 9, according to the purchase records.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-10",
+    "category": "wrong_number",
+    "expect": "unsupported",
+    "claim_text": "The Harlow city council approved a contract with Northgate Systems for $84,000.",
+    "verbatim_quote": "the Harlow city council approved a contract with Northgate Systems for $48,000",
+    "span": "On March 3, 2026, the Harlow city council approved a contract with Northgate Systems for $48,000. The vote was unanimous.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-11",
+    "category": "wrong_number",
+    "expect": "unsupported",
+    "claim_text": "The internal audit found 312 searches that were run without a case number recorded.",
+    "verbatim_quote": "212 searches were run without a case number recorded",
+    "span": "The internal audit found that 212 searches were run without a case number recorded in the search log.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-12",
+    "category": "wrong_date",
+    "expect": "unsupported",
+    "claim_text": "On March 13, 2026, the Harlow city council approved a contract with Northgate Systems.",
+    "verbatim_quote": "the Harlow city council approved a contract with Northgate Systems",
+    "span": "On March 3, 2026, the Harlow city council approved a contract with Northgate Systems for $48,000. The vote was unanimous.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-13",
+    "category": "wrong_date",
+    "expect": "unsupported",
+    "claim_text": "Northgate Systems was given access to the dispatch database in July 2026.",
+    "verbatim_quote": "Northgate Systems, was given access to the dispatch database by the county IT director on June 12, 2026",
+    "span": "The vendor, Northgate Systems, was given access to the dispatch database by the county IT director on June 12, 2026.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-14",
+    "category": "wrong_entity",
+    "expect": "unsupported",
+    "claim_text": "The Riverbend Police Department installed 14 license plate reader cameras along Route 9.",
+    "verbatim_quote": "installed 14 license plate reader cameras along Route 9",
+    "span": "In March 2026 the Harlow County Sheriff's Office installed 14 license plate reader cameras along Route 9, according to the purchase records.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-15",
+    "category": "wrong_entity",
+    "expect": "unsupported",
+    "claim_text": "The Harlow County Sheriff's Office shared its camera data with 6 outside agencies.",
+    "verbatim_quote": "the Riverbend Police Department shared its camera data with 6 outside agencies",
+    "span": "Sharing agreements show the Riverbend Police Department shared its camera data with 6 outside agencies during the pilot.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-16",
+    "category": "wrong_entity",
+    "expect": "unsupported",
+    "claim_text": "Deputy Chief Marcus Lane signed the camera data retention policy.",
+    "verbatim_quote": "Chief Dana Whitfield signed the camera data retention policy",
+    "span": "Chief Dana Whitfield signed the camera data retention policy, which keeps images for 30 days before they are deleted.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-17",
+    "category": "span_silent",
+    "expect": "unsupported",
+    "claim_text": "On March 3, 2026, the council voted to add 5 cameras to the downtown surveillance program.",
+    "verbatim_quote": "On March 3, 2026, the council met to discuss road repairs",
+    "span": "On March 3, 2026, the council met to discuss road repairs, and 5 members attended the session.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-18",
+    "category": "span_silent",
+    "expect": "unsupported",
+    "claim_text": "Officers completed 40 hours of training on facial recognition software.",
+    "verbatim_quote": "Officers completed 40 hours of training",
+    "span": "Officers completed 40 hours of training on the new records management system in the spring.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-19",
+    "category": "contradicted",
+    "expect": "unsupported",
+    "claim_text": "The sheriff's office renewed its contract with Northgate Systems.",
+    "verbatim_quote": "did not renew its contract with Northgate Systems",
+    "span": "After the audit, the sheriff's office did not renew its contract with Northgate Systems and removed the vendor's access.",
+    "clean_citation": true
+  },
+  {
+    "claim_id": "eval-20",
+    "category": "contradicted",
+    "expect": "unsupported",
+    "claim_text": "Camera footage is kept indefinitely.",
+    "verbatim_quote": "Camera footage is deleted after 30 days",
+    "span": "Camera footage is deleted after 30 days unless it is tied to an open investigation.",
+    "clean_citation": true
+  }
+]

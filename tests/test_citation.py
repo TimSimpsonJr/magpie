@@ -57,6 +57,25 @@ def test_public_anchor_is_exactly_the_approved_minimal_surface():
     }
 
 
+def test_prescreen_block_is_local_only_and_round_trips():
+    import json
+    # default: absent pre-screen is None, still JSON round-trips
+    rec = _record()
+    assert rec.to_dict()["prescreen"] is None
+    assert CitationRecord(**json.loads(json.dumps(rec.to_dict()))) == rec
+    # with a Jev pre-screen block (jev_prescreen.PRESCREEN_KEYS): kept in the local
+    # record, never on the published surface (public_anchor stays exactly 10 keys)
+    block = {"presence": 0.94, "entailment": 0.91, "route": "skip", "reason": None,
+             "model": "m1", "spot_check": False}
+    rec = _record(prescreen=block, verifier_result="prescreen-skip")
+    d = rec.to_dict()
+    assert d["prescreen"] == block
+    assert CitationRecord(**json.loads(json.dumps(d))) == rec
+    pub = rec.public_anchor()
+    assert "prescreen" not in pub and len(pub) == 10
+    assert pub["verifier_result"] == "prescreen-skip"
+
+
 # --------------------------------------------------------------------------- #
 # Task 2: build_anchor + the v1 quote contract (design 2.4).
 # --------------------------------------------------------------------------- #

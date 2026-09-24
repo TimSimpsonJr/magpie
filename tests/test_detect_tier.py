@@ -438,6 +438,94 @@ def test_cli_json(capsys):
     assert "capabilities" in payload
 
 
+_CANARY_KEY = "sk-or-canary-123"
+_ON_ENV = {"MAGPIE_JEV": "1", "OPENROUTER_API_KEY": _CANARY_KEY}
+
+
+_NO_APPROVED_LINE = "jev: on (no approved model; pre-screen skips nothing until the live eval passes)"
+_MODEL_ID = "typesafe/jev-2026-09-01"
+
+
+def _state(tmp_path, content):
+    """A jev_state.json under tmp_path; None leaves the file absent."""
+    path = tmp_path / "jev_state.json"
+    if content is not None:
+        path.write_text(content if isinstance(content, str) else json.dumps(content),
+                        encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("env, expected", [
+    ({}, "jev: off (MAGPIE_JEV not set)"),
+    ({"MAGPIE_JEV": "1"}, "jev: off (no OPENROUTER_API_KEY)"),
+    (_ON_ENV, _NO_APPROVED_LINE),
+])
+def test_jev_line_without_state_file(tmp_path, env, expected):
+    assert dt.jev_line(env, state_path=_state(tmp_path, None)) == expected
+
+
+def test_jev_line_on_with_approved_model(tmp_path):
+    path = _state(tmp_path, {"approved_model": _MODEL_ID, "approved_at": "x", "eval": {}})
+    assert dt.jev_line(_ON_ENV, state_path=path) == f"jev: on (approved model {_MODEL_ID})"
+
+
+@pytest.mark.parametrize("content", ["not json", "[]", {"approved_model": "  "}, {"other": 1}])
+def test_jev_line_on_with_unusable_state_reads_as_no_approved_model(tmp_path, content):
+    assert dt.jev_line(_ON_ENV, state_path=_state(tmp_path, content)) == _NO_APPROVED_LINE
+
+
+@pytest.mark.parametrize("env, expected", [
+    ({}, "jev: off (MAGPIE_JEV not set)"),
+    ({"MAGPIE_JEV": "1"}, "jev: off (no OPENROUTER_API_KEY)"),
+])
+def test_jev_line_off_ignores_an_approved_model(tmp_path, env, expected):
+    path = _state(tmp_path, {"approved_model": _MODEL_ID})
+    assert dt.jev_line(env, state_path=path) == expected
+
+
+def test_jev_line_defaults_to_the_repo_state_file(monkeypatch, tmp_path):
+    from scripts import jev_state
+    path = _state(tmp_path, {"approved_model": _MODEL_ID})
+    monkeypatch.setattr(jev_state, "STATE_PATH", path)
+    assert dt.jev_line(_ON_ENV) == f"jev: on (approved model {_MODEL_ID})"
+
+
+def test_detect_reports_jev_block_without_the_key(tmp_path):
+    report = dt.detect(env=_ON_ENV, jev_state_path=_state(tmp_path, None))
+    assert report["jev"] == {"enabled": True, "reason": None, "approved_model": None,
+                             "line": _NO_APPROVED_LINE}
+    text = dt.render_text(report)
+    dumped = json.dumps(report)
+    assert _NO_APPROVED_LINE in text and "jev: on" in dumped
+    assert _CANARY_KEY not in text and _CANARY_KEY not in dumped
+
+
+def test_detect_reports_approved_model(tmp_path):
+    report = dt.detect(env=_ON_ENV,
+                       jev_state_path=_state(tmp_path, {"approved_model": _MODEL_ID}))
+    assert report["jev"]["approved_model"] == _MODEL_ID
+    assert dt.render_text(report).endswith(f"\n\njev: on (approved model {_MODEL_ID})")
+
+
+def test_detect_reports_jev_off_reason(tmp_path):
+    report = dt.detect(env={"MAGPIE_JEV": "1"},
+                       jev_state_path=_state(tmp_path, {"approved_model": _MODEL_ID}))
+    assert report["jev"] == {"enabled": False, "reason": "no OPENROUTER_API_KEY",
+                             "approved_model": None,
+                             "line": "jev: off (no OPENROUTER_API_KEY)"}
+    assert dt.render_text(report).endswith("\n\njev: off (no OPENROUTER_API_KEY)")
+
+
+def test_cli_subprocess_reports_jev_off_when_flag_unset():
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "MAGPIE_JEV"}
+    root = Path(__file__).resolve().parent.parent
+    p = subprocess.run([sys.executable, str(root / "scripts" / "detect_tier.py")],
+                       cwd=str(root), env=env, capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "jev: off (MAGPIE_JEV not set)" in p.stdout
+
+
 def test_import_is_cheap():
     """Importing the module must not pull in heavy stacks (subprocess-isolated)."""
     code = ("import importlib, sys; importlib.import_module('scripts.detect_tier'); "

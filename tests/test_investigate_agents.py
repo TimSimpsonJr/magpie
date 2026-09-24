@@ -40,6 +40,16 @@ def test_extraction_verifier_frontmatter_and_body():
     assert "local" in low and "never published" in low
 
 
+def test_extraction_verifier_documents_jev_spot_check_role():
+    # The verifier may be dispatched as a spot-check of a Jev pre-screened claim,
+    # and it never receives the Jev scores (its input stays equally blinded).
+    _, body = _frontmatter("agents/extraction-verifier.md")
+    low = " ".join(body.lower().split())
+    assert "pre-screen" in low
+    assert "spot-check" in low
+    assert "never receive" in low
+
+
 def test_citation_checker_frontmatter_and_body():
     fm, body = _frontmatter("agents/citation-checker.md")
     assert fm["name"] == "citation-checker"

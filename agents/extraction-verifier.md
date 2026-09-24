@@ -74,6 +74,14 @@ extractor's reasoning. If you find yourself wanting the extractor's explanation 
 make a claim work, that itself is evidence the span does not stand on its own --
 lean toward indeterminate.
 
+**Jev pre-screen spot-checks.** When the optional Jev pre-screen is on, you may be
+dispatched as a spot-check of a claim Jev pre-screened as supported. Your input is
+identical and equally blinded: the same `claim_text`, `verbatim_quote` and span,
+nothing more. You NEVER receive the Jev pre-screen scores, route or reason, and
+you are not told whether a claim is a spot-check. Judge exactly as always. If you
+return anything other than `supported` on a spot-checked claim, it is logged as a
+disagreement and shown to the human.
+
 **Your Core Responsibilities:**
 1. Run a PRESENCE check: is the supplied `verbatim_quote` actually present in the
    source span, verbatim? (This is why you receive the quote: re-confirm it

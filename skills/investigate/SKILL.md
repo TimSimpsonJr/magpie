@@ -58,9 +58,10 @@ multi-prov block, or not word-boundary-aligned.
 
 ## 2. Verify independently (two blinded agents, neither auto-accepts)
 
-Dispatch both agents per claim. Both are blinded to the extractor's
-chain-of-thought (its reasoning/justification) -- NOT to the quote. Each agent
-receives a DIFFERENT, purpose-built input:
+Dispatch both agents per claim (the optional Jev pre-screen below can remove
+only the extraction-verifier call for a claim it routes to skip). Both are
+blinded to the extractor's chain-of-thought (its reasoning/justification) -- NOT
+to the quote. Each agent receives a DIFFERENT, purpose-built input:
 
 - citation-checker (MECHANICAL): receives each claim's CitationRecord (the
   anchor) plus the DoclingDocument JSON, and drives scripts/citation.py
@@ -80,6 +81,33 @@ fresh context, so its errors are correlated with the extractor's. It is an
 advisory adversarial re-check, NOT an independent verifier. It never gates on its
 own.
 
+### Jev pre-screen (optional, off by default)
+
+If Jev is on (MAGPIE_JEV=1 and OPENROUTER_API_KEY set; doctor shows "jev: on"),
+run the pre-screen on the whole batch after anchoring, before dispatching agents:
+
+1. Build each claim's input with scripts/jev_prescreen.py claim_input_from_record
+   (it runs resolve_anchor + is_clean_citation and uses the resolved block .text as
+   the span), write the list to a local JSON file, and run
+   `python scripts/jev_prescreen.py <claims.json> > <prescreen.json>`.
+2. Dispatch citation-checker for EVERY claim, whatever the pre-screen says.
+3. Dispatch extraction-verifier for every claim whose route is "verify" OR whose
+   spot_check is true. Only a claim with route "skip" and spot_check false goes
+   without it.
+4. When the spot-check verifiers return, run
+   `python scripts/jev_prescreen.py --spotcheck <prescreen.json> --verdicts <verdicts.json>`.
+   It logs every disagreement (verifier result not "supported") to
+   data/jev_spotcheck.jsonl and prints the run summary line; show that line to the
+   human with the batch.
+5. Store prescreen_record(...) on each CitationRecord.prescreen. A skipped claim with
+   no verifier run gets verifier_result "prescreen-skip" and verifier_confidence null.
+
+The pre-screen can only remove extraction-verifier calls. It never accepts, rejects
+or edits a claim, and never replaces the citation-checker or the human gate. When Jev
+is off, the model has changed, or anything fails, every claim routes to "verify" and
+this gate runs exactly as it does without Jev. Guidance:
+../dataset-analyze/references/jev-guide.md.
+
 ## 3. Mandatory solo human gate -- evidence BEFORE claim
 
 Show every claim to a human on a card that presents, in this order:
@@ -88,11 +116,17 @@ Show every claim to a human on a card that presents, in this order:
    context. Evidence is shown before the claim to counter automation bias (a
    documented rubber-stamp rate around 51 percent).
 2. THEN the AI claim_text.
-3. THEN the advisory verifier verdict plus the mechanical checker level.
+3. THEN the advisory verifier verdict plus the mechanical checker level. For a
+   claim the Jev pre-screen skipped, the card shows the gate_label text instead
+   of a verifier verdict, for example "Jev pre-screen: supported -- not
+   independently verified (presence 0.94, entailment 0.91)". Never label such a
+   claim "verified". A spot-checked claim shows both that label and the verifier
+   verdict.
 
-Surface a degraded anchor (ambiguous / block / page / unresolved) or a
-contradicted / indeterminate verdict PROMINENTLY; it must be consciously
-resolved, never auto-passed. The human accepts, edits, or rejects each claim.
+Surface a degraded anchor (ambiguous / block / page / unresolved), a
+contradicted / indeterminate verdict, or a spot-check disagreement (the verifier
+did not return supported on a claim the pre-screen skipped) PROMINENTLY; it must
+be consciously resolved, never auto-passed. The human accepts, edits, or rejects each claim.
 Only human-accepted claims proceed.
 
 Solo single-reviewer sign-off is the ONLY required gate (this is mostly solo
@@ -102,6 +136,8 @@ Editing invalidates verification: if the human edits a claim's text or its quote
 re-stamp the anchor with build_anchor and re-run BOTH the citation-checker and
 the advisory verifier on the edited claim before it can be accepted. An edited
 claim never ships under a stale verdict that only applied to the pre-edit text.
+An edited claim always gets the extraction-verifier, even if the Jev pre-screen
+had routed it to skip; its old pre-screen result no longer applies.
 
 ## 4. Output (redacted) -- publish the anchor, keep the raw local
 
@@ -121,6 +157,13 @@ public_anchor carries only the non-raw anchor + status (doc_id, page_no,
 block_index, block_self_ref, text_hash, bbox, checker_level, verifier_result,
 schema name/version); it carries no claim_text and is not itself the published
 finding.
+
+Jev pre-screen audit: the local citations log keeps each CitationRecord's
+prescreen block (presence, entailment, route, reason, model, spot_check), so
+every skip is auditable later. The block never goes into public_anchor. For a
+claim the pre-screen skipped and no verifier saw, the published anchor carries
+verifier_result "prescreen-skip" (never "supported"), so a reader of the
+finding can tell it was not independently verified.
 
 Honest limit on redaction: redact_note only redacts KNOWN flagged texts; it does
 NOT autonomously NER-scan novel claim narrative. So a novel uninvolved-third-party
