@@ -16,6 +16,10 @@ calls, never accept or reject a claim.
   seed, at least one whenever any claim skips) get ``spot_check: true`` and also go to the
   extraction-verifier. ``log_spotcheck_disagreements`` appends every non-``supported`` (or
   missing) spot-check verdict to ``data/jev_spotcheck.jsonl`` (IO, no claim text).
+- Audit (spec 2.5, PURE): ``claim_input_from_record`` builds a claim's input from its
+  ``CitationRecord`` (resolve_anchor + is_clean_citation, span = resolved block text);
+  ``prescreen_record`` is the ``CitationRecord.prescreen`` block; ``gate_label`` is the human
+  gate text for a skipped claim, which is stored with ``verifier_result`` ``prescreen-skip``.
 - CLI: ``python scripts/jev_prescreen.py <claims.json> [--seed S]`` prints the output JSON;
   unreadable or invalid input exits 2 with no network call.
   ``python scripts/jev_prescreen.py --spotcheck <output.json> --verdicts <verdicts.json>``
@@ -51,7 +55,7 @@ from typing import Callable, Mapping
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts import jev_client, jev_state  # noqa: E402 - after the script-mode shim
+from scripts import citation, jev_client, jev_state  # noqa: E402 - after the script-mode shim
 from scripts.jev_guards import guard  # noqa: E402
 
 # Month names and common abbreviations (with optional period, handled in the patterns).
@@ -465,6 +469,57 @@ def run_summary(output: dict, disagreements: int) -> str:
     return (f"{len(entries)} claims pre-screened | {skipped} skipped | "
             f"{verify + spot} sent to extraction-verifier | {spot} spot-checked | "
             f"{disagreements} disagreements")
+
+
+# --- audit fields + human-gate label (spec 2.5) -------------------------------------------
+
+# The CitationRecord.prescreen block: the claim's pre-screen entry plus the run's model.
+PRESCREEN_KEYS = ("presence", "entailment", "route", "reason", "model", "spot_check")
+# verifier_result for a skipped claim no extraction-verifier saw (published via public_anchor;
+# verifier_confidence stays None). Never "supported": nothing independently verified it.
+PRESCREEN_VERIFIER_RESULT = "prescreen-skip"
+# Human-gate text for a skipped claim (Decision 1: ASCII " -- " for the spec's em dash).
+GATE_LABEL = ("Jev pre-screen: supported -- not independently verified "
+              "(presence {presence:.2f}, entailment {entailment:.2f})")
+
+
+def prescreen_record(entry: dict, model: str | None) -> dict:
+    """The ``CitationRecord.prescreen`` block for one claim: exactly ``PRESCREEN_KEYS``, taken
+    from a pre-screen output entry (``out["claims"][claim_id]``) plus the run's top-level
+    ``model``. Any other entry key is dropped."""
+    return {"presence": entry.get("presence"), "entailment": entry.get("entailment"),
+            "route": entry.get("route"), "reason": entry.get("reason"), "model": model,
+            "spot_check": bool(entry.get("spot_check", False))}
+
+
+def _score(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def gate_label(prescreen: dict | None) -> str | None:
+    """``GATE_LABEL`` for a ``skip`` pre-screen block, else None (a verify claim is labeled by
+    its extraction-verifier verdict as usual). A skip block without numeric scores gets None
+    rather than a label with invented numbers."""
+    if not isinstance(prescreen, dict) or prescreen.get("route") != ROUTE_SKIP:
+        return None
+    presence, entailment = prescreen.get("presence"), prescreen.get("entailment")
+    if not (_score(presence) and _score(entailment)):
+        return None
+    return GATE_LABEL.format(presence=presence, entailment=entailment)
+
+
+def claim_input_from_record(claim_id: str, record: citation.CitationRecord,
+                            docling_json: dict) -> dict:
+    """The five-key pre-screen input for one claim (Decision 5): resolve the record's anchor
+    against the current DoclingDocument, ``clean_citation`` from ``is_clean_citation``, and
+    ``span`` = the resolved block's ``.text`` (None when resolution found no block)."""
+    resolved = citation.resolve_anchor(record, docling_json)
+    span = None
+    if resolved.block_index is not None:
+        span = docling_json.get("texts", [])[resolved.block_index].get("text")
+    return {"claim_id": claim_id, "claim_text": record.claim_text,
+            "verbatim_quote": record.verbatim_quote, "span": span,
+            "clean_citation": citation.is_clean_citation(resolved)}
 
 
 # --- CLI ---------------------------------------------------------------------------------

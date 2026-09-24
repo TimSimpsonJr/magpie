@@ -31,7 +31,7 @@ CONTEXT_WINDOW = 32
 
 # The EXACTLY-10 public anchor keys (design section 3). An explicit ALLOWLIST
 # literal -- never a denylist -- so a future raw field stays absent by default and
-# char_start/char_end/n_prov/timestamp remain in to_dict() but NOT on the
+# char_start/char_end/n_prov/timestamp/prescreen remain in to_dict() but NOT on the
 # published surface.
 _PUBLIC_ANCHOR_KEYS = (
     "doc_id",
@@ -214,6 +214,11 @@ class CitationRecord:
     schema_name: str = SCHEMA_NAME
     schema_version: str = SCHEMA_VERSION
     timestamp: str = ""
+    # Optional Jev pre-screen audit block (jev_prescreen.PRESCREEN_KEYS: presence,
+    # entailment, route, reason, model, spot_check). LOCAL-only: it travels in the
+    # citations log (and archive-evidence hashes it as received) but is NOT in
+    # _PUBLIC_ANCHOR_KEYS. None when the pre-screen did not run.
+    prescreen: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """JSON-able dict of every field (raw + public), round-trips."""
