@@ -46,7 +46,7 @@ State `{"claims": {"K01": {"claim": …, "quote": …, "span": …}}}`; two `nou
 ### 2.3 Routing — `skip` requires ALL of:
 1. Jev enabled, no model change, the claim was sent (not guarded, not too large) and answered;
 2. `clean_citation` is true (a degraded anchor may point at the wrong text);
-3. **numeric/date gate (deterministic):** every number and date token in `claim_text` also appears in the span (normalized: thousands separators, common date formats); and the claim contains no computed-value cue (`total`, `sum`, `average`, `percent`/`%`, `per`, `ratio`, `more than`, `less than`, `increase`, `decrease`, `rate`);
+3. **numeric/date gate (deterministic):** every number and date token in `claim_text` also appears in the span (normalized: thousands separators, common date formats); and the claim contains no computed-value cue (`total`, `sum`, `average`, `percent`/`%`, `per`, `ratio`, `more than`, `less than`, `increase`, `decrease`, `rate`, and the multiplier/proportion cues `doubled`, `tripled`, `quadrupled`, `twice`, `thrice`, `N-fold`, `half`/`halved`, `majority`, `minority`, `fraction`, `most of`, `nearly all`);
 4. `presence ≥ 0.85` **and** `entailment ≥ 0.85` (starting values, tuned on the live eval).
 
 Anything else → `verify`, with the first failing reason (`jev_off`, `model_changed`, `pii`, `secret`, `too_large`, `waf_blocked`, `jev_error`, `degraded_anchor`, `numeric_mismatch`, `computed_value`, `low_score`). **The pre-screen can only remove verifier calls; it never rejects or accepts a claim.**

@@ -76,11 +76,20 @@ DATE_PATTERNS = [
 # Digits with optional thousands groups and an optional fractional part.
 NUMBER_RE = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
 
-# A claim with any of these cues asserts a derived value the span may not state verbatim.
+# A claim with any of these cues asserts a derived value the span may not state verbatim:
+# aggregates, comparisons, rates, multipliers (doubled, twice, 3-fold) and proportions (half,
+# majority, most of). Whole words only: "behalf", "fractional", "almost" and non-multiplier
+# "-fold" words (unfold, manifold) do not match. An extra cue only adds a verify (Decision 9).
+_FOLD_MULTIPLIER = (r"(?:\d+(?:\.\d+)?|two|three|four|five|six|seven|eight|nine|ten|hundred"
+                    r"|thousand|many|several)")
 COMPUTED_CUE_RE = re.compile(
     r"(?i)%|\b(?:total(?:s|ed|ing)?|sum(?:s|med|ming)?|average(?:s|d)?|percent(?:age)?s?|per"
     r"|ratios?|more\s+than|less\s+than|fewer\s+than|increase(?:s|d)?|increasing"
-    r"|decrease(?:s|d)?|decreasing|rates?)\b")
+    r"|decrease(?:s|d)?|decreasing|rates?"
+    r"|doubl(?:e[ds]?|ing)|tripl(?:e[ds]?|ing)|quadrupl(?:e[ds]?|ing)|twice|thrice"
+    rf"|{_FOLD_MULTIPLIER}-?fold"
+    r"|half|halve[ds]?|halving|majorit(?:y|ies)|minorit(?:y|ies)|fractions?"
+    r"|most\s+of|nearly\s+all)\b")
 
 # Two-digit years at or below this pivot are 20xx; above it, 19xx.
 _TWO_DIGIT_YEAR_PIVOT = 69

@@ -328,10 +328,16 @@ Every test that patches the import calls `_pii_patterns.cache_clear()` before an
       ("my_name", re.compile(rf"(?i)\b{_MONTH}\.?,?\s+(\d{{4}})\b")),
   ]
   NUMBER_RE = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
+  _FOLD_MULTIPLIER = (r"(?:\d+(?:\.\d+)?|two|three|four|five|six|seven|eight|nine|ten|hundred"
+                      r"|thousand|many|several)")
   COMPUTED_CUE_RE = re.compile(
       r"(?i)%|\b(?:total(?:s|ed|ing)?|sum(?:s|med|ming)?|average(?:s|d)?|percent(?:age)?s?|per"
       r"|ratios?|more\s+than|less\s+than|fewer\s+than|increase(?:s|d)?|increasing"
-      r"|decrease(?:s|d)?|decreasing|rates?)\b")
+      r"|decrease(?:s|d)?|decreasing|rates?"
+      r"|doubl(?:e[ds]?|ing)|tripl(?:e[ds]?|ing)|quadrupl(?:e[ds]?|ing)|twice|thrice"
+      rf"|{_FOLD_MULTIPLIER}-?fold"
+      r"|half|halve[ds]?|halving|majorit(?:y|ies)|minorit(?:y|ies)|fractions?"
+      r"|most\s+of|nearly\s+all)\b")
   ```
 - `extract_dates(text: str) -> tuple[list[tuple[int, ...]], str]`: normalized `(y, m, d)` or `(y, m)`; `mdy_num` is read month/day/year; a 2-digit year becomes `2000+yy` when `yy <= 69`, else `1900+yy`; returns the text with date spans replaced by spaces.
 - `normalize_number(tok: str) -> str`: drop thousands commas; drop leading zeros (keep one `0`); strip trailing fractional zeros and a trailing dot (`"482.50"->"482.5"`, `"5.0"->"5"`, `"007"->"7"`).
@@ -364,6 +370,11 @@ Every test that patches the import calls `_pii_patterns.cache_clear()` before an
 | 20 | The officer ran searches. | The officer ran searches in 2026. | None |
 | 21 | The rate was 5 | the rate was 5 | computed_value |
 | 22 | ran 15 searches | On March 15, 2026 the officer ran 14 searches | numeric_mismatch (day 15 is not in the number set) |
+| 23 | Searches doubled to 964 in 2025 | Searches doubled to 964 in 2025 | computed_value |
+| 24 | Nearly half of the 40 cameras failed | Nearly half of the 40 cameras failed | computed_value |
+| 25 | Twice as many searches were run | Twice as many searches were run | computed_value |
+| 26 | Stops rose 3-fold | Stops rose 3-fold | computed_value |
+| 27 | Filed on behalf of the city almost daily | Filed on behalf of the city almost daily | None ("behalf"/"almost" are not cues) |
 
 Rows 1-21 were re-checked under the year-only rule: row 9 passes via the span date's year 2026; rows 7 and 10 pass via date matching, not the number set; row 18 passes because `2026-0042` is not a date and both sides yield `2026` and `42`.
 
@@ -815,7 +826,7 @@ README is reader-facing: invoke `copydesk:write` before drafting the prose (user
 6. **Spot-check seed and floor.** Default seed is content-derived from the batch; at least one skip claim is spot-checked whenever any claim skips. A missing verifier verdict counts as a disagreement.
 7. **Archive carry-through.** `CitationRecord.prescreen` travels in the local citations log, which archive-evidence hashes as received; `public_anchor` stays exactly 10 keys and publishes `verifier_result: "prescreen-skip"` for skipped claims.
 8. **Error mapping.** Every client reason other than `too_large`/`waf_blocked` maps to `jev_error`; `missing_key`/`http_401`/`http_402`/non-WAF `http_403` stop the remaining windows.
-9. **Numeric gate.** A claim date may be less specific than the span date; a bare claim number may match only the 4-digit YEAR of a span date, never its month or day; numeric slashed dates read month/day/year; the gate is digit-only, so spelled-out numbers ("fourteen") are not gated (Jev entailment and the verifier cover them; documented in jev-guide); extra computed cues (inflections, "fewer than") only add verifies.
+9. **Numeric gate.** A claim date may be less specific than the span date; a bare claim number may match only the 4-digit YEAR of a span date, never its month or day; numeric slashed dates read month/day/year; the gate is digit-only, so spelled-out numbers ("fourteen") are not gated (Jev entailment and the verifier cover them; documented in jev-guide); extra computed cues (inflections, "fewer than", and the post-review multiplier/proportion cues: double/triple/quadruple, twice, thrice, N-fold, half/halved, majority, minority, fraction, most of, nearly all) only add verifies. Cues are whole words: "behalf", "fractional", "almost" and non-multiplier "-fold" words (unfold, manifold) do not match.
 10. **Live tests.** Excluded by `addopts`, skipped when Jev is off, and excluded in CI. The live eval approves a model only if all 20 items were answered and the gate held; thresholds may only rise.
 11. **PII screen scope.** Only `DEFAULT_PII_PATTERNS` (no spaCy NER), so person names can be sent; README and guide say so.
 12. **Enable flag.** `MAGPIE_JEV` must be exactly `1` (after trimming whitespace).

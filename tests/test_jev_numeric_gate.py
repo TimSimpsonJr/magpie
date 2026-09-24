@@ -57,6 +57,17 @@ GATE_CASES = [
     ("The rate was 5", "the rate was 5", "computed_value"),
     # 22: day 15 of a span date never joins the span number set
     ("ran 15 searches", "On March 15, 2026 the officer ran 14 searches", "numeric_mismatch"),
+    # 23: multiplier cue
+    ("Searches doubled to 964 in 2025", "Searches doubled to 964 in 2025", "computed_value"),
+    # 24: proportion cue
+    ("Nearly half of the 40 cameras failed", "Nearly half of the 40 cameras failed",
+     "computed_value"),
+    # 25
+    ("Twice as many searches were run", "Twice as many searches were run", "computed_value"),
+    # 26: fold cue with a digit multiplier (the digit still has to be in the span)
+    ("Stops rose 3-fold", "Stops rose 3-fold", "computed_value"),
+    # 27: "behalf" and "almost" are not the "half" / "most of" cues
+    ("Filed on behalf of the city almost daily", "Filed on behalf of the city almost daily", None),
 ]
 
 
@@ -130,11 +141,22 @@ def test_numeric_mismatch_checked_before_computed_value():
     "total", "totals", "sum", "summed", "average", "averaged", "percent",
     "percentage", "per", "ratio", "more than", "less than", "fewer than",
     "increase", "decreasing", "rate", "rates", "%",
+    "double", "doubled", "doubling", "tripled", "triples", "quadrupled", "quadrupling",
+    "half", "halved", "halves", "twice", "thrice",
+    "threefold", "3-fold", "2.5-fold", "tenfold", "two-fold", "manyfold",
+    "majority", "minorities", "fraction", "fractions", "most of", "nearly all",
+    "Most  of", "NEARLY\nALL",
 ])
 def test_computed_cues_match(cue):
     assert COMPUTED_CUE_RE.search(f"the {cue} of it")
 
 
-@pytest.mark.parametrize("word", ["person", "separately", "summary", "totally", "operate"])
+@pytest.mark.parametrize("word", [
+    "person", "separately", "summary", "totally", "operate",
+    # Decided: the new cues are whole words only. "fractional", "behalf", "almost" and the
+    # non-multiplier "-fold" words are ordinary vocabulary, not derived values.
+    "behalf", "halfway", "fractional", "almost", "mostly", "unfold", "manifold", "scaffold",
+    "billfold", "doubloon", "triplet", "majorette",
+])
 def test_computed_cues_respect_word_boundaries(word):
     assert COMPUTED_CUE_RE.search(f"the {word} was here") is None

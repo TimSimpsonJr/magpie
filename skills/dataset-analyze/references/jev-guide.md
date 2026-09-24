@@ -27,8 +27,10 @@ per-claim `extraction-verifier`. It never accepts, rejects or edits a claim, and
 its skipped claims are labeled "not independently verified" at the human gate.
 
 The pre-screen's number/date check is digit-only. Every digit number and date in
-a claim must also appear in the span, and cue words such as "total", "per",
-"rate" or "%" force a verifier run. Spelled-out numbers ("fourteen cameras") are
+a claim must also appear in the span, and cue words for a derived value force a
+verifier run: totals and averages ("total", "per", "rate", "%"), multipliers
+("doubled", "twice", "3-fold") and proportions ("half", "majority", "most of",
+"nearly all"). Spelled-out numbers ("fourteen cameras") are
 NOT gated: only Jev's entailment answer and the `extraction-verifier` judge them.
 
 ## Turning it on
