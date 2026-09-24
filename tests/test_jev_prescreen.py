@@ -454,3 +454,66 @@ def test_cli_bad_input_exits_2(tmp_path, content):
 def test_cli_missing_file_exits_2(tmp_path):
     p = _cli(str(tmp_path / "nope.json"))
     assert p.returncode == 2
+
+
+# --- Task 14: live-eval fixture checks + jev_live deselection (offline) --------------------
+
+EVAL_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "jev" / "prescreen_eval.json"
+EVAL_CATEGORY_COUNTS = {"supported": 5, "paraphrased_supported": 3, "wrong_number": 3,
+                        "wrong_date": 2, "wrong_entity": 3, "span_silent": 2, "contradicted": 2}
+SUPPORTED_CATEGORIES = {"supported", "paraphrased_supported"}
+LOCALLY_GATED_CATEGORIES = {"wrong_number", "wrong_date"}
+
+
+def _eval_items() -> list[dict]:
+    return json.loads(EVAL_FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_eval_fixture_parses_and_has_the_planned_mix():
+    raw = _eval_items()
+    assert len(raw) == 20
+    stripped = [{k: v for k, v in item.items() if k not in ("expect", "category")}
+                for item in raw]
+    claims = parse_claims(stripped)
+    assert len(claims) == 20
+    assert all(c.clean_citation for c in claims)
+    counts: dict[str, int] = {}
+    for item in raw:
+        counts[item["category"]] = counts.get(item["category"], 0) + 1
+    assert counts == EVAL_CATEGORY_COUNTS
+    for item in raw:
+        expected = "supported" if item["category"] in SUPPORTED_CATEGORIES else "unsupported"
+        assert item["expect"] == expected, item["claim_id"]
+        assert item["verbatim_quote"] in item["span"], item["claim_id"]
+    assert EVAL_FIXTURE.read_bytes().isascii()
+
+
+def test_eval_fixture_local_reasons_match_categories():
+    """No item may trip the PII/secret guard (a guarded eval would approve nothing useful);
+    supported items and every entity/silent/contradicted item reach Jev; wrong numbers and
+    dates are caught by the local gate."""
+    claims = {c.claim_id: c for c in parse_claims(_eval_items())}
+    sent_with_matching_numbers = 0
+    for item in _eval_items():
+        reason = jp.local_reason(claims[item["claim_id"]])
+        if item["category"] in LOCALLY_GATED_CATEGORIES:
+            assert reason == "numeric_mismatch", item["claim_id"]
+        else:
+            assert reason is None, (item["claim_id"], reason)
+            if item["category"] in ("wrong_entity", "span_silent") and \
+                    jp.NUMBER_RE.search(item["claim_text"]):
+                sent_with_matching_numbers += 1
+    assert sent_with_matching_numbers >= 2
+
+
+def test_default_pytest_run_deselects_jev_live():
+    """The pyproject addopts keep a bare pytest run from ever selecting a live test. The Jev
+    env vars are stripped too, so a broken addopts still could not reach the network."""
+    p = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/test_jev_live_prescreen.py",
+         "tests/test_jev_live_ask.py", "-q", "-p", "no:cacheprovider"],
+        cwd=str(REPO_ROOT), env=_env_without_jev(), capture_output=True, timeout=300)
+    text = p.stdout.decode("utf-8", "replace")
+    assert p.returncode == 5, text  # 5 = no tests ran
+    assert "deselected" in text
+    assert " passed" not in text and " skipped" not in text

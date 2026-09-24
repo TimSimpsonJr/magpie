@@ -654,3 +654,27 @@ def test_cli_subprocess_jev_off(tmp_path):
     assert p.returncode == 3, p.stderr.decode("utf-8", "replace")
     assert b"jev: off (MAGPIE_JEV not set)" in p.stderr
     assert not out.exists()
+
+
+# --- Task 14: live-smoke fixture checks (offline) -------------------------------------------
+
+SMOKE_DIR = REPO_ROOT / "tests" / "fixtures" / "jev"
+
+
+def test_ask_smoke_fixture_shape_and_guard():
+    """The jev_live smoke input: 20 labeled records (7/7/6), every text and every option /
+    level passes the local guard (a tripped guard would skip records or exit 2 live)."""
+    records = ja.load_records(SMOKE_DIR / "ask_smoke.jsonl", "id", ["text"])
+    assert [rid for rid, _ in records] == [f"S{i:02d}" for i in range(1, 21)]
+    labels = [json.loads(line)["label"] for line in
+              (SMOKE_DIR / "ask_smoke.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert {lab: labels.count(lab) for lab in set(labels)} == \
+        {"surveillance": 7, "budget": 7, "other": 6}
+    for rid, fields in records:
+        assert jg.guard(*fields.values()) is None, rid
+    options = ja._load_options(str(SMOKE_DIR / "ask_smoke_options.json"))
+    assert set(options) == {"surveillance", "budget", "other"}
+    levels = ja._load_levels(str(SMOKE_DIR / "ask_smoke_levels.json"))
+    assert jg.guard(*options, *options.values(), *levels) is None
+    for name in ("ask_smoke.jsonl", "ask_smoke_options.json", "ask_smoke_levels.json"):
+        assert (SMOKE_DIR / name).read_bytes().isascii(), name
