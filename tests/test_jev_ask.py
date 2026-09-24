@@ -319,6 +319,31 @@ def test_jev_off_no_key(tmp_path, no_state, capsys):
     code = run(noul_args(inp, tmp_path / "o.jsonl"), fake, no_state, env={"MAGPIE_JEV": "1"})
     assert code == 3
     assert "jev: off (no OPENROUTER_API_KEY)" in capsys.readouterr().err
+    assert fake.count == 0
+
+
+@pytest.mark.parametrize("env", [
+    {},
+    {"MAGPIE_JEV": "1"},
+    {"MAGPIE_JEV": "1", "OPENROUTER_API_KEY": "   "},
+    {"OPENROUTER_API_KEY": "k"},
+    {"MAGPIE_JEV": "true", "OPENROUTER_API_KEY": "k"},
+])
+def test_every_off_env_makes_zero_transport_calls(env, tmp_path, no_state, monkeypatch):
+    # Task 16 opt-out check. The injected ask_fn's client runs with Jev ON, so only jev_ask's
+    # own opt-in check can stop it; the default path patches the real transport to a counter.
+    inp = write_jsonl(tmp_path / "in.jsonl", RECORDS)
+    injected = FakeTransport(noul_responder(lambda q: 0.9))
+    code = ja.main(noul_args(inp, tmp_path / "o.jsonl"), env=env, ask_fn=fake_ask(injected),
+                   state_path=no_state, now=lambda: FIXED_NOW)
+    assert code == 3 and injected.count == 0
+
+    default_path = FakeTransport(noul_responder(lambda q: 0.9))
+    monkeypatch.setattr(jc, "_urllib_transport", default_path)
+    code = ja.main(noul_args(inp, tmp_path / "o2.jsonl"), env=env, state_path=no_state,
+                   now=lambda: FIXED_NOW)
+    assert code == 3 and default_path.count == 0
+    assert not (tmp_path / "o.jsonl").exists() and not (tmp_path / "o2.jsonl").exists()
 
 
 # ---------------------------------------------------------------- answers per type

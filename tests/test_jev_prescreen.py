@@ -128,6 +128,32 @@ def test_jev_off_routes_everything_to_verify_without_a_call(approved):
     assert fake.count == 0
 
 
+OFF_ENVS = [
+    {},
+    {"MAGPIE_JEV": "1"},
+    {"MAGPIE_JEV": "1", "OPENROUTER_API_KEY": "   "},
+    {"OPENROUTER_API_KEY": "k"},
+    {"MAGPIE_JEV": "true", "OPENROUTER_API_KEY": "k"},
+    {"MAGPIE_JEV": "0", "OPENROUTER_API_KEY": "k"},
+]
+
+
+@pytest.mark.parametrize("env", OFF_ENVS)
+def test_every_off_env_makes_zero_transport_calls(env, approved, monkeypatch):
+    # Task 16 opt-out check: with Jev off, neither an injected ask_fn nor the default client
+    # path (real transport patched to a counter) is ever reached.
+    injected = FakeTransport(noul_responder(lambda q: 0.99))
+    out = prescreen([mk("a")], env=env, ask_fn=fake_ask(injected), state_path=approved)
+    assert out["enabled"] is False and routes(out) == {"a": ("verify", "jev_off")}
+    assert injected.count == 0
+
+    default_path = FakeTransport(noul_responder(lambda q: 0.99))
+    monkeypatch.setattr(jc, "_urllib_transport", default_path)
+    out = prescreen([mk("a")], env=env, state_path=approved)
+    assert routes(out) == {"a": ("verify", "jev_off")}
+    assert default_path.count == 0
+
+
 def test_supported_claim_skips(approved):
     fake = FakeTransport(noul_responder(lambda q: 0.95))
     out = run([mk("a")], fake, approved)
