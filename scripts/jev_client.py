@@ -3,7 +3,9 @@
 One POST to Jev (TypeSafe's System One decision model) through OpenRouter's systemone
 endpoint. ``ask()`` either returns a fully validated ``JevResult`` or raises
 ``JevUnavailable``; every caller falls back to today's behavior on any exception (Part A
-routes to ``verify``, Part B reports ``skipped``).
+routes to ``verify``, Part B reports ``skipped``). ``ask_windowed()`` packs many items into
+state windows (chars/4 estimate, ~14k-token budget) and splits a window once on
+``too_large`` / ``waf_blocked``.
 
 Opt-in (spec 1.1): nothing is sent unless ``MAGPIE_JEV`` is exactly ``1`` (after trimming)
 and ``OPENROUTER_API_KEY`` is non-blank. ``ask()`` checks this itself before doing any other
@@ -293,3 +295,118 @@ def ask(state: dict, questions: dict, *, env: Mapping[str, str] | None = None,
     raw_usage = parsed.get("usage") if isinstance(parsed.get("usage"), dict) else {}
     usage = {k: raw_usage.get(k) for k in _USAGE_KEYS}
     return JevResult(answers=answers, model=model, usage=usage, latency_ms=latency_ms)
+
+
+# --- windows (spec 1.2) ------------------------------------------------------------------
+
+# Cheap, dependency-free token estimate; deliberately conservative against the budget below.
+CHARS_PER_TOKEN = 4
+# Jev's state limit is about 32.7k real tokens; dense text tokenizes worse than chars/4.
+WINDOW_TOKEN_BUDGET = 14_000
+# Reasons worth one split into halves: a smaller state may fit, or may avoid the WAF rule.
+_SPLIT_REASONS = frozenset({"too_large", "waf_blocked"})
+
+
+def estimate_tokens(obj: object) -> int:
+    """ceil(len(json) / CHARS_PER_TOKEN), counting non-ASCII as single characters."""
+    return math.ceil(len(json.dumps(obj, ensure_ascii=False)) / CHARS_PER_TOKEN)
+
+
+def _window_estimate(items: dict[str, dict], keys: list[str], state_key: str) -> int:
+    return estimate_tokens({state_key: {k: items[k] for k in keys}})
+
+
+def pack_windows(items: dict[str, dict], *, state_key: str,
+                 budget: int = WINDOW_TOKEN_BUDGET) -> tuple[list[list[str]], list[str]]:
+    """Greedy packing in insertion order -> (windows, oversize). An item whose solo window
+    exceeds ``budget`` is oversize and never sent."""
+    windows: list[list[str]] = []
+    oversize: list[str] = []
+    current: list[str] = []
+    for key in items:
+        if _window_estimate(items, [key], state_key) > budget:
+            oversize.append(key)
+            continue
+        if current and _window_estimate(items, current + [key], state_key) > budget:
+            windows.append(current)
+            current = []
+        current.append(key)
+    if current:
+        windows.append(current)
+    return windows, oversize
+
+
+@dataclass
+class WindowedResult:
+    answers: dict[str, dict[str, dict]]  # item key -> {question id -> validated answer}
+    failures: dict[str, str]  # item key -> raw client reason (see JevUnavailable)
+    models: list[str]  # distinct concrete model ids, first-seen order
+    usage: dict  # input_tokens / output_tokens / cost summed over calls (None counted as 0)
+    calls: int  # ask_fn invocations, failed ones included
+    latency_ms: int  # summed over successful calls
+
+
+def ask_windowed(items: dict[str, dict], questions_for: Callable[[str], dict[str, dict]], *,
+                 state_key: str, ask_fn: Callable[[dict, dict], JevResult],
+                 budget: int = WINDOW_TOKEN_BUDGET) -> WindowedResult:
+    """Ask ``questions_for(key)`` about every item, packed into windows of state
+    ``{state_key: {key: item}}``. Oversize items fail ``too_large`` without a call. A window
+    failing ``too_large``/``waf_blocked`` with more than one item is split once into halves
+    (first half ceil(n/2)); a failing half marks its items and is not split again. Any other
+    reason marks the window's items. A reason in ABORT_REASONS stops every remaining window,
+    which gets the same reason. Only JevUnavailable is caught."""
+    windows, oversize = pack_windows(items, state_key=state_key, budget=budget)
+    out = WindowedResult(answers={}, failures={k: "too_large" for k in oversize}, models=[],
+                         usage={k: 0 for k in _USAGE_KEYS}, calls=0, latency_ms=0)
+    aborted: str | None = None
+
+    def fail(keys: list[str], reason: str) -> None:
+        for k in keys:
+            out.failures[k] = reason
+
+    def run(keys: list[str]) -> str | None:
+        """Ask one window; record answers, or return the failure reason."""
+        questions: dict[str, dict] = {}
+        per_item: dict[str, list[str]] = {}
+        for k in keys:
+            qs = questions_for(k)
+            per_item[k] = list(qs)
+            questions.update(qs)
+        state = {state_key: {k: items[k] for k in keys}}
+        out.calls += 1
+        try:
+            result = ask_fn(state, questions)
+        except JevUnavailable as e:
+            return e.reason
+        if result.model not in out.models:
+            out.models.append(result.model)
+        for uk in _USAGE_KEYS:
+            out.usage[uk] += (result.usage or {}).get(uk) or 0
+        out.latency_ms += result.latency_ms
+        for k in keys:
+            out.answers[k] = {qid: result.answers[qid] for qid in per_item[k]}
+        return None
+
+    for window in windows:
+        if aborted is not None:
+            fail(window, aborted)
+            continue
+        reason = run(window)
+        if reason is None:
+            continue
+        if reason in _SPLIT_REASONS and len(window) > 1:
+            mid = math.ceil(len(window) / 2)
+            for half in (window[:mid], window[mid:]):
+                if aborted is not None:
+                    fail(half, aborted)
+                    continue
+                half_reason = run(half)
+                if half_reason is not None:
+                    fail(half, half_reason)
+                    if half_reason in ABORT_REASONS:
+                        aborted = half_reason
+            continue
+        fail(window, reason)
+        if reason in ABORT_REASONS:
+            aborted = reason
+    return out
