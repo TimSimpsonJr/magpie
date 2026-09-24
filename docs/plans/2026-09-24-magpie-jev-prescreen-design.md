@@ -18,7 +18,7 @@ Jev is TypeSafe's System One decision model, reached through OpenRouter. It answ
   - **PII:** Magpie's existing `scripts/pii_sweep.py` `DEFAULT_PII_PATTERNS`. If that module cannot be imported, treat every item as a PII hit (send nothing) rather than sending unscreened text.
   - A guarded item is never sent. Part A routes it to `verify`; Part B reports it as `skipped: pii` / `skipped: secret`.
 - **README "Your data & privacy":** documents the opt-in, the endpoint (OpenRouter → TypeSafe), exactly what is sent, and the local guards. The "nothing uploaded" statement is qualified: true by default; the optional Jev features send the listed text when explicitly enabled. README edits must keep the `tests/test_onramp_docs.py` invariants (no "docker"; both persona guides routed; `detect_tier` mentioned).
-- **`magpie:doctor`:** one line, `jev: on` or `jev: off (<reason>)` — reasons `MAGPIE_JEV not set`, `no OPENROUTER_API_KEY`.
+- **`magpie:doctor`:** one line, `jev: on (approved model <id>)`, `jev: on (no approved model; pre-screen skips nothing until the live eval passes)` or `jev: off (<reason>)` — reasons `MAGPIE_JEV not set`, `no OPENROUTER_API_KEY`. The on line reads the local `data/jev_state.json` approval record (post-review addition); still no network.
 
 ### 1.2 `scripts/jev_client.py` (vendored, stdlib only)
 - `ask(state, questions) -> JevResult{answers, model, usage, latency_ms}` or raises `JevUnavailable(reason)`.

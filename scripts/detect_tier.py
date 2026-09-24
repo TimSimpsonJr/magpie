@@ -9,8 +9,9 @@ no network, no side effects). Probing torch/docling/spacy via metadata.version
 does NOT load them, so doctor stays fast.
 
 The optional Jev line (jev_line) only reads two environment variables through
-jev_client.jev_status; it never contacts OpenRouter or Jev and never stores or
-prints the API key.
+jev_client.jev_status plus, when Jev is on, the local approval record
+data/jev_state.json through jev_state.approved_model; it never contacts OpenRouter
+or Jev and never stores or prints the API key.
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from typing import Mapping
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts import jev_state  # stdlib only; reads the local approval record
 from scripts.jev_client import jev_status  # stdlib only; keeps the import cheap
 
 READY = "READY"
@@ -357,19 +359,33 @@ def run_probes(mcp_json_path, repo_root=None):
     }
 
 
-def jev_line(env: Mapping[str, str] | None = None) -> str:
-    """Env-only Jev status line: "jev: on" or "jev: off (<reason>)". No network."""
-    return _jev_block(env)["line"]
+JEV_NO_APPROVED_MODEL = "no approved model; pre-screen skips nothing until the live eval passes"
 
 
-def _jev_block(env: Mapping[str, str] | None) -> dict:
-    """The report's jev block. Carries on/off + reason only; the key value is never stored."""
+def jev_line(env: Mapping[str, str] | None = None, state_path: Path | None = None) -> str:
+    """The Jev status line. No network: env via jev_status, plus the local state file when on.
+
+    "jev: off (<reason>)"; "jev: on (approved model <id>)"; or, when no model has passed the
+    live eval (missing/corrupt state file included), "jev: on (no approved model; ...)".
+    """
+    return _jev_block(env, state_path)["line"]
+
+
+def _jev_block(env: Mapping[str, str] | None, state_path: Path | None = None) -> dict:
+    """The report's jev block: on/off, reason, approved model id. The key is never stored."""
     enabled, reason = jev_status(env)
-    line = "jev: on" if enabled else f"jev: off ({reason})"
-    return {"enabled": enabled, "reason": reason, "line": line}
+    approved = None
+    if enabled:
+        path = jev_state.STATE_PATH if state_path is None else state_path
+        approved = jev_state.approved_model(path)
+        detail = f"approved model {approved}" if approved else JEV_NO_APPROVED_MODEL
+        line = f"jev: on ({detail})"
+    else:
+        line = f"jev: off ({reason})"
+    return {"enabled": enabled, "reason": reason, "approved_model": approved, "line": line}
 
 
-def detect(mcp_json_path=None, repo_root=None, env=None):
+def detect(mcp_json_path=None, repo_root=None, env=None, jev_state_path=None):
     """The one IO entry point: probe -> capability map -> summary -> full report."""
     root = Path(repo_root) if repo_root else Path(__file__).resolve().parent.parent
     if mcp_json_path is None:
@@ -381,7 +397,7 @@ def detect(mcp_json_path=None, repo_root=None, env=None):
         "summary": summarize(cap_map),
         "probes": probes,
         "python": {"version": sys.version.split()[0], "executable": sys.executable},
-        "jev": _jev_block(env),
+        "jev": _jev_block(env, jev_state_path),
     }
 
 

@@ -36,7 +36,11 @@ to run setup, or, for a missing system binary, the one-line hint naming the bina
 install. Doctor reports a capability map, never a single linear tier score.
 
 Doctor ends with one line for the optional Jev features (the citation pre-screen and
-`jev_ask`): `jev: on` when `MAGPIE_JEV=1` and `OPENROUTER_API_KEY` are both set,
+`jev_ask`). When `MAGPIE_JEV=1` and `OPENROUTER_API_KEY` are both set it reads
+`jev: on (approved model <id>)` if a Jev model has passed the live eval (recorded in
+the local `data/jev_state.json`), or
+`jev: on (no approved model; pre-screen skips nothing until the live eval passes)` if
+none has, in which case every claim still goes to the verifier. It reads
 `jev: off (MAGPIE_JEV not set)` when the opt-in flag is missing, or
 `jev: off (no OPENROUTER_API_KEY)` when the flag is set but the key is not. Jev is off
 by default and Magpie works the same without it; see
@@ -52,7 +56,8 @@ launch the server. For the Layer-2 entity-graph capability it only probes Docker
 read-only -- which plus the `docker version` / `docker compose version` return codes;
 it NEVER runs `docker run`/`pull`/`up`/`start`, pulls an image, or starts a container.
 The jev line only reads two environment variables (`MAGPIE_JEV` and
-`OPENROUTER_API_KEY`); doctor never contacts OpenRouter or Jev, and never prints the key
+`OPENROUTER_API_KEY`) and, when Jev is on, the local `data/jev_state.json` approval
+record; doctor never contacts OpenRouter or Jev, and never prints the key
 or stores it in the report.
 Anything that changes the machine is the job of the setup skill and a present operator,
 not doctor. If doctor reports something missing, the fix is to ask whoever set this up

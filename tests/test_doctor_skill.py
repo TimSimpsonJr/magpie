@@ -44,7 +44,9 @@ def test_body_documents_read_only_contract():
 def test_body_documents_the_jev_line():
     _, body = _frontmatter_and_body(SKILL)
     low = body.lower()
-    assert "jev: on" in body
+    assert "jev: on (approved model <id>)" in body
+    assert "jev: on (no approved model; pre-screen skips nothing until the live eval passes)" in body
+    assert "data/jev_state.json" in body
     assert "jev: off (MAGPIE_JEV not set)" in body
     assert "jev: off (no OPENROUTER_API_KEY)" in body
     assert "openrouter" in low

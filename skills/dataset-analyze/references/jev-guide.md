@@ -41,7 +41,9 @@ Set both environment variables before starting the session:
 - `OPENROUTER_API_KEY` (the operator's OpenRouter key; Magpie never prints it).
 
 With either one missing, nothing is sent and Magpie behaves exactly as it does
-without Jev. `doctor` reports the state in one line: `jev: on`,
+without Jev. `doctor` reports the state in one line:
+`jev: on (approved model <id>)`,
+`jev: on (no approved model; pre-screen skips nothing until the live eval passes)`,
 `jev: off (MAGPIE_JEV not set)` or `jev: off (no OPENROUTER_API_KEY)`.
 
 The pre-screen skips nothing until the operator runs the live eval, which checks

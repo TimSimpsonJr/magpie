@@ -683,7 +683,7 @@ Add the env override `MAGPIE_JEV_SPOTCHECK_LOG` (read only by `main`) so the sub
 
 **Interface:**
 - Script-mode shim at the top of `detect_tier.py`, then `from scripts.jev_client import jev_status` (stdlib only; import stays cheap).
-- `jev_line(env: Mapping[str, str] | None = None) -> str`: `"jev: on"` or `f"jev: off ({reason})"`.
+- `jev_line(env: Mapping[str, str] | None = None) -> str`: `"jev: on"` or `f"jev: off ({reason})"`. (Post-review, reviewer note 3: `jev_line(env, state_path=None)`; the on line is `jev: on (approved model <id>)` or `jev: on (no approved model; pre-screen skips nothing until the live eval passes)`, reading only the local `data/jev_state.json` via `jev_state.approved_model`; the block gains `approved_model`; `detect(..., jev_state_path=None)`.)
 - `detect(mcp_json_path=None, repo_root=None, env=None)` adds `"jev": {"enabled": bool, "reason": str | None, "line": str}`. The key value is never stored.
 - `render_text(report)` appends a blank line and `report["jev"]["line"]` when `"jev"` is present (reports without it still render, keeping the existing render test valid).
 - doctor SKILL.md: new sentence in section 2 naming the `jev: on` / `jev: off (MAGPIE_JEV not set)` / `jev: off (no OPENROUTER_API_KEY)` line; section 3: the jev line only reads two environment variables, never contacts OpenRouter or Jev, and never prints the key.
