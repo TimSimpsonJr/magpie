@@ -82,3 +82,32 @@ def test_skill_and_prior_art_are_ascii():
                 "skills/investigate/references/prior-art.md"):
         raw = pathlib.Path(rel).read_bytes()
         raw.decode("ascii")  # raises if any non-ASCII byte slipped in
+
+
+def _flat(text):
+    """Lowercase and collapse whitespace so line wrapping cannot break a phrase."""
+    return " ".join(text.lower().split())
+
+
+def test_investigate_documents_jev_prescreen_dispatch():
+    """Section 2 wires the optional Jev pre-screen: citation-checker always runs,
+    extraction-verifier runs for verify routes and spot-checks, and the
+    pre-screen never accepts a claim."""
+    _, body = _skill()
+    low = _flat(body)
+    for phrase in ("jev_prescreen.py", "citation-checker for every claim",
+                   "spot_check", "route", "--spotcheck", "never accepts",
+                   "prescreen-skip", "jev-guide.md"):
+        assert phrase in low, phrase
+
+
+def test_investigate_gate_labels_prescreened_claims():
+    """Section 3 labels a skipped claim as not independently verified, and an
+    edited claim always gets the extraction-verifier again."""
+    _, body = _skill()
+    section3 = body.split("## 3", 1)[1].split("## 4", 1)[0]
+    assert "not independently verified" in _flat(section3)
+    paragraphs = [_flat(p) for p in section3.replace("\r\n", "\n").split("\n\n")]
+    editing = [p for p in paragraphs if "editing invalidates verification" in p]
+    assert len(editing) == 1
+    assert "an edited claim always gets the extraction-verifier" in editing[0]

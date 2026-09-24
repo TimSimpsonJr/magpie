@@ -36,6 +36,8 @@ evidence.py writes LOCAL artifacts under out_dir, content-addressed by the recei
 
 The manifest carries no absolute local paths (filename is basename only). The SKILL then routes a Librarian provenance NOTE carrying only: the artifact filename, the receipt sha256, the timestamp status and gen_time, and a custody-log pointer. The raw token bytes and the full local paths stay LOCAL, mirroring the suite's local-vs-published split.
 
+An investigate citations log archived as evidence keeps each claim's `prescreen` block (presence, entailment, route, reason, model, spot_check) unchanged. `archive_evidence` hashes the file as received, so the block is covered by the receipt hash and the timestamp; nothing here strips, rewrites or re-derives it.
+
 ## 5. Honest limits
 
 State these plainly; do not let the manifest imply more than it proves.

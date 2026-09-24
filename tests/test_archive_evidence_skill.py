@@ -37,3 +37,12 @@ def test_body_documents_contracts():
     # honest limits / degrade vocabulary
     assert "unavailable" in low and "verified" in low
     assert "does not prove" in low or "does not establish" in low
+
+
+def test_body_documents_prescreen_carry_through():
+    # An archived investigate citations log keeps each claim's Jev prescreen
+    # block, covered by the receipt hash.
+    _, body = _frontmatter_and_body(SKILL)
+    low = " ".join(body.lower().split())
+    assert "prescreen" in low
+    assert "receipt hash" in low
