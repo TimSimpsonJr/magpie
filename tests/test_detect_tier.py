@@ -438,6 +438,45 @@ def test_cli_json(capsys):
     assert "capabilities" in payload
 
 
+_CANARY_KEY = "sk-or-canary-123"
+_ON_ENV = {"MAGPIE_JEV": "1", "OPENROUTER_API_KEY": _CANARY_KEY}
+
+
+@pytest.mark.parametrize("env, expected", [
+    ({}, "jev: off (MAGPIE_JEV not set)"),
+    ({"MAGPIE_JEV": "1"}, "jev: off (no OPENROUTER_API_KEY)"),
+    (_ON_ENV, "jev: on"),
+])
+def test_jev_line(env, expected):
+    assert dt.jev_line(env) == expected
+
+
+def test_detect_reports_jev_block_without_the_key():
+    report = dt.detect(env=_ON_ENV)
+    assert report["jev"] == {"enabled": True, "reason": None, "line": "jev: on"}
+    text = dt.render_text(report)
+    dumped = json.dumps(report)
+    assert "jev: on" in text and "jev: on" in dumped
+    assert _CANARY_KEY not in text and _CANARY_KEY not in dumped
+
+
+def test_detect_reports_jev_off_reason():
+    report = dt.detect(env={"MAGPIE_JEV": "1"})
+    assert report["jev"] == {"enabled": False, "reason": "no OPENROUTER_API_KEY",
+                             "line": "jev: off (no OPENROUTER_API_KEY)"}
+    assert dt.render_text(report).endswith("\n\njev: off (no OPENROUTER_API_KEY)")
+
+
+def test_cli_subprocess_reports_jev_off_when_flag_unset():
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "MAGPIE_JEV"}
+    root = Path(__file__).resolve().parent.parent
+    p = subprocess.run([sys.executable, str(root / "scripts" / "detect_tier.py")],
+                       cwd=str(root), env=env, capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "jev: off (MAGPIE_JEV not set)" in p.stdout
+
+
 def test_import_is_cheap():
     """Importing the module must not pull in heavy stacks (subprocess-isolated)."""
     code = ("import importlib, sys; importlib.import_module('scripts.detect_tier'); "

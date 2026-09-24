@@ -35,6 +35,13 @@ gap it shows what that gap blocks and the single next instruction: ask your oper
 to run setup, or, for a missing system binary, the one-line hint naming the binary to
 install. Doctor reports a capability map, never a single linear tier score.
 
+Doctor ends with one line for the optional Jev features (the citation pre-screen and
+`jev_ask`): `jev: on` when `MAGPIE_JEV=1` and `OPENROUTER_API_KEY` are both set,
+`jev: off (MAGPIE_JEV not set)` when the opt-in flag is missing, or
+`jev: off (no OPENROUTER_API_KEY)` when the flag is set but the key is not. Jev is off
+by default and Magpie works the same without it; see
+`skills/dataset-analyze/references/jev-guide.md`.
+
 ## 3. The read-only contract
 
 Doctor is strictly read-only. Doctor NEVER installs anything, NEVER runs
@@ -44,6 +51,9 @@ project .mcp.json declares the mcp-sqlite server; it does not execute uvx and do
 launch the server. For the Layer-2 entity-graph capability it only probes Docker
 read-only -- which plus the `docker version` / `docker compose version` return codes;
 it NEVER runs `docker run`/`pull`/`up`/`start`, pulls an image, or starts a container.
+The jev line only reads two environment variables (`MAGPIE_JEV` and
+`OPENROUTER_API_KEY`); doctor never contacts OpenRouter or Jev, and never prints the key
+or stores it in the report.
 Anything that changes the machine is the job of the setup skill and a present operator,
 not doctor. If doctor reports something missing, the fix is to ask whoever set this up
 to run setup.

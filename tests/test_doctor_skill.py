@@ -39,3 +39,15 @@ def test_body_documents_read_only_contract():
     assert "docker" in low                             # Layer-2 read-only probe
     assert "read-only" in low                          # the Docker probe is read-only
     assert "pull" in low or "starts a container" in low  # spells out what it never does
+
+
+def test_body_documents_the_jev_line():
+    _, body = _frontmatter_and_body(SKILL)
+    low = body.lower()
+    assert "jev: on" in body
+    assert "jev: off (MAGPIE_JEV not set)" in body
+    assert "jev: off (no OPENROUTER_API_KEY)" in body
+    assert "openrouter" in low
+    # the jev line reads env only: no network, never prints the key
+    assert "never contacts" in low
+    assert "never prints" in low

@@ -7,6 +7,10 @@ presence/absence); the check_* probe functions are the only IO edge (stdlib only
 importlib.metadata, importlib.util, shutil.which, subprocess -- no heavy imports,
 no network, no side effects). Probing torch/docling/spacy via metadata.version
 does NOT load them, so doctor stays fast.
+
+The optional Jev line (jev_line) only reads two environment variables through
+jev_client.jev_status; it never contacts OpenRouter or Jev and never stores or
+prints the API key.
 """
 from __future__ import annotations
 
@@ -17,6 +21,12 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Mapping
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.jev_client import jev_status  # stdlib only; keeps the import cheap
 
 READY = "READY"
 DEGRADED = "DEGRADED"
@@ -347,7 +357,19 @@ def run_probes(mcp_json_path, repo_root=None):
     }
 
 
-def detect(mcp_json_path=None, repo_root=None):
+def jev_line(env: Mapping[str, str] | None = None) -> str:
+    """Env-only Jev status line: "jev: on" or "jev: off (<reason>)". No network."""
+    return _jev_block(env)["line"]
+
+
+def _jev_block(env: Mapping[str, str] | None) -> dict:
+    """The report's jev block. Carries on/off + reason only; the key value is never stored."""
+    enabled, reason = jev_status(env)
+    line = "jev: on" if enabled else f"jev: off ({reason})"
+    return {"enabled": enabled, "reason": reason, "line": line}
+
+
+def detect(mcp_json_path=None, repo_root=None, env=None):
     """The one IO entry point: probe -> capability map -> summary -> full report."""
     root = Path(repo_root) if repo_root else Path(__file__).resolve().parent.parent
     if mcp_json_path is None:
@@ -359,6 +381,7 @@ def detect(mcp_json_path=None, repo_root=None):
         "summary": summarize(cap_map),
         "probes": probes,
         "python": {"version": sys.version.split()[0], "executable": sys.executable},
+        "jev": _jev_block(env),
     }
 
 
@@ -390,6 +413,9 @@ def render_text(report):
             lines.append("      blocks: " + cap["blocks"])
             if cap.get("fix"):
                 lines.append("      fix: " + cap["fix"])
+    if "jev" in report:
+        lines.append("")
+        lines.append(report["jev"]["line"])
     return "\n".join(lines)
 
 
