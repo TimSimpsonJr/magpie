@@ -129,11 +129,11 @@ Response (validated shapes):
   `API_KEY_ENV = "OPENROUTER_API_KEY"`, `ENABLE_ENV = "MAGPIE_JEV"`, `TIMEOUT_S = 8.0`,
   `RETRY_STATUSES = (429, 529)`, `RETRY_BACKOFF_S = 1.0`, `TOO_LARGE_MARKER = "max_tokens_exceeded"`,
   `WAF_MARKERS = ("attention required", "cloudflare")`, `REASON_OFF_FLAG = "MAGPIE_JEV not set"`,
-  `REASON_OFF_KEY = "no OPENROUTER_API_KEY"`, `ABORT_REASONS = frozenset({"missing_key", "http_401", "http_402", "http_403"})`.
-- `class JevUnavailable(Exception)`: `.reason: str` in `missing_key | timeout | network | too_large | waf_blocked | http_<code> | malformed_json | bad_shape`; `.detail: str | None` (API key scrubbed, max 300 chars).
+  `REASON_OFF_KEY = "no OPENROUTER_API_KEY"`, `ABORT_REASONS = frozenset({"disabled", "missing_key", "http_401", "http_402", "http_403"})`.
+- `class JevUnavailable(Exception)`: `.reason: str` in `disabled | missing_key | timeout | network | too_large | waf_blocked | http_<code> | malformed_json | bad_shape`; `.detail: str | None` (API key scrubbed, max 300 chars).
 - `@dataclass class JevResult: answers: dict[str, dict]; model: str; usage: dict; latency_ms: int` (answers are the validated per-id dicts in the response shapes above; `usage` has exactly `input_tokens`, `output_tokens`, `cost`, missing -> None).
 - Builders: `noul_question(instructions, true_criteria, false_criteria) -> dict`, `choice_question(instructions, options: dict[str, str]) -> dict`, `score_question(instructions, levels: list[str]) -> dict`.
-- `ask(state: dict, questions: dict, *, api_key: str | None = None, transport=None, sleep=time.sleep, timeout: float = TIMEOUT_S) -> JevResult`. `transport(url, body: bytes, headers: dict, timeout) -> (status: int, body: bytes)`; default is urllib. Body = `json.dumps({"model", "state", "questions"})`; headers `Authorization: Bearer <key>`, `Content-Type: application/json`.
+- `ask(state: dict, questions: dict, *, env: Mapping[str, str] | None = None, api_key: str | None = None, transport=None, sleep=time.sleep, timeout: float = TIMEOUT_S) -> JevResult`. Defense in depth: first line checks `jev_status(env)` (env defaults to `os.environ`) and raises `JevUnavailable("disabled")` when off, before any other work. The key is `api_key` if not None, else `env[API_KEY_ENV]`. `transport(url, body: bytes, headers: dict, timeout) -> (status: int, body: bytes)`; default is urllib. Body = `json.dumps({"model", "state", "questions"})`; headers `Authorization: Bearer <key>`, `Content-Type: application/json`.
 - `jev_status(env: Mapping[str, str] | None = None) -> tuple[bool, str | None]`: enabled only when `env["MAGPIE_JEV"].strip() == "1"` and the key is non-blank; reason precedence flag then key.
 - `public_reason(raw: str) -> str`: `too_large` and `waf_blocked` pass through; everything else -> `"jev_error"`.
 - Validation rules (spec 1.2): every requested id present and an object; answer `type` equals requested type; `noul` is `int|float`, not `bool`, finite, in [0, 1]; `choice` label is a requested option, every `probabilities` key is a requested option and every value finite in [0, 1], `confidence` (if present) finite in [0, 1]; `score` is a finite non-bool number, `probabilities`/`confidence` values finite in [0, 1] when present. Unrequested extra ids are ignored. Missing/blank `model` or a non-object body -> `bad_shape`.
@@ -143,8 +143,10 @@ Response (validated shapes):
 
 | Input | Expected |
 |---|---|
+| (all rows) | tests pass `env={"MAGPIE_JEV": "1", "OPENROUTER_API_KEY": "k"}` unless the row says otherwise |
 | ok noul response | transport got `JEV_URL`, body `{"model": "~typesafe/jev-latest", "state", "questions"}`, Bearer header, timeout 8.0; `JevResult.answers["q"]["noul"] == 0.92`, usage keys exactly three |
-| `api_key=""`, env without key | `missing_key`; transport never called |
+| `env={}` (or `MAGPIE_JEV` unset), valid `api_key` | `disabled`; transport never called |
+| env on, `api_key=""` | `missing_key`; transport never called |
 | statuses 429 then 200 | success; `sleep` called once with 1.0; 2 transport calls |
 | 529 then 529 | `http_529`; exactly 2 calls |
 | 500 | `http_500`; 1 call (no retry) |
@@ -166,7 +168,7 @@ Response (validated shapes):
 | `jev_status({})`, `({"MAGPIE_JEV": "0", key})`, `({"MAGPIE_JEV": "true", key})` | `(False, "MAGPIE_JEV not set")` |
 | `jev_status({"MAGPIE_JEV": "1"})`, key `"  "` | `(False, "no OPENROUTER_API_KEY")` |
 | `jev_status({"MAGPIE_JEV": " 1 ", "OPENROUTER_API_KEY": "k"})` | `(True, None)` |
-| `public_reason` of too_large / waf_blocked / http_500 / timeout / bad_shape / missing_key | too_large / waf_blocked / jev_error x4 |
+| `public_reason` of too_large / waf_blocked / http_500 / timeout / bad_shape / missing_key / disabled | too_large / waf_blocked / jev_error x5 |
 | subprocess `import scripts.jev_client` | `pandas`, `torch` not in `sys.modules` |
 
 **Steps:**
@@ -333,7 +335,8 @@ Every test that patches the import calls `_pii_patterns.cache_clear()` before an
   ```
 - `extract_dates(text: str) -> tuple[list[tuple[int, ...]], str]`: normalized `(y, m, d)` or `(y, m)`; `mdy_num` is read month/day/year; a 2-digit year becomes `2000+yy` when `yy <= 69`, else `1900+yy`; returns the text with date spans replaced by spaces.
 - `normalize_number(tok: str) -> str`: drop thousands commas; drop leading zeros (keep one `0`); strip trailing fractional zeros and a trailing dot (`"482.50"->"482.5"`, `"5.0"->"5"`, `"007"->"7"`).
-- `numeric_gate(claim_text: str, span: str) -> str | None`: returns `"numeric_mismatch"` if any claim date has no span date agreeing on every component the claim date has, or any claim number (from the date-blanked claim text) is not in the span's numbers (date-blanked span numbers plus every component of every span date, all normalized); else `"computed_value"` if `COMPUTED_CUE_RE` matches the claim; else None. numeric_mismatch is checked first (spec reason order).
+- `numeric_gate(claim_text: str, span: str) -> str | None`: returns `"numeric_mismatch"` if any claim date has no span date agreeing on every component the claim date has, or any claim number (from the date-blanked claim text) is not in the span's number set; else `"computed_value"` if `COMPUTED_CUE_RE` matches the claim; else None. numeric_mismatch is checked first (spec reason order). The span number set is the normalized numbers of the date-blanked span PLUS only the 4-digit YEAR of each span date; a span date's month and day never join it (so a claim's "15" cannot be satisfied by "March 15").
+- The gate is digit-only: spelled-out numbers ("fourteen") are not extracted or compared; Jev's entailment question and the verifier cover them. Documented in the jev-guide (Task 11) and Decision 9.
 
 **Test cases (`numeric_gate(claim, span)`):**
 
@@ -360,6 +363,9 @@ Every test that patches the import calls `_pii_patterns.cache_clear()` before an
 | 19 | The unit operated separately | The unit operated separately | None |
 | 20 | The officer ran searches. | The officer ran searches in 2026. | None |
 | 21 | The rate was 5 | the rate was 5 | computed_value |
+| 22 | ran 15 searches | On March 15, 2026 the officer ran 14 searches | numeric_mismatch (day 15 is not in the number set) |
+
+Rows 1-21 were re-checked under the year-only rule: row 9 passes via the span date's year 2026; rows 7 and 10 pass via date matching, not the number set; row 18 passes because `2026-0042` is not a date and both sides yield `2026` and `42`.
 
 Plus direct cases: `extract_dates("on 3/4/99")[0] == [(1999, 3, 4)]`; `extract_dates("May 2026")[0] == [(2026, 5)]`; `extract_dates("you may 2 go")[0] == []`; `normalize_number("007") == "7"`.
 
@@ -385,8 +391,8 @@ Plus direct cases: `extract_dates("on 3/4/99")[0] == [(1999, 3, 4)]`; `extract_d
 - `prescreen(claims: list[ClaimInput], *, env: Mapping | None = None, ask_fn: Callable | None = None, state_path: Path = jev_state.STATE_PATH, seed: str | None = None, enforce_model_gate: bool = True) -> dict`.
   1. `jev_status(env)` off -> every claim `verify`/`jev_off`; no call.
   2. Per claim, in order, the first local reason: `guard(claim_text, verbatim_quote, span)` (`pii`/`secret`); `degraded_anchor` if not `clean_citation` or span is None/blank; `numeric_gate(...)`. Claims with a local reason are NOT sent (data minimization); presence/entailment stay null.
-  3. Remaining claims -> `ask_windowed(..., state_key="claims")`; default `ask_fn` is `functools.partial(jev_client.ask, api_key=env[API_KEY_ENV])`. Failures -> `public_reason(raw)`.
-  4. Model: `model = models[0]` if any; if `enforce_model_gate` and any seen model has `model_status` other than `"approved"`, every claim (sent or not) becomes `verify`/`model_changed`.
+  3. Remaining claims -> `ask_windowed(..., state_key="claims")`; default `ask_fn` is `functools.partial(jev_client.ask, env=env)`. Failures -> `public_reason(raw)`.
+  4. Model: the model gate applies ONLY when at least one window returned a model (`models` non-empty). Then `model = models[0]`; if `enforce_model_gate` and any seen model has `model_status` other than `"approved"`, every claim (sent or not) becomes `verify`/`model_changed`. If no window answered, `model` is None and each claim keeps its real reason (`too_large`, `waf_blocked`, `jev_error`, or its local reason).
   5. Answered claims: `skip` iff `presence >= PRESENCE_MIN and entailment >= ENTAIL_MIN`, else `low_score`.
   6. Spot-checks: Task 7 (`spot_check` is False for every claim until then).
 - Output (JSON-able): `{"enabled": bool, "model": str|None, "approved_model": str|None, "seed": str, "claims": {claim_id: {"presence": float|None, "entailment": float|None, "route": "skip"|"verify", "reason": str|None, "spot_check": bool}}, "summary": {"prescreened": n, "skipped": m, "verify": v, "spot_checked": s}, "usage": {...}}`. `reason` is None exactly when route is `skip`.
@@ -399,6 +405,8 @@ Plus direct cases: `extract_dates("on 3/4/99")[0] == [(1999, 3, 4)]`; `extract_d
 | env `{}` | `enabled False`; all `verify`/`jev_off`; transport not called |
 | response model `m2` | all claims `verify`/`model_changed`, including a PII-guarded one |
 | no state file | all `model_changed` |
+| no state file, every window `http_500` (no model returned) | reasons stay `jev_error` (not `model_changed`); `model is None` |
+| approved m1, sole window `too_large`, other claims locally gated | `too_large` + their local reasons; no `model_changed` |
 | `enforce_model_gate=False`, no state file, scores 0.95/0.95 | `skip` |
 | phone `864-555-0100` in span | `verify`/`pii`; phone string absent from every request body |
 | `password=hunter2` in claim | `verify`/`secret`; string absent from bodies |
@@ -539,10 +547,13 @@ Add the env override `MAGPIE_JEV_SPOTCHECK_LOG` (read only by `main`) so the sub
   The pre-screen can only remove extraction-verifier calls. It never accepts, rejects
   or edits a claim, and never replaces the citation-checker or the human gate. When Jev
   is off, the model has changed, or anything fails, every claim routes to "verify" and
-  this gate runs exactly as it does without Jev. An edited claim always gets the
-  extraction-verifier (its old pre-screen result no longer applies). Guidance:
+  this gate runs exactly as it does without Jev. Guidance:
   ../dataset-analyze/references/jev-guide.md.
   ```
+- investigate section 3, existing "Editing invalidates verification" paragraph: append one
+  sentence to that paragraph (not a new paragraph): "An edited claim always gets the
+  extraction-verifier, even if the Jev pre-screen had routed it to skip; its old pre-screen
+  result no longer applies."
 - investigate section 3 item 3: for a skipped claim the card shows the `gate_label` text ("Jev pre-screen: supported -- not independently verified (presence 0.94, entailment 0.91)"), never "verified"; spot-checked claims show both that label and the verifier verdict; a spot-check disagreement is surfaced prominently.
 - investigate section 4: the local citations log keeps the `prescreen` block; the published anchor carries `verifier_result` "prescreen-skip" for skipped claims.
 - `agents/extraction-verifier.md`: a short paragraph: you may be dispatched as a spot-check of a claim Jev pre-screened as supported; your input is identical and equally blinded; you NEVER receive the Jev pre-screen scores; judge exactly as always; a not-supported verdict is logged as a disagreement for the human.
@@ -552,8 +563,8 @@ Add the env override `MAGPIE_JEV_SPOTCHECK_LOG` (read only by `main`) so the sub
 
 | File | Assertion (on lowercased body unless noted) |
 |---|---|
-| investigate | contains `jev_prescreen.py`, `citation-checker for every claim`, `spot_check`, `route`, `--spotcheck`, `never accepts`, `prescreen-skip`, `jev-guide.md`, `an edited claim always gets the extraction-verifier` |
-| investigate section 3 (text between `## 3` and `## 4`) | contains `not independently verified` |
+| investigate | contains `jev_prescreen.py`, `citation-checker for every claim`, `spot_check`, `route`, `--spotcheck`, `never accepts`, `prescreen-skip`, `jev-guide.md` |
+| investigate section 3 (text between `## 3` and `## 4`) | contains `not independently verified`; the paragraph containing `editing invalidates verification` also contains `an edited claim always gets the extraction-verifier` |
 | investigate | existing ASCII test still passes |
 | extraction-verifier | contains `pre-screen`, `spot-check`, and `never receive` |
 | archive-evidence | contains `prescreen` and `receipt hash` |
@@ -632,7 +643,8 @@ Add the env override `MAGPIE_JEV_SPOTCHECK_LOG` (read only by `main`) so the sub
 - `## Use it for` (spec 3.2 list) / `## Don't use it for` (spec 3.2 list; pandas/SQL for aggregates).
 - `## Writing questions` (one judgment per question; contrastive true/false criteria with examples; mutually exclusive choice labels with a none/other option) with one worked `jev_ask` command.
 - `## Reading answers` (act / check / escalate zones; thresholds set from a `--sample` spot-check, not assumed; probabilities are relative confidence, not ground truth).
-- `## Privacy` (what is sent; rows with structured PII or secret-shaped text stay local and show as skipped; the PII screen is pattern-based, so personal names in text fields ARE sent; opt-in required).
+- `## Privacy` (opt-in required; exactly what is sent; rows with structured PII or secret-shaped text stay local and show as skipped. Explain unexpected `skipped: secret` rows: the secret screen is deliberately broad, so benign text such as "Token count: 5" is withheld on purpose. Names are not pattern PII: personal names in the chosen text fields ARE sent when Jev is on. Part B users should keep name, address and DOB columns out of `--text-fields` unless the question needs them.)
+- A short note (under `## Reading answers` or `## What Jev is`) that the pre-screen's number/date check is digit-only: spelled-out numbers ("fourteen") are not gated, only judged by Jev and the verifier.
 - `## Provenance` (keep `results.meta.json` with any derived dataset; cite it in methodology notes; a `model_changed: true` meta means re-check before use).
 
 **Test cases:**
@@ -641,7 +653,7 @@ Add the env override `MAGPIE_JEV_SPOTCHECK_LOG` (read only by `main`) so the sub
 |---|---|
 | guide exists, ASCII | True |
 | all seven headings present | True |
-| lowercased guide contains `act`, `check`, `escalate`, `--sample`, `results.meta.json`, `pandas`, `entity-crossref`, `magpie_jev`, `openrouter_api_key`, `names`, `jev_live` | True |
+| lowercased guide contains `act`, `check`, `escalate`, `--sample`, `results.meta.json`, `pandas`, `entity-crossref`, `magpie_jev`, `openrouter_api_key`, `names`, `jev_live`, `skipped: secret`, `token count`, `--text-fields`, `spelled-out` | True |
 | `skills/dataset-analyze/SKILL.md`, `skills/entity-crossref/SKILL.md`, `skills/investigate/SKILL.md` each contain `jev-guide.md` | True |
 | entity-crossref and investigate stay ASCII (existing tests) | True |
 
@@ -725,7 +737,7 @@ README is reader-facing: invoke `copydesk:write` before drafting the prose (user
 - `ci.yml` offline job: append ` and not jev_live` to the `-m` expression. No CI job runs live Jev.
 - Both live modules: `pytestmark = [pytest.mark.jev_live, pytest.mark.skipif(not jev_status()[0], reason=...)]`.
 - `prescreen_eval.json`: 20 synthetic items `{claim_id, claim_text, verbatim_quote, span, clean_citation: true, expect: "supported"|"unsupported", category}`: supported 5, paraphrased_supported 3, wrong_number 3, wrong_date 2, wrong_entity 3, span_silent 2, contradicted 2. At least two wrong-entity/silent items carry numbers that DO match the span (so they reach Jev, not the numeric gate). Dates written as "March 3, 2026" (not MM/DD/YYYY, which the PII guard withholds).
-- Eval test: `out = prescreen(claims, enforce_model_gate=False)`; fail if any claim reason is `too_large`/`waf_blocked`/`jev_error`/`pii`/`secret` (a degenerate run must not approve a model); **gate: every `unsupported` item routes `verify`**; print per-claim presence/entailment and the skip rate over `supported` items; on pass call `record_passing_model(out["model"], eval_summary={"n": 20, "skip_rate": r, "presence_min": PRESENCE_MIN, "entail_min": ENTAIL_MIN})` on the real `data/jev_state.json`.
+- Eval test: `out = prescreen(claims, enforce_model_gate=False)`; fail if any claim reason is `too_large`/`waf_blocked`/`jev_error`/`pii`/`secret` (a degenerate run must not approve a model); **gate: every `unsupported` item routes `verify`**; print per-claim presence/entailment and the skip rate over `supported` items, followed by the note "Real-corpus skip rates will be lower than this fixture's: PII patterns (compact 10-digit phone numbers that also match case numbers, MM/DD/YYYY birthdate-format dates) withhold whole claims before Jev sees them."; on pass call `record_passing_model(out["model"], eval_summary={"n": 20, "skip_rate": r, "presence_min": PRESENCE_MIN, "entail_min": ENTAIL_MIN})` on the real `data/jev_state.json`.
 - `ask_smoke.jsonl`: 20 synthetic records `{"id": "S01".."S20", "text": ..., "label": "surveillance"|"budget"|"other"}` (7/7/6). Smoke test runs `jev_ask.main([... "--type", "choice", "--options", <tmp options.json with those three labels>, "--out", tmp ...])`; `ACCURACY_FLOOR = 0.80` (16/20) over answered records; at least 18 answered.
 
 **Test cases:** the gate and floor above; plus offline checks in `tests/test_jev_prescreen.py`: fixture file parses with `parse_claims` (after dropping `expect`/`category`), has 20 items and the category counts above; a default-options run of pytest deselects `jev_live` items (`"$PY" -m pytest tests/test_jev_live_prescreen.py -q` reports deselected, not run).
@@ -764,7 +776,7 @@ README is reader-facing: invoke `copydesk:write` before drafting the prose (user
 - [ ] Opt-out check: `grep -rn "urllib.request" scripts/` lists only `jev_client.py` among the new files (evidence.py/yente paths are pre-existing); every Part A/B test with Jev off asserts zero transport calls (re-read Tasks 6, 10).
 - [ ] Spec coverage re-read: walk spec sections 1.1-4 against the Task list below; any gap is a bug in this branch, not a follow-up.
 - [ ] `git status --short` shows no untracked `data/` files and nothing unstaged.
-- [ ] Hand off for the spec-5 Codex implementation review (`cross-model-review:codex-impl-review`, invoked manually). After round 1 only a secret/PII leak, any path routing an unsupported claim to `skip`, or data leaving the machine while opted out blocks; everything else becomes a labeled follow-up issue (`autonomous-safe` or `design-input-needed`).
+- [ ] Hand off for a single Fable implementation review round (user decision; replaces the spec-5 Codex pass). After that round only a secret/PII leak, any path routing an unsupported claim to `skip`, or data leaving the machine while opted out blocks; everything else becomes a labeled follow-up issue (`autonomous-safe` or `design-input-needed`).
 
 **Blocked by:** Task 15.
 
@@ -803,8 +815,10 @@ README is reader-facing: invoke `copydesk:write` before drafting the prose (user
 6. **Spot-check seed and floor.** Default seed is content-derived from the batch; at least one skip claim is spot-checked whenever any claim skips. A missing verifier verdict counts as a disagreement.
 7. **Archive carry-through.** `CitationRecord.prescreen` travels in the local citations log, which archive-evidence hashes as received; `public_anchor` stays exactly 10 keys and publishes `verifier_result: "prescreen-skip"` for skipped claims.
 8. **Error mapping.** Every client reason other than `too_large`/`waf_blocked` maps to `jev_error`; `missing_key`/`http_401`/`http_402`/non-WAF `http_403` stop the remaining windows.
-9. **Numeric gate.** A claim date may be less specific than the span date; bare claim numbers may match span date components; numeric slashed dates read month/day/year; extra computed cues (inflections, "fewer than") only add verifies.
+9. **Numeric gate.** A claim date may be less specific than the span date; a bare claim number may match only the 4-digit YEAR of a span date, never its month or day; numeric slashed dates read month/day/year; the gate is digit-only, so spelled-out numbers ("fourteen") are not gated (Jev entailment and the verifier cover them; documented in jev-guide); extra computed cues (inflections, "fewer than") only add verifies.
 10. **Live tests.** Excluded by `addopts`, skipped when Jev is off, and excluded in CI. The live eval approves a model only if all 20 items were answered and the gate held; thresholds may only rise.
 11. **PII screen scope.** Only `DEFAULT_PII_PATTERNS` (no spaCy NER), so person names can be sent; README and guide say so.
 12. **Enable flag.** `MAGPIE_JEV` must be exactly `1` (after trimming whitespace).
 13. **Part B exit codes.** 0 ok (even with skips), 2 usage/input error, 3 Jev off.
+14. **Client-side opt-in check.** `jev_client.ask()` itself refuses with `disabled` when `jev_status` is off, so no caller can send while opted out (defense in depth on top of the Part A/B checks).
+15. **Model gate needs a model.** `model_changed` overrides reasons only when at least one window returned a model; a batch where nothing was answered keeps each claim's real failure reason.
