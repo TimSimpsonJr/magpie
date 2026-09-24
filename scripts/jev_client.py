@@ -13,7 +13,9 @@ work, so no caller can send while opted out. The API key is never logged or embe
 exception text.
 
 Stdlib only: importing this module must not pull in pandas, torch or any other heavy stack.
-The transport is injectable so the offline suite never touches the network.
+The transport is injectable so the offline suite never touches the network. The default
+urllib transport never follows redirects (a 3xx is an ``http_<code>`` failure), so the bearer
+key is only ever sent to JEV_URL's host.
 """
 from __future__ import annotations
 
@@ -186,10 +188,28 @@ def _validate_answers(answers: object, questions: dict) -> dict[str, dict]:
 
 # --- transport + error mapping -----------------------------------------------------------
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect. urllib's stock handler re-sends the request headers, the
+    Authorization bearer key included, to whatever host a 3xx names. Returning None makes
+    urllib raise HTTPError(3xx), which the transport maps like any other HTTP error, so a
+    redirect surfaces as JevUnavailable("http_<code>") and the key stays with JEV_URL's host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401, ARG002
+        return None
+
+
+def _build_opener(*handlers: urllib.request.BaseHandler) -> urllib.request.OpenerDirector:
+    """An opener whose redirect handler never follows (extra handlers are for offline tests)."""
+    return urllib.request.build_opener(_NoRedirectHandler(), *handlers)
+
+
+_OPENER = _build_opener()
+
+
 def _urllib_transport(url: str, body: bytes, headers: dict, timeout: float) -> tuple[int, bytes]:
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as e:
         try:

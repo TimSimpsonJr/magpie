@@ -1,12 +1,17 @@
 """ASCII only. Offline tests for scripts/jev_client.py (Task 1). Every call goes through
-FakeTransport; nothing touches the network."""
+FakeTransport, or (redirect tests) a fake HTTPS handler inside the real opener; nothing
+touches the network."""
 from __future__ import annotations
 
+import email.message
+import io
 import json
 import socket
 import subprocess
 import sys
 import urllib.error
+import urllib.request
+import urllib.response
 from pathlib import Path
 
 import pytest
@@ -379,3 +384,67 @@ def test_import_is_stdlib_only():
                        cwd=str(Path(__file__).resolve().parent.parent),
                        capture_output=True, text=True)
     assert p.returncode == 0, p.stdout + p.stderr
+
+
+# --- redirects (the key must never follow a 3xx to another host) -----------------
+
+class _RedirectingHTTPS(urllib.request.HTTPSHandler):
+    """Offline stand-in for the HTTPS handler: records every request it is asked to open.
+    The Jev host answers 302 -> another host; any other host answers 200. No socket is opened."""
+
+    def __init__(self, location: str = "https://evil.example/steal"):
+        super().__init__()
+        self.location = location
+        self.seen: list[tuple[str, str | None]] = []  # (host, Authorization header)
+
+    def https_open(self, req):
+        self.seen.append((req.host, req.get_header("Authorization")))
+        if req.host == "openrouter.ai":
+            code, msg, headers, body = 302, "Found", {"Location": self.location}, b""
+        else:
+            code, msg, headers, body = 200, "OK", {}, b"{}"
+        hdrs = email.message.Message()
+        for k, v in headers.items():
+            hdrs[k] = v
+        resp = urllib.response.addinfourl(io.BytesIO(body), hdrs, req.full_url, code)
+        resp.msg = msg
+        return resp
+
+
+def test_fake_https_handler_detects_redirect_following():
+    # Control: a stock urllib opener DOES follow the 302 and forwards the key to the other
+    # host, so the fake exercises the real redirect path the no-redirect opener must block.
+    fake = _RedirectingHTTPS()
+    opener = urllib.request.build_opener(fake)
+    req = urllib.request.Request(jc.JEV_URL, data=b"{}", method="POST",
+                                 headers={"Authorization": "Bearer k"})
+    opener.open(req, timeout=1).close()
+    assert [h for h, _ in fake.seen] == ["openrouter.ai", "evil.example"]
+    assert fake.seen[1][1] == "Bearer k"
+
+
+def test_no_redirect_handler_refuses_every_redirect():
+    handler = jc._NoRedirectHandler()
+    req = urllib.request.Request(jc.JEV_URL, data=b"{}", method="POST")
+    for code in (301, 302, 303, 307, 308):
+        assert handler.redirect_request(req, None, code, "x", {}, "https://evil.example/") is None
+
+
+def test_default_opener_has_no_following_redirect_handler():
+    redirect_handlers = [h for h in jc._OPENER.handlers
+                         if isinstance(h, urllib.request.HTTPRedirectHandler)]
+    assert len(redirect_handlers) == 1
+    assert isinstance(redirect_handlers[0], jc._NoRedirectHandler)
+
+
+@pytest.mark.parametrize("location", ["https://evil.example/steal", "https://openrouter.ai/other"])
+def test_302_is_not_followed_and_key_never_leaves_jev_host(monkeypatch, location):
+    fake = _RedirectingHTTPS(location)
+    monkeypatch.setattr(jc, "_OPENER", jc._build_opener(fake))
+    secret = "sk-or-v1-SECRETVALUE123"
+    env = {"MAGPIE_JEV": "1", "OPENROUTER_API_KEY": secret}
+    with pytest.raises(JevUnavailable) as ei:
+        ask(STATE, NOUL_Q, env=env, sleep=lambda s: None)  # default urllib transport
+    assert ei.value.reason == "http_302"
+    assert fake.seen == [("openrouter.ai", f"Bearer {secret}")]
+    assert secret not in str(ei.value)
