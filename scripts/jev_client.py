@@ -80,6 +80,8 @@ class JevResult:
 
 
 # --- question builders -----------------------------------------------------------------
+# Jev carries every question's answer set in ``criteria``: an object {"true", "false"} for noul,
+# an object label -> description for choice, and a list of level descriptions for score.
 
 def noul_question(instructions: str, true_criteria: str, false_criteria: str) -> dict:
     """A yes/no question answered with a probability in [0, 1]."""
@@ -88,13 +90,13 @@ def noul_question(instructions: str, true_criteria: str, false_criteria: str) ->
 
 
 def choice_question(instructions: str, options: dict[str, str]) -> dict:
-    """A choice question: ``options`` maps label -> description."""
-    return {"type": "choice", "instructions": instructions, "options": dict(options)}
+    """A choice question: ``options`` maps label -> description (sent as ``criteria``)."""
+    return {"type": "choice", "instructions": instructions, "criteria": dict(options)}
 
 
 def score_question(instructions: str, levels: list[str]) -> dict:
-    """A score question over ordered level descriptions."""
-    return {"type": "score", "instructions": instructions, "levels": list(levels)}
+    """A score question over ordered level descriptions (sent as ``criteria``)."""
+    return {"type": "score", "instructions": instructions, "criteria": list(levels)}
 
 
 # --- opt-in ------------------------------------------------------------------------------
@@ -158,7 +160,7 @@ def _validate_answer(qid: str, entry: object, question: dict) -> dict:
             raise JevUnavailable("bad_shape", f"answer {qid} noul is not a real in [0, 1]")
         out["noul"] = float(entry["noul"])
     elif qtype == "choice":
-        options = question.get("options")
+        options = question.get("criteria")
         allowed = set(options) if isinstance(options, dict) else set()
         label = entry.get("choice")
         if not isinstance(label, str) or label not in allowed:

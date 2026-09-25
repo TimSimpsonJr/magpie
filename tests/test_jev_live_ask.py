@@ -7,8 +7,9 @@ it) and skipped unless the operator's environment already has ``MAGPIE_JEV=1`` a
 machine) plus the question and the options / levels fixtures.
 
 - choice smoke: at least 18 of 20 answered and ``ACCURACY_FLOOR`` over the answered ones;
-- score smoke: exercises the ``levels`` request key (the choice smoke exercises ``options``);
-  at least 18 answered, every value finite, and surveillance records score higher on average.
+- score smoke: exercises a list-valued ``criteria`` (the choice smoke exercises an object-valued
+  ``criteria``); at least 18 answered, every value finite, and surveillance records score higher
+  on average.
 
 The model-approval state is a tmp file, so the real ``data/jev_state.json`` is never read or
 written here (only the Part A live eval approves a model).

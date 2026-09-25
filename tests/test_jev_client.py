@@ -93,10 +93,11 @@ def test_choice_and_score_accepted():
 def test_builders_shape():
     assert jc.noul_question("i", "t", "f") == {
         "type": "noul", "instructions": "i", "criteria": {"true": "t", "false": "f"}}
-    cq = jc.choice_question("i", {"a": "A", "b": "B"})
-    assert cq["type"] == "choice" and cq["instructions"] == "i" and cq["options"] == {"a": "A", "b": "B"}
-    sq = jc.score_question("i", ["x", "y"])
-    assert sq["type"] == "score" and sq["instructions"] == "i" and sq["levels"] == ["x", "y"]
+    # Jev carries the answer set in ``criteria`` for every question type (verified live).
+    assert jc.choice_question("i", {"a": "A", "b": "B"}) == {
+        "type": "choice", "instructions": "i", "criteria": {"a": "A", "b": "B"}}
+    assert jc.score_question("i", ["x", "y"]) == {
+        "type": "score", "instructions": "i", "criteria": ["x", "y"]}
 
 
 # --- opt-in / key -----------------------------------------------------------------

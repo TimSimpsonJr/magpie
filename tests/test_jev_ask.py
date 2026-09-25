@@ -372,7 +372,8 @@ def test_choice_csv_input(tmp_path, no_state, options_file):
         assert r["answer"]["probabilities"] == {"budget": 1.0, "other": 0.0}
     q = fake.bodies[0]["questions"]["q_R0001"]
     assert q["type"] == "choice"
-    assert q["options"] == {"budget": "About money", "other": "Anything else"}
+    assert q["criteria"] == {"budget": "About money", "other": "Anything else"}
+    assert "options" not in q
 
 
 def test_score(tmp_path, no_state, levels_file):
@@ -385,7 +386,9 @@ def test_score(tmp_path, no_state, levels_file):
         assert set(r["answer"]) == {"value", "probabilities", "confidence"}
         assert r["answer"]["value"] == 2.0
     q = fake.bodies[0]["questions"]["q_R0001"]
-    assert q["levels"] == ["not relevant", "somewhat relevant", "highly relevant"]
+    assert q["type"] == "score"
+    assert q["criteria"] == ["not relevant", "somewhat relevant", "highly relevant"]
+    assert "levels" not in q
 
 
 def test_shape_answer():
